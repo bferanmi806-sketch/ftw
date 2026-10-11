@@ -97,6 +97,39 @@ func TestRecoverRetiredChartsKeepsNewHistoryAndSource(t *testing.T) {
 	}
 }
 
+func TestRecoverChartsAfterRetiredFileCleanup(t *testing.T) {
+	path, retired := retiredChartsFixture(t, 3)
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO history_hot VALUES(1,7,11,0,18,0.5,'old');
+ INSERT INTO history_warm VALUES(2,13,17,0,30,0.6,'warm');
+ INSERT INTO history_cold VALUES(3,19,23,0,42,0.7,'cold')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(retired); err != nil {
+		t.Fatal(err)
+	}
+	for restart := 0; restart < 2; restart++ {
+		s, err := Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.LoadHistory(0, 10000, 0)
+		if err != nil || len(got) != 4 || got[3].GridW != 19 {
+			s.Close()
+			t.Fatalf("bound source and new charts: %+v %v", got, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestRecoverRetiredChartsResumesAfterFailedChunk(t *testing.T) {
 	path, _ := retiredChartsFixture(t, 2300)
 	db, err := sql.Open("sqlite", pathDirHistory(path))

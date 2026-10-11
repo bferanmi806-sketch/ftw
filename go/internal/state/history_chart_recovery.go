@@ -15,18 +15,25 @@ import (
 
 const legacyChartRecovery = "legacy-charts-recovered-v1"
 
-// Old raw retirement omitted inherited charts. Read the retained file only
-// when it belongs to this history generation; keep new charts and accounting.
+// Old raw retirement omitted inherited charts. The bound state database keeps
+// its original source tables even after cold-file cleanup removes raw-retired.
+// Recover only charts; keep new measurements and accounting in place.
 func (s *Store) recoverLegacyCharts(ctx context.Context, generation string) error {
 	var complete int
 	if err := s.history.QueryRowContext(ctx, `SELECT COUNT(*) FROM history_migrations WHERE name=?`, legacyChartRecovery).Scan(&complete); err != nil || complete != 0 {
 		return err
 	}
+	rows, err := s.mergeLegacyChartSource(ctx, s.db, filepath.Base(s.mainDBPath))
+	if err != nil {
+		return fmt.Errorf("recover inherited charts from bound state: %w", err)
+	}
+	if rows != 0 {
+		slog.Info("inherited charts recovered", "source", filepath.Base(s.mainDBPath), "verified_rows", rows)
+	}
 	paths, err := filepath.Glob(s.historyPath + ".raw-retired*")
 	if err != nil {
 		return err
 	}
-	matched := false
 	for _, path := range paths {
 		if strings.HasSuffix(path, "-wal") || strings.HasSuffix(path, "-shm") {
 			continue
@@ -36,13 +43,10 @@ func (s *Store) recoverLegacyCharts(ctx context.Context, generation string) erro
 			return fmt.Errorf("recover inherited charts from %s: %w", filepath.Base(path), err)
 		}
 		if same {
-			matched = true
 			slog.Info("inherited charts recovered", "source", filepath.Base(path), "verified_rows", rows)
 		}
 	}
-	if matched {
-		_, err = s.history.ExecContext(ctx, `INSERT OR IGNORE INTO history_migrations(name) VALUES(?)`, legacyChartRecovery)
-	}
+	_, err = s.history.ExecContext(ctx, `INSERT OR IGNORE INTO history_migrations(name) VALUES(?)`, legacyChartRecovery)
 	return err
 }
 
@@ -61,12 +65,17 @@ func (s *Store) recoverRetiredCharts(ctx context.Context, path, generation strin
 	if err != nil {
 		return 0, false, err
 	}
+	count, err := s.mergeLegacyChartSource(ctx, source, filepath.Base(path))
+	return count, true, err
+}
+
+func (s *Store) mergeLegacyChartSource(ctx context.Context, source *sql.DB, name string) (int64, error) {
 	var count int64
 	for _, table := range []string{"history_hot", "history_warm", "history_cold"} {
 		if s.historyMigration != nil {
 			s.historyMigration.update(func(st *HistoryMigrationStatus) {
 				st.State, st.Phase, st.Activity = "running", "sqlite", "importing"
-				st.CurrentSource = filepath.Base(path) + "/" + table
+				st.CurrentSource = name + "/" + table
 				st.CurrentSourceRowsDone = 0
 				if st.StartedAtMS == 0 {
 					st.StartedAtMS = time.Now().UnixMilli()
@@ -75,11 +84,11 @@ func (s *Store) recoverRetiredCharts(ctx context.Context, path, generation strin
 		}
 		n, err := s.mergeRetiredChartTable(ctx, source, table)
 		if err != nil {
-			return count, true, err
+			return count, err
 		}
 		count += n
 	}
-	return count, true, nil
+	return count, nil
 }
 
 // Each bounded transaction reads back its rows before commit. A retry can
