@@ -53,6 +53,7 @@ jobs:
           [[ "${SOURCE_BETA}" =~ ^v0\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]
           test -n "${GH_TOKEN}"
           cp scripts/package-history-converter.py "${RUNNER_TEMP}/package-history-converter.py"
+          cp scripts/upload-release-assets.sh "${RUNNER_TEMP}/upload-release-assets.sh"
           gh release view "${SOURCE_BETA}" --repo "${GITHUB_REPOSITORY}" \
             --json tagName,isDraft,isPrerelease | \
             jq -e --arg tag "${SOURCE_BETA}" '.tagName == $tag and .isDraft == false and .isPrerelease == true'
@@ -101,7 +102,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_TOKEN }}
         run: |
           set -euo pipefail
-          gh release upload "${SOURCE_BETA}" --repo "${GITHUB_REPOSITORY}" \
+          bash "${RUNNER_TEMP}/upload-release-assets.sh" "${SOURCE_BETA}" \
             "${RUNNER_TEMP}"/converter-release/*.tar.gz \
             "${RUNNER_TEMP}"/converter-release/*.sha256
           mkdir -p "${RUNNER_TEMP}/published-converter"
