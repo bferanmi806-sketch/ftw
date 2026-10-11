@@ -72,6 +72,13 @@ func (s *Store) recoverRetiredCharts(ctx context.Context, path, generation strin
 func (s *Store) mergeLegacyChartSource(ctx context.Context, source *sql.DB, name string) (int64, error) {
 	var count int64
 	for _, table := range []string{"history_hot", "history_warm", "history_cold"} {
+		var exists int
+		if err := source.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&exists); err != nil {
+			return count, err
+		}
+		if exists == 0 {
+			continue
+		}
 		if s.historyMigration != nil {
 			s.historyMigration.update(func(st *HistoryMigrationStatus) {
 				st.State, st.Phase, st.Activity = "running", "sqlite", "importing"
