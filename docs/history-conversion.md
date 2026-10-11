@@ -50,6 +50,9 @@ Core can then retire raw rows on its first start without dropping a series.
 If a prior converter published a file without these summaries, preserve that
 directory and convert a separate, stopped copy of the pre-conversion full
 backup. The tool refuses to treat that older conversion as complete.
+Core also refuses a start that would retire remaining raw rows from an older
+conversion without these summaries. Stores that already have no raw rows can
+keep running; this does not certify their earlier conversion.
 
 An interruption leaves history.db.converting. Restart the same tool with Core
 still stopped. It resumes copied beta tables and chart summaries and skips completed merge phases;

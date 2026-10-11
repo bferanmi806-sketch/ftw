@@ -707,7 +707,13 @@ func requireConvertedBeta(path string) error {
 			return fmt.Errorf("check converted chart summaries: %w", err)
 		}
 		if summarized == 0 {
-			return errors.New(incompleteConvertedCharts)
+			var raw int
+			if err := history.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM ts_samples)`).Scan(&raw); err != nil {
+				return fmt.Errorf("check remaining converted raw history: %w", err)
+			}
+			if raw != 0 {
+				return errors.New(incompleteConvertedCharts)
+			}
 		}
 	}
 	return nil

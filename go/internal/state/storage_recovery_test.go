@@ -348,6 +348,35 @@ func TestBetaConversionRefusesReceiptWithoutChartSummaries(t *testing.T) {
 	}
 }
 
+func TestBetaConversionAlreadyPlainHistoryKeepsStarting(t *testing.T) {
+	path, source := betaSQLiteFixture(t)
+	if err := ConvertBetaHistory(context.Background(), path, source, nil); err != nil {
+		t.Fatal(err)
+	}
+	previous := RetireRawOnOpen
+	RetireRawOnOpen = true
+	t.Cleanup(func() { RetireRawOnOpen = previous })
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.history.Exec(`DELETE FROM history_migrations WHERE name=?`, convertedChartSummaries); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	// Earlier releases already retired raw rows on some sites. No further
+	// retirement can drop their data; keep these stores usable during upgrade.
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal("already plain history cannot upgrade", err)
+	}
+	defer s.Close()
+	points, err := s.LoadSeriesBucketsOrRaw("meter", "power", 0, 10000, 0)
+	if err != nil || len(points) != 1 || points[0].N != 2300 {
+		t.Fatal("already retained summaries changed", points, err)
+	}
+}
+
 func TestQueryLimitsRejectBeforeHugeOutput(t *testing.T) {
 	s := freshStore(t)
 	if _, err := s.LoadSeriesBuckets("ev", "power", 0, 10000, maxSeriesBuckets+1); !errors.Is(err, ErrHistoryQueryLimit) {
