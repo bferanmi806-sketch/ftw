@@ -325,6 +325,27 @@ func TestBetaConversionRefusesReceiptWithoutChartSummaries(t *testing.T) {
 	if err != nil || before != after {
 		t.Fatal("incomplete destination changed", err)
 	}
+	stateBefore, err := historyFileHash(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := RetireRawOnOpen
+	RetireRawOnOpen = true
+	t.Cleanup(func() { RetireRawOnOpen = previous })
+	if s, err := Open(path); err == nil || !strings.Contains(err.Error(), "lacks chart summaries") {
+		if s != nil {
+			s.Close()
+		}
+		t.Fatal("Core accepted an older incomplete conversion", err)
+	}
+	after, err = historyFileHash(dest)
+	if err != nil || before != after {
+		t.Fatal("Core changed incomplete history", err)
+	}
+	stateAfter, err := historyFileHash(path)
+	if err != nil || stateBefore != stateAfter {
+		t.Fatal("Core changed config before refusing conversion", err)
+	}
 }
 
 func TestQueryLimitsRejectBeforeHugeOutput(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 )
 
 const convertedChartSummaries = "beta-chart-summaries-v1"
+const incompleteConvertedCharts = "converted history lacks chart summaries; preserve this directory and run conversion on a stopped pre-conversion backup"
 
 // The cursor and summaries commit together. Replay cannot add a sample twice,
 // and no destination becomes active before the complete dataset is summarized.

@@ -71,7 +71,7 @@ func ConvertBetaHistory(ctx context.Context, statePath string, source *sql.DB, r
 			return errors.New("history.db already exists without a matching conversion receipt; preserve it and investigate")
 		}
 		if summarized == 0 {
-			return errors.New("converted history lacks chart summaries; preserve this directory and run conversion on a stopped pre-conversion backup")
+			return errors.New(incompleteConvertedCharts)
 		}
 		if selected == generation {
 			return nil
