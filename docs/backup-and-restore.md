@@ -79,8 +79,9 @@ in the CLI environment if the site requires LAN auth.
 Set `state.backup_dir` to a mounted external directory to keep Core's own
 copies off the data disk; FTW must be able to write it.
 
-In Docker 0.x, stop FTW and archive the whole data directory, as in
-[Docker](native-beta.md#docker).
+In Docker 0.x, use the release image's offline `ftw-backup` helper to create
+the verified archive on another disk. See
+[Back up and restore new Docker](native-beta.md#back-up-and-restore-new-docker).
 
 On older Docker installs (1.x–3.x), open **FTW Update Center → Full backups**,
 choose **Create full backup**, then **Download** and save the `.ftwbak` file

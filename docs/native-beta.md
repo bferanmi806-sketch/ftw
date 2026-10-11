@@ -1,6 +1,6 @@
 # Install and update FTW
 
-**The first stable release of the new line is `v0.140.4`.** FTW 2.x and 3.x
+**The first stable release of the new line is `v0.140.5`.** FTW 2.x and 3.x
 get no more updates. [Svenska](setup-guide/update-sv.md).
 
 ## Quick answer
@@ -8,18 +8,26 @@ get no more updates. [Svenska](setup-guide/update-sv.md).
 | You run | Do this |
 |---|---|
 | New FTW 0.x, native | Open **More → Version → Update FTW** in the web UI, or run `ftw update` on the box. Nothing else. |
-| New FTW 0.x in Docker | Set `FTW_VERSION=v0.140.4` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
+| New FTW 0.x in Docker | Set `FTW_VERSION=v0.140.5` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
 | No FTW yet, on 64-bit Linux or a new Pi card | [Install](#install) with the stable tag. |
 | Old FTW 2.x, 3.x or the old Pi image | No update in place. Set up new FTW on a second SD card or host and keep the old one. [Steps](#coming-from-an-older-ftw) |
 | Home Assistant app | No new app yet. Run new FTW on another Linux host and connect Home Assistant over MQTT. [Steps](#coming-from-an-older-ftw) |
 | Windows or macOS | Not supported. Use a Raspberry Pi or another 64-bit Linux machine. |
 
 While an update runs, keep the box powered and do not press Restart. Wait for
-the update to finish. To go back, run `ftw rollback`.
+the update to finish. On native, `ftw rollback` returns to the previous
+compatible release. For Docker, follow [Update new Docker](#update-new-docker).
 
 The new line starts with empty data. Moving old settings, history, identity
 and goals is not ready yet. Do not copy old databases into a new install;
 if you need the old data moved, ask for help with your exact installation.
+
+Storage conversion is one part of that move. See
+[history conversion](history-conversion.md) for SQLite/Parquet and DuckDB,
+and [the native pilot](self-update.md#pilot-an-older-native-systemd-site)
+for its supported service layout. Neither is a general migration for Docker,
+Pi images or Home Assistant. Preserve the active config and its credentials,
+not just the masked config shown by the API.
 
 The rest of this page has the details, for people and agents. The owner runs
 the host; FTW supplies the commands. Native systemd and Docker on 64-bit Linux
@@ -184,7 +192,7 @@ return to [the second-card steps](#raspberry-pi-use-a-second-sd-card) first.
 This section does not update or migrate an old installation.
 
 Use the newest stable tag from [Releases](https://github.com/srcfl/ftw/releases),
-`v0.140.4` or later with no `-beta` in it. Choose a beta only if you test new
+`v0.140.5` or later with no `-beta` in it. Choose a beta only if you test new
 builds. Check that the release includes the Linux package for your
 architecture and its SHA-256 file. Do not use `releases/latest`: it still
 points to the retired 2.x line. Copy the tag from the release title; do not
@@ -464,19 +472,75 @@ image: `docker image ls ftw-local` lists them, and
 `docker image rm ftw-local:<version>` frees the space of one you no longer
 need.
 
-Back up and restore the whole data directory while FTW is stopped:
+### Back up and restore new Docker
+
+Use the `ftw-backup` tool in the same release image. It verifies a portable
+`.ftwbak` archive and retains replaced data during restore. These commands
+apply to the new Docker project above; they do not migrate an older install.
+Run them from `~/ftw-local`. Only the `ftw` service stops.
+
+Mount another disk first and replace `/media/usb/ftw-backups` with a dedicated
+directory on that disk. The container runs as UID 100, GID 101. The backup
+block creates that directory with those owners and private permissions:
 
 ```bash
-docker compose stop
-sudo tar -czf /media/usb/ftw/ftw-data-$(date +%F).tar.gz data
-docker compose start
-
-# restore
-docker compose stop
-sudo mv data data.before-restore-$(date +%F-%H%M)
-sudo tar -xzf /media/usb/ftw/ftw-data-<date>.tar.gz
-docker compose start
+(
+  set -eu
+  backup_dir=/media/usb/ftw-backups
+  sudo install -d -o 100 -g 101 -m 0700 "$backup_dir"
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup \
+    --volume "$backup_dir:/backup:z" ftw \
+    create -state /app/data/state.db -data /app/data -output /backup -progress
+  docker compose start ftw
+)
 ```
+
+The final JSON names the verified archive under `/backup`; the file is in
+`backup_dir` on the host. Keep the printed name. A backup error stops the
+block and leaves FTW stopped. Resolve it before restarting; do not treat a
+partial file as a backup.
+
+To restore, use the exact `.ftwbak` name and a compatible release image:
+
+```bash
+(
+  set -eu
+  backup_dir=/media/usb/ftw-backups
+  archive=ftw-full-backup-YYYYMMDDTHHMMSS.ftwbak
+  test -f "$backup_dir/$archive"
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup \
+    --volume "$backup_dir:/backup:ro,z" ftw \
+    restore -archive "/backup/$archive" -data /app/data -yes
+  docker compose start ftw
+)
+```
+
+Restore verifies and extracts before replacing data. Any helper error stops
+the block before Core starts. Earlier data stays under the printed
+`/app/data/.ftw-pre-restore-…` path. Keep it until you have checked config,
+identity, old and new history, goals, fresh device readings and planning.
+Wait for healthy status in `docker compose ps`, then run
+`docker compose exec ftw ftw status`.
+
+To return to the retained data, replace `safety` with that printed container
+path. Use the compatible image for those data:
+
+```bash
+(
+  set -eu
+  safety=/app/data/.ftw-pre-restore-YYYYMMDDTHHMMSS
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup ftw \
+    revert -data /app/data -safety "$safety" -yes
+  docker compose start ftw
+)
+```
+
+These helpers accept `.ftwbak`, not an old raw `.tar.gz`. Keep raw archives
+and the matching old installation for recovery; do not rename them to
+`.ftwbak`. See [full backup and restore](backup-and-restore.md).
 
 To remove it, run `docker compose down`, remove the `ftw-local` images and
 delete `~/ftw-local`.

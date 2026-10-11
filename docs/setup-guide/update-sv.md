@@ -1,6 +1,6 @@
 # Byt till nya FTW och håll det uppdaterat
 
-**Första stabila versionen av nya serien är `v0.140.4`.** FTW 2.x och 3.x får
+**Första stabila versionen av nya serien är `v0.140.5`.** FTW 2.x och 3.x får
 inga fler uppdateringar. [English](../native-beta.md).
 
 ## Kort svar
@@ -8,19 +8,27 @@ inga fler uppdateringar. [English](../native-beta.md).
 | Du kör | Gör så här |
 |---|---|
 | Nya FTW 0.x, native | Öppna **More → Version → Update FTW** i webbsidan, eller kör `ftw update` på boxen. Inget mer. |
-| Nya FTW 0.x i Docker | Sätt `FTW_VERSION=v0.140.4` i `.env` och kör `docker compose up -d --build`. [Detaljer](#docker-från-det-nya-releasepaketet) |
+| Nya FTW 0.x i Docker | Sätt `FTW_VERSION=v0.140.5` i `.env` och kör `docker compose up -d --build`. [Detaljer](#docker-från-det-nya-releasepaketet) |
 | Inget FTW än, på 64-bitars Linux eller ett nytt Pi-kort | [Installera](#installera-på-det-nya-kortet-eller-en-tom-linux-maskin) med den stabila taggen. |
 | Gamla FTW 2.x, 3.x eller den gamla Pi-imagen | Går inte att uppdatera på plats. Sätt upp nya FTW på ett andra SD-kort eller en annan maskin och behåll den gamla. [Steg](#byt-på-raspberry-pi-med-ett-nytt-sd-kort) |
 | Home Assistant-appen | Ingen ny app än. Kör nya FTW på en annan Linux-maskin och koppla Home Assistant via MQTT. [Steg](#välj-en-väg) |
 | Windows eller macOS | Stöds inte. Använd en Raspberry Pi eller en annan 64-bitars Linux-maskin. |
 
 Låt boxen ha ström och tryck inte Restart medan uppdateringen pågår. Vänta tills
-uppdateringen är klar. Vill du tillbaka, kör `ftw rollback`.
+uppdateringen är klar. På native återgår `ftw rollback` till föregående
+kompatibla release. För Docker, följ [Docker-steget](#docker-från-det-nya-releasepaketet).
 
 Nya serien börjar med tom data. Flytten av gamla inställningar, historik,
 identitet och mål är inte klar än. Kopiera inte gamla databaser till en ny
 installation; behöver du gamla data flyttade, ta hjälp med just din
 installation.
+
+Lagringskonvertering är en del av flytten. Läs
+[historikkonvertering](../history-conversion.md) för SQLite/Parquet och DuckDB
+och [native-piloten](../self-update.md#pilot-an-older-native-systemd-site)
+för dess stödda tjänstelayout. De ger ingen allmän flytt för Docker, Pi-images
+eller Home Assistant. Behåll aktiv config och dess hemligheter; API:t visar
+maskerade värden och ger ingen full export av dem.
 
 Resten av sidan har detaljerna. Den nya serien börjar med `v0.131.0-beta.1`.
 Äldre 0.x-versioner, till och med 0.130.x, hör till den gamla serien. `beta` i
@@ -175,7 +183,7 @@ kortet, gå tillbaka till kortbytet ovan. `--fresh-host` betyder att ingen
 FTW-installation eller dess data finns här, även om den är stoppad.
 
 1. Öppna [Releases](https://github.com/srcfl/ftw/releases) på din vanliga dator.
-   Välj den senaste **stabila** taggen, `v0.140.4` eller senare utan `-beta`.
+   Välj den senaste **stabila** taggen, `v0.140.5` eller senare utan `-beta`.
    Välj en beta bara om du provar nya byggen. Releasen ska ha Linux-paket och
    SHA-256-fil för din maskin. Använd inte `releases/latest`; den pekar på
    gamla 2.x.
@@ -269,6 +277,75 @@ Kontrollera även mätvärden och plan. `ftw update` och `ftw rollback` gäller
 inte den här Docker-installationen. Återgång sker genom att välja föregående
 kompatibla `FTW_VERSION` och köra Compose igen. Docker har ingen automatisk
 återgång till föregående version.
+
+### Backup och restore för nya Docker
+
+Använd `ftw-backup` från samma release-image. Verktyget verifierar ett
+portabelt `.ftwbak`-arkiv och behåller tidigare data vid restore. Stegen gäller
+det nya Compose-projektet, inte flytt av en äldre installation. Kör från
+`~/ftw-local`. Bara tjänsten `ftw` stoppas.
+
+Montera en annan disk först. Byt `/media/usb/ftw-backups` till en särskild
+backupkatalog där. Containern använder UID 100 och GID 101; blocket skapar
+katalogen med dessa ägare och privata rättigheter:
+
+```bash
+(
+  set -eu
+  backup_dir=/media/usb/ftw-backups
+  sudo install -d -o 100 -g 101 -m 0700 "$backup_dir"
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup \
+    --volume "$backup_dir:/backup:z" ftw \
+    create -state /app/data/state.db -data /app/data -output /backup -progress
+  docker compose start ftw
+)
+```
+
+Slutlig JSON anger det verifierade arkivets namn under `/backup`. Filen finns
+i `backup_dir` på värden. Spara namnet. Vid fel stannar blocket och FTW förblir
+stoppad. Lös felet innan du startar igen; en ofärdig fil är ingen backup.
+
+För restore: ange exakt `.ftwbak`-namn och använd en kompatibel release-image:
+
+```bash
+(
+  set -eu
+  backup_dir=/media/usb/ftw-backups
+  archive=ftw-full-backup-YYYYMMDDTHHMMSS.ftwbak
+  test -f "$backup_dir/$archive"
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup \
+    --volume "$backup_dir:/backup:ro,z" ftw \
+    restore -archive "/backup/$archive" -data /app/data -yes
+  docker compose start ftw
+)
+```
+
+Verktyget verifierar och packar upp innan data ersätts. Ett fel stoppar blocket
+innan Core startar. Tidigare data finns kvar i den utskrivna sökvägen
+`/app/data/.ftw-pre-restore-…`. Behåll dem tills config, identitet, gammal och ny
+historik, mål, färska mätvärden och plan har kontrollerats. Vänta på frisk
+status i `docker compose ps` och kör sedan
+`docker compose exec ftw ftw status`.
+
+För att återgå till sparade data: sätt `safety` till den utskrivna sökvägen i
+containern. Använd en image som kan läsa dessa data:
+
+```bash
+(
+  set -eu
+  safety=/app/data/.ftw-pre-restore-YYYYMMDDTHHMMSS
+  docker compose stop ftw
+  docker compose run --rm --no-deps --entrypoint /app/ftw-backup ftw \
+    revert -data /app/data -safety "$safety" -yes
+  docker compose start ftw
+)
+```
+
+Verktyget läser `.ftwbak`, inte äldre råa `.tar.gz`-arkiv. Behåll sådana arkiv
+och den matchande gamla installationen för återställning. Att döpa om filen
+gör den inte kompatibel. Läs [full backup och restore](../backup-and-restore.md).
 
 ## För agenter som hjälper till
 
