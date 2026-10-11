@@ -67,7 +67,7 @@ IDs map by name to the selected catalog. Saved device IDs, charging goals,
 SoC estimates and model state stay in state.db.
 
 SQLite settings select the cold directory unless `-cold` names the stopped
-copy. With no saved cold setting, the default is `cold` beside state.db.
+copy. With no saved cold setting, the default is `cold` in Core's working directory.
 Explicit relative settings use the old Core's working directory. An unavailable
 saved path, linked archive, or unsupported Parquet layout stops conversion;
 keep that data and its backup. The tool fingerprints the cold files, joins
@@ -75,6 +75,8 @@ readings by driver, metric and timestamp, and keeps the selected beta/hot value
 on overlap. File receipts become active only after verified publication, so
 Core can retire the duplicate archive without losing its unique or late rows.
 Changed files stop an interrupted conversion from resuming against other data.
+Planner diagnostics and bucket archives stay with their existing readers;
+the sample-day conversion leaves those files unchanged.
 
 An older summary without raw timestamps cannot prove whether an older
 archive-only row already belongs to it. Conversion stops that ambiguous case

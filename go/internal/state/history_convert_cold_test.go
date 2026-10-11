@@ -14,8 +14,58 @@ import (
 	"github.com/parquet-go/parquet-go"
 )
 
+func TestBetaColdDefaultUsesCoreWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	path := filepath.Join(root, "nested", "state.db")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE config(key TEXT PRIMARY KEY,value TEXT NOT NULL);INSERT INTO config VALUES('settings/config_v1','{"version":1,"revision":1,"document":{"config":{"state":{"path":"nested/state.db"}}}}')`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := betaConversionColdDir(context.Background(), db, path, nil)
+	if err != nil || got != filepath.Join(root, "cold") {
+		t.Fatal("default differs from Core working directory", got, err)
+	}
+}
+
+func TestBetaColdScanKeepsKnownNonSampleArchives(t *testing.T) {
+	cold := filepath.Join(t.TempDir(), "cold")
+	files := map[string]string{"diagnostics/2026/06/14.parquet": "diagnostic bytes", "2026/06/14.buckets.parquet": "bucket bytes", "2026/06/14.legacy-buckets.parquet": "older bucket bytes"}
+	for name, value := range files {
+		path := filepath.Join(cold, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(cold, "2026", "06", "14.parquet")
+	if err := writeParquetDay(path, []parquetSampleRow{{1781438400000, "meter", "power", 10}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := conversionColdPaths(cold)
+	if err != nil || len(got) != 1 || got[0] != path {
+		t.Fatal("known non-sample files entered conversion", got, err)
+	}
+	for name, value := range files {
+		data, err := os.ReadFile(filepath.Join(cold, name))
+		if err != nil || string(data) != value {
+			t.Fatal("non-sample file changed", name, err)
+		}
+	}
+}
+
 func TestBetaConversionColdOverrideKeepsAuthoritativeSettings(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	cold := filepath.Join(filepath.Dir(path), "copied-archive")
 	archive := filepath.Join(cold, "1970", "01", "01.parquet")
 	if err := os.MkdirAll(filepath.Dir(archive), 0700); err != nil {
@@ -57,6 +107,7 @@ func TestBetaConversionColdOverrideKeepsAuthoritativeSettings(t *testing.T) {
 
 func TestBetaConversionColdLateRowsKeepSummaryOnlyPrefix(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	old, err := sql.Open("sqlite", BetaHistoryDatabasePath(path))
 	if err != nil {
 		t.Fatal(err)
@@ -110,6 +161,7 @@ func TestBetaConversionColdLateRowsKeepSummaryOnlyPrefix(t *testing.T) {
 
 func TestBetaConversionColdAmbiguousSummaryStopsBeforePublish(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	old, err := sql.Open("sqlite", BetaHistoryDatabasePath(path))
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +200,7 @@ func TestBetaConversionColdAmbiguousSummaryStopsBeforePublish(t *testing.T) {
 
 func TestBetaConversionRefusesOldReceiptWithRetainedColdFile(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	if err := ConvertBetaHistory(context.Background(), path, source, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -179,6 +232,7 @@ func TestBetaConversionRefusesOldReceiptWithRetainedColdFile(t *testing.T) {
 
 func TestBetaConversionMergesRetainedParquetBeforeRetirement(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	cold := filepath.Join(filepath.Dir(path), "cold")
 	archive := filepath.Join(cold, "1970", "01", "01.parquet")
 	if err := os.MkdirAll(filepath.Dir(archive), 0700); err != nil {
@@ -249,6 +303,7 @@ func TestBetaConversionMergesRetainedParquetBeforeRetirement(t *testing.T) {
 
 func TestBetaConversionRetainedParquetResumeRejectsChangedFile(t *testing.T) {
 	path, source := betaSQLiteFixture(t)
+	t.Chdir(filepath.Dir(path))
 	archive := filepath.Join(filepath.Dir(path), "cold", "1970", "01", "01.parquet")
 	if err := os.MkdirAll(filepath.Dir(archive), 0700); err != nil {
 		t.Fatal(err)

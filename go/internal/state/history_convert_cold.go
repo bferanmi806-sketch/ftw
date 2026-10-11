@@ -23,7 +23,7 @@ func betaConversionColdDir(ctx context.Context, cfg *sql.DB, statePath string, o
 	var raw string
 	err := cfg.QueryRowContext(ctx, `SELECT value FROM config WHERE key=?`, configurationKey).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return filepath.Join(filepath.Dir(statePath), "cold"), nil
+		return filepath.Abs("cold")
 	}
 	if err != nil {
 		return "", err
@@ -46,7 +46,7 @@ func betaConversionColdDir(ctx context.Context, cfg *sql.DB, statePath string, o
 		return "", errors.New("stored settings have no config")
 	}
 	if doc.Config.State == nil || doc.Config.State.ColdDir == "" {
-		return filepath.Join(filepath.Dir(statePath), "cold"), nil
+		return filepath.Abs("cold")
 	}
 	// Core resolves explicit relative cold paths from its working directory.
 	return availableConversionColdDir(doc.Config.State.ColdDir)
@@ -78,15 +78,26 @@ func conversionColdPaths(cold string) ([]string, error) {
 		if err != nil {
 			return err
 		}
+		rel, err := filepath.Rel(cold, path)
+		if err != nil {
+			return err
+		}
+		if rel == "diagnostics" {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// These files belong to Core's bucket importer, not the long-format
+		// sample parser. Keep them for that existing handler and for backup.
+		if strings.HasSuffix(rel, ".buckets.parquet") || strings.HasSuffix(rel, ".legacy-buckets.parquet") {
+			return nil
+		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("cold archive contains a link; preserve and copy its data into a plain archive directory before conversion")
 		}
 		if entry.IsDir() || !strings.HasSuffix(path, ".parquet") {
 			return nil
-		}
-		rel, err := filepath.Rel(cold, path)
-		if err != nil {
-			return err
 		}
 		if _, err := time.Parse("2006/01/02.parquet", filepath.ToSlash(rel)); err != nil {
 			return fmt.Errorf("unsupported cold archive layout; preserve this file and use its matching format converter: %s", rel)

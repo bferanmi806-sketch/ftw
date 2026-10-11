@@ -42,7 +42,7 @@ func TestRealBetaRetainedParquetMergesDistinctReadings(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := source.Exec(`DROP TABLE ts_series_hour;INSERT INTO history_migrations VALUES('generation:cold-days');INSERT INTO ts_drivers VALUES(7,'meter');INSERT INTO ts_metrics VALUES(9,'power','W');INSERT INTO ts_samples SELECT 7,9,1800000000000+i,i/10.0 FROM range(1,5004) t(i);CHECKPOINT`); err != nil {
+	if _, err := source.Exec(`DROP TABLE ts_series_hour;INSERT INTO history_migrations(name) VALUES('generation:cold-days');INSERT INTO ts_drivers VALUES(7,'meter');INSERT INTO ts_metrics VALUES(9,'power','W');INSERT INTO ts_samples SELECT 7,9,1800000000000+i,i/10.0 FROM range(1,5004) t(i);CHECKPOINT`); err != nil {
 		t.Fatal(err)
 	}
 	type coldRow struct {
@@ -66,7 +66,7 @@ func TestRealBetaRetainedParquetMergesDistinctReadings(t *testing.T) {
 	if err = errors.Join(err, w.Close(), f.Close()); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.ConvertBetaHistory(context.Background(), path, source, nil); err != nil {
+	if err := state.ConvertBetaHistory(context.Background(), path, source, nil, cold); err != nil {
 		t.Fatal(err)
 	}
 	previous := state.RetireRawOnOpen
