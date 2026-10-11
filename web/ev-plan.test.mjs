@@ -17,6 +17,38 @@ test('reported battery level is distinct from the controller estimate and target
   assert.equal(chargingLevels({ ...known, vehicle_soc: undefined }).now, '0%', 'Core omits zero vehicle_soc');
 });
 
+test('planner start SoC is what the charging view says it is planning from', () => {
+  const info = chargingLevels({
+    ...known,
+    current_soc: .27,
+    vehicle_soc: .78,
+    vehicle_charge_limit: 0,
+    vehicle_stale: true,
+    vehicle_soc_age_s: 34 * 60,
+    soc_source: 'assumed',
+    planning_soc: .78,
+    planning_from_vehicle: true,
+    schedule: { soc: .8 },
+  });
+  assert.equal(info.now, '78%');
+  assert.equal(info.source, 'From Car · 34 min old');
+  assert.match(info.explanation, /Planning from 78% to 80%/);
+  assert.doesNotMatch(info.explanation, /confirm/);
+  const manual = chargingLevels({
+    ...known,
+    current_soc: .27,
+    vehicle_soc: .78,
+    vehicle_stale: true,
+    vehicle_soc_age_s: 90 * 60,
+    soc_source: 'assumed',
+    planning_soc: .27,
+    planning_from_vehicle: false,
+    schedule: { soc: .8 },
+  });
+  assert.match(manual.explanation, /Planning from 27% to 80%/);
+  assert.match(manual.explanation, /confirm/);
+});
+
 test('old car SoC keeps provenance and age but is not used for planning', () => {
   const info = chargingLevels({
     ...known,

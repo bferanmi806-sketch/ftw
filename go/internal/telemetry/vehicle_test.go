@@ -352,16 +352,47 @@ func TestPickVehicleForAnchorAcceptsCloudCadence(t *testing.T) {
 	}
 }
 
-func TestPickVehicleForAnchorRejectsTooOldAndDriverMarkedStale(t *testing.T) {
+func TestPickVehicleForAnchorRejectsTooOldAndKeepsStaleOutOfLiveControl(t *testing.T) {
 	s := NewStore()
 	pushVehicle(t, s, "old", 0.50, 0.80, "Stopped", false, VehicleAnchorMaxAge+time.Minute)
 	if pick := PickVehicleForAnchor(s, false, time.Now()); pick.Driver != "" {
 		t.Fatalf("reading past VehicleAnchorMaxAge: %+v", pick)
 	}
+	if pick := PlanningVehiclePick(s, false, time.Now()); pick.Driver != "" {
+		t.Fatalf("planning pick past the anchor window: %+v", pick)
+	}
 	s = NewStore()
-	pushVehicle(t, s, "marked", 0.50, 0.80, "Stopped", true, time.Minute)
-	if pick := PickVehicleForAnchor(s, false, time.Now()); pick.Driver != "" {
-		t.Fatalf("driver-marked stale reading: %+v", pick)
+	pushVehicle(t, s, "marked", 0.78, 0.80, "Stopped", true, 34*time.Minute)
+	pick := PlanningVehiclePick(s, false, time.Now())
+	if pick.Driver != "marked" || pick.SoC != 0.78 || !pick.Stale {
+		t.Fatalf("stale reading inside the anchor window: %+v", pick)
+	}
+	if live := PickBestVehicleForLoadpoint(s, false, time.Now()); live.Driver != "" {
+		t.Fatalf("stale reading became live: %+v", live)
+	}
+	if done := PickVehicleForCompletion(s, time.Now()); done.Driver != "" {
+		t.Fatalf("stale reading confirmed completion: %+v", done)
+	}
+}
+
+func TestAgedVehicleSoCStaysAnAnchorAfterDriverMarksReplayStale(t *testing.T) {
+	s := NewStore()
+	pushVehicle(t, s, "vag", .78, .80, "Stopped", false, 0)
+	aged := time.Now().Add(-34 * time.Minute)
+	s.mu.Lock()
+	if r := s.readings[key("vag", DerVehicle)]; r != nil {
+		r.SoCUpdatedAt = aged
+	}
+	s.mu.Unlock()
+	cached := .78
+	s.Update("vag", DerVehicle, 0, &cached, json.RawMessage(`{"soc":78,"soc_fresh":false,"stale":true,"charging_state":"Stopped"}`))
+	s.EmitMetric("vag", "vehicle_soc_age_s", 34*60, "s", "", "")
+	pick := PlanningVehiclePick(s, false, time.Now())
+	if pick.Driver != "vag" || pick.SoC != .78 || !pick.Stale {
+		t.Fatalf("replay of a 34-minute measurement dropped: %+v", pick)
+	}
+	if live := PickBestVehicleForLoadpoint(s, false, time.Now()); live.Driver != "" {
+		t.Fatalf("replay became live: %+v", live)
 	}
 }
 

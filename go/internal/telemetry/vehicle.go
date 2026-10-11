@@ -122,10 +122,23 @@ func PickVehicleForAnchor(s *Store, lpDeliveringPower bool, now time.Time) Vehic
 	return pickBestVehicle(s, minRank, now, VehicleAnchorMaxAge, vehiclePickAnchor)
 }
 
+// PlanningVehiclePick is the car reading an EV plan may start from.
+// A live reading wins. Otherwise a reading inside VehicleAnchorMaxAge is
+// returned and marked stale, including a cached cloud report and a
+// driver-stale replay of a measurement that is still inside that hour.
+// An empty Driver means the plan keeps the session estimate. Callers must
+// ignore ChargeLimit when Stale is set: a stale limit is not a live cap.
+func PlanningVehiclePick(s *Store, lpDeliveringPower bool, now time.Time) VehiclePick {
+	if live := PickBestVehicleForLoadpoint(s, lpDeliveringPower, now); live.Driver != "" {
+		return live
+	}
+	return PickVehicleForAnchor(s, lpDeliveringPower, now)
+}
+
 // PickBestVehicleForDisplay retains an otherwise valid last-known vehicle
-// observation after the five-minute control freshness window. The returned
-// pick is marked stale, so presentation can show provenance and age without
-// making the old SoC usable by MPC or control.
+// observation after the planning window. The returned pick is marked stale
+// so presentation can show provenance and age. Planning stops at
+// VehicleAnchorMaxAge; completion and live control stop at VehicleMaxAge.
 func PickBestVehicleForDisplay(s *Store, lpDeliveringPower bool, now time.Time) VehiclePick {
 	minRank := 0
 	if lpDeliveringPower {
@@ -199,7 +212,12 @@ func pickBestVehicle(s *Store, minRank int, now time.Time, maxAge time.Duration,
 		if len(vr.Data) > 0 {
 			_ = json.Unmarshal(vr.Data, &meta)
 		}
-		if meta.Stale && !allowAgeStale && !(use == vehiclePickAnchor && cachedObservation) {
+		// A driver stale flag keeps the value out of live control and
+		// completion. Inside the anchor window it is still the car's
+		// measured SoC — cloud drivers such as vag_vehicle mark a reading
+		// stale once it leaves their own fresh window, which is well
+		// inside VehicleAnchorMaxAge. Age, not the flag, bounds planning.
+		if meta.Stale && use == vehiclePickLive {
 			continue
 		}
 		rank := VehicleConnectedRank(meta.ChargingState)
