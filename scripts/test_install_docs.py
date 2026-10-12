@@ -71,7 +71,7 @@ printf '%s\\n' 'echo INSTALL >> "$FTW_TEST_LOG"' > "$1"''')
         blocks = re.findall(r'```bash\n(.*?)\n```',
                             (ROOT / 'docs/migration.md').read_text(), re.S)
         block = next(b for b in blocks if 'helper=/opt/ftw/releases/' in b)
-        release = self.work / 'releases' / 'v0.140.10'
+        release = self.work / 'releases' / 'v0.140.11'
         release.mkdir(parents=True)
         helper = release / 'ftw-backup'
         helper.write_text('#!/bin/bash\nset -eu\necho "helper $*" >> "$FTW_TEST_LOG"\n'
@@ -79,7 +79,7 @@ printf '%s\\n' 'echo INSTALL >> "$FTW_TEST_LOG"' > "$1"''')
         helper.chmod(0o755)
         self.stub('systemctl', 'echo "systemctl $*" >> "$FTW_TEST_LOG"')
         self.stub('chown', 'echo "chown $*" >> "$FTW_TEST_LOG"')
-        block = block.replace('tag=v0.X.Y', 'tag=v0.140.10')
+        block = block.replace('tag=v0.X.Y', 'tag=v0.140.11')
         block = block.replace('/opt/ftw/releases', str(self.work / 'releases'))
         block = block.replace('/var/lib/ftw', str(self.work / 'target'))
         for failure in ('verify', 'restore', ''):
@@ -125,7 +125,7 @@ printf '%s\\n' 'echo INSTALL >> "$FTW_TEST_LOG"' > "$1"''')
         self.assertFalse(Path(download).exists())
 
     def test_native_success_runs_download_and_removes_temp_file(self):
-        for tag in ('v0.140.10', 'v0.138.2-beta.1'):
+        for tag in ('v0.140.11', 'v0.138.2-beta.1'):
             with self.subTest(tag=tag):
                 self.log.write_text('')
                 result, calls = self.run_recipe('--fresh-host', tag=tag)

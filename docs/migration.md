@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.140.10`, which has not shipped as stable. Its published
-beta is `v0.140.10-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.140.11`, which has not shipped as stable. Its published
+beta is `v0.140.11-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
