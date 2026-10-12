@@ -60,6 +60,7 @@ class ExportTests(unittest.TestCase):
     def test_real_plain_encrypted_v2_v3_and_legacy_metadata_preserve_files(self):
         for protected, version, compressed, metadata in [(False, 3, True, "backup.json"),
                                                        (False, 2, False, "snapshot.json"),
+                                                       ("legacy protected", 2, True, "snapshot.json"),
                                                        (True, 2, True, "backup.json"),
                                                        (True, 3, True, "backup.json")]:
             with self.subTest(protected=protected, version=version):

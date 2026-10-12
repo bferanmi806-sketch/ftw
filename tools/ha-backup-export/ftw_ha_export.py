@@ -62,6 +62,10 @@ def backup_metadata(archive, entries):
     info = small_json(archive, entries[names[0]])
     if not isinstance(info.get("addons"), list):
         raise ExportError("Backup does not list its apps")
+    # Supervisor's legacy v1_protected treats string values as protected.
+    # The string is metadata, never the user's key.
+    if isinstance(info.get("protected"), str):
+        info["protected"] = True
     if not isinstance(info.get("compressed", True), bool) or not isinstance(info.get("protected", False), bool):
         raise ExportError("Invalid backup compression or encryption flag")
     return info
