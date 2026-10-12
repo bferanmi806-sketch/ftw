@@ -17,7 +17,7 @@ the guide can ship with stable.
 | New 0.x native or Docker | Keep the existing data. Follow the [normal update](native-beta.md), including a verified full backup. |
 | Old 0.x, 1.x, 2.x or SQLite-based 3.x | Export a full `.ftwbak`, or make a stopped copy of the entire data directory. Restore that backup on the separate target before its first configured start. |
 | A DuckDB beta | Preserve the DuckDB file, hot SQLite, cold archives and settings together. Run [the exact target's offline converter](history-conversion.md) on the copied data before Core opens them. |
-| Home Assistant app | Download a backup that includes FTW. Keep its password or encryption key. Its FTW component contains `/data`; it must be extracted and checked before making a full FTW backup. The complete Supervisor route is still being qualified. |
+| Home Assistant app | Download a backup that includes FTW and keep its key. Use the [offline HA exporter](https://github.com/srcfl/ftw/releases/tag/ha-export-v1-beta.1) to check and copy its FTW component, then make a full FTW backup at the old `/data` root. The complete Supervisor route is still being qualified. |
 | Only a backup remains | Identify its format and source version from its metadata. Use the checked full-backup route, or the matching old image on a separate recovery copy. |
 | Custom paths, external files or another host platform | Inventory the actual mounts, config seed, databases, archives, keys, drivers and start rules first. Resolve external paths before activation. |
 
@@ -48,6 +48,15 @@ config seed inside the data tree.
 Do not start an old Core merely to inspect the migration copy. Preserve the
 original bytes and use the full-backup inspector or converter. When a format
 or source is unknown, keep the copy and resolve that case before starting it.
+
+For a Home Assistant backup, follow the exporter's included README. It needs
+Linux and Python 3.11 or later, checks plain and protected v2/v3 components,
+and keeps checked internal driver links. It refuses outside links and unknown
+layouts. The extracted copy must be writable when the FTW helper opens old
+SQLite; WAL/SHM sidecars may be needed. Keep the original backup unchanged.
+Use the printed source version in `ftw-backup create -core-version`, and mount
+the extracted data at `/data` when making the full backup. That preserves the
+source root for verified relocation; a host path is not a replacement for it.
 
 ## Restore a full backup on a new native target
 
@@ -113,8 +122,9 @@ the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
 
-The published `.10` packages have passed representative SQLite/config copies
-from 2.3.2 and 3.8, and DuckDB copies from 3.2.0-beta.1 and 3.4.2-beta.4.
+The published `.11` packages have passed representative SQLite/config copies
+from 2.3.2 and 3.8, and DuckDB copies from 3.2.0-beta.1. The 3.4.2-beta.4
+DuckDB proof used `.10` and still needs current-target qualification.
 The tests check settings, credentials, goals, identity, historical data,
 two starts, new writes, backup/restore and matching old return. DuckDB tests
 include retained long-format Parquet and resumable conversion. Earlier
@@ -122,9 +132,10 @@ include retained long-format Parquet and resumable conversion. Earlier
 qualification.
 
 Supervisor-format tests cover plain, compressed and encrypted version 2/3
-components using the published 3.8 HA image and `.10`. They do not cover a
-complete Supervisor job, every community app, managed-driver link layout or
-HA entity continuity. An isolated Linux systemd test does not establish a
+components using the published 3.8 HA image. The offline exporter and `.11`
+copy tests also cover synthetic managed-driver choices and internal links.
+They do not cover a complete Supervisor job, every community app, a signed
+driver-channel move or HA entity continuity. An isolated Linux systemd test does not establish a
 physical Pi cutover or a power-loss recovery.
 
 Large archives on Pi/SD, external layouts, cross-platform and 32-bit sources,
@@ -142,8 +153,9 @@ en annan disk eller dator. Använd en separat värd eller ett nytt Pi-kort som m
    Aktiva SQLite-inställningar gäller före gammal YAML. Maskerad API-config
    saknar hemligheter och räcker inte som backup.
 2. Exportera allt som behövs: data, config, lösenord, nycklar, mål,
-   drivrutiner och arkiv. Home Assistant-backup behöver sin nyckel och en
-   kontrollerad läsare för FTW-komponenten.
+   drivrutiner och arkiv. Home Assistant-backup behöver sin nyckel. Använd
+   den länkade exportören för FTW-komponenten och följ dess README för full
+   backup med den gamla roten `/data`.
 3. Installera exakt målversion på den separata Linuxmaskinen. Stoppa och
    stäng av nya tjänstens autostart före import. Använd blocket ovan för en
    verifierad `.ftwbak`; det lämnar Core stoppad.
