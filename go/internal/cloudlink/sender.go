@@ -79,10 +79,20 @@ type cadence struct {
 	pricesKey  string
 	pricesAt   time.Time
 	anyAt      time.Time // last live or hb
-	rosterSeq  uint64
 	rosterAt   time.Time
 	watchUntil time.Time
+
+	// When each class was last composed, and whether a change it found is
+	// still waiting for its period. Composing reads the box, and on a Pi
+	// the loadpoint view is not free, so it happens no faster than a
+	// message could go.
+	liveCheckedAt, lpCheckedAt time.Time
+	liveWaiting, lpWaiting     bool
 }
+
+// liveCheckEvery is how often the source table is looked at, so a table
+// change goes within a second whatever the period.
+const liveCheckEvery = time.Second
 
 // run sends until the connection or the grant ends.
 func (w *writer) run(ctx context.Context, events <-chan cloudwire.Envelope) error {
@@ -154,7 +164,7 @@ func (w *writer) downlink(snap grantSnapshot, st *cadence, env cloudwire.Envelop
 			st.full = true
 		}
 		if slices.Contains(b.What, cloudwire.ResyncRoster) {
-			st.rosterSeq = 0
+			st.rosterAt = time.Time{}
 		}
 	case cloudwire.MsgPurged:
 		var b cloudwire.Purged
@@ -172,31 +182,35 @@ func (w *writer) downlink(snap grantSnapshot, st *cadence, env cloudwire.Envelop
 func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 	l := w.link
 
-	seq, roster := l.rosterNumber(snap)
 	l.mu.Lock()
 	due := l.rosterDue
 	l.rosterDue = false
+	h := time.Duration(cloudwire.Heartbeat(l.table)) * time.Millisecond
 	l.mu.Unlock()
-	if due || seq != st.rosterSeq || now.Sub(st.rosterAt) >= rosterRenew {
+	if due || st.rosterAt.IsZero() || now.Sub(st.rosterAt) >= rosterRenew {
+		_, roster := l.rosterNumber(snap)
 		if _, err := w.sendBody(snap, cloudwire.MsgRoster, &roster, true); err != nil {
 			return err
 		}
-		st.rosterSeq, st.rosterAt = seq, now
+		st.rosterAt = now
 	}
 
 	period := periodIdle
 	if now.Before(st.watchUntil) {
 		period = periodWatched
 	}
+	lpPeriod := max(period, lpPeriodMin)
 	full := st.full || now.Sub(st.lastFull) >= fullEvery
-	waiting := false
+	hbDue := now.Sub(st.anyAt) >= h
 
 	var ages map[string]int64
-	if snap.allowed(cloudwire.MsgLive) {
+	if snap.allowed(cloudwire.MsgLive) && (full || hbDue || now.Sub(st.liveCheckedAt) >= liveCheckEvery) {
+		st.liveCheckedAt = now
 		live, tableChanged := l.projectLive(snap, l.opts.Site.Live())
 		ages = live.Ages
 		key := liveKey(live)
 		changed := tableChanged || key != st.liveKey
+		st.liveWaiting = false
 		switch {
 		case full || tableChanged || (changed && now.Sub(st.liveAt) >= period):
 			if !full && !tableChanged {
@@ -210,16 +224,18 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 				st.liveKey, st.liveAt, st.anyAt = key, now, now
 			}
 		case changed:
-			waiting = true
+			st.liveWaiting = true
 		}
 	}
 
-	if snap.allowed(cloudwire.MsgLP) {
+	if snap.allowed(cloudwire.MsgLP) && (full || now.Sub(st.lpCheckedAt) >= lpPeriod) {
+		st.lpCheckedAt = now
+		st.lpWaiting = false
 		if lp, ok := l.opts.Site.Loadpoints(); ok {
 			lp = l.projectLP(snap, lp)
 			changed := st.lpLast == nil || lpChanged(*st.lpLast, lp)
 			switch {
-			case full || (changed && now.Sub(st.lpAt) >= max(period, lpPeriodMin)):
+			case full || (changed && now.Sub(st.lpAt) >= lpPeriod):
 				sent, err := w.sendBody(snap, cloudwire.MsgLP, &lp, false)
 				if err != nil {
 					return err
@@ -228,7 +244,7 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 					st.lpLast, st.lpAt = &lp, now
 				}
 			case changed:
-				waiting = true
+				st.lpWaiting = true
 			}
 		}
 	}
@@ -251,11 +267,9 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 		}
 	}
 
-	// hb never vouches for a live or lp that waits for its period.
-	l.mu.Lock()
-	h := time.Duration(cloudwire.Heartbeat(l.table)) * time.Millisecond
-	l.mu.Unlock()
-	if !waiting && now.Sub(st.anyAt) >= h {
+	// hb never vouches for a live or lp that waits for its period, and its
+	// ages were read on this tick.
+	if now.Sub(st.anyAt) >= h && !st.liveWaiting && !st.lpWaiting {
 		hb := l.heartbeat(ages)
 		sent, err := w.sendBody(snap, cloudwire.MsgHB, &hb, false)
 		if err != nil {

@@ -59,10 +59,12 @@ const (
 )
 
 type fakeSite struct {
-	mu     sync.Mutex
-	grid   int64
-	state  protocol.SourceState
-	lastOk int64
+	mu        sync.Mutex
+	grid      int64
+	state     protocol.SourceState
+	lastOk    int64
+	liveCalls int
+	lpCalls   int
 }
 
 func (s *fakeSite) setGrid(w int64) {
@@ -74,6 +76,7 @@ func (s *fakeSite) setGrid(w int64) {
 func (s *fakeSite) Live() Live {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.liveCalls++
 	return Live{
 		Fields:       map[string]int64{"1": 0, "2": s.grid, "6": 900, "10": 2100},
 		FieldSources: map[string][]string{"2": {meterName}, "6": {meterName, chargerName}, "10": {chargerName}},
@@ -86,6 +89,9 @@ func (s *fakeSite) Live() Live {
 }
 
 func (s *fakeSite) Loadpoints() (cloudwire.LP, bool) {
+	s.mu.Lock()
+	s.lpCalls++
+	s.mu.Unlock()
 	soc := int64(430)
 	return cloudwire.LP{ControlRev: 9, Loadpoints: []cloudwire.Loadpoint{{
 		ID: lpName, Src: chargerName, Plugged: true, SocPermille: &soc, SocSource: "inferred", PowerW: 2100,
@@ -505,7 +511,8 @@ func TestATableChangeGoesAtOnceWithANewRevision(t *testing.T) {
 	h.site.mu.Lock()
 	h.site.state = protocol.SourceLagging
 	h.site.mu.Unlock()
-	env := svc.waitFor(cloudwire.MsgLive, time.Second)
+	// Within the one-second look at the table, well inside the 5 s period.
+	env := svc.waitFor(cloudwire.MsgLive, 2*time.Second)
 	var l cloudwire.Live
 	_ = cloudwire.Unmarshal(env.B, &l)
 	if l.SrcRev != 2 || len(l.Sources) != 2 {
@@ -695,5 +702,24 @@ func TestChangeTestsIgnoreAgesAndNoise(t *testing.T) {
 	s2 := cloudwire.Live{Sources: map[string]cloudwire.Source{"a": {State: "live", LastOkMs: 9}}}
 	if tableKey(s1) != tableKey(s2) {
 		t.Fatal("lastOkMs moves the table")
+	}
+}
+
+// Composing reads the box. The link looks at the source table once a second
+// and at the loadpoints once a period, however fast it ticks.
+func TestTheLinkReadsTheBoxNoFasterThanItCanSend(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc) // ticks every 20 ms
+	h.grant(t)
+	svc.waitFor(cloudwire.MsgLP, 5*time.Second)
+	h.site.mu.Lock()
+	h.site.liveCalls, h.site.lpCalls = 0, 0
+	h.site.mu.Unlock()
+	time.Sleep(3 * time.Second)
+	h.site.mu.Lock()
+	live, lp := h.site.liveCalls, h.site.lpCalls
+	h.site.mu.Unlock()
+	if live > 5 || lp > 1 {
+		t.Fatalf("in 3 s the link read live %d times and loadpoints %d times", live, lp)
 	}
 }
