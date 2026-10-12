@@ -59,11 +59,21 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
 	}
 	if p.TsMs > previous {
 		if previous > 0 && p.TsMs-previous <= maxCostIntegrationGap.Milliseconds() {
-			if err := addSiteIntervalTx(ctx, tx, previous, p); err != nil {
+			var previousMissing HistoryMissing
+			err := tx.QueryRowContext(ctx, `SELECT value FROM history_site_cursor WHERE key='missing'`).Scan(&previousMissing)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err := addSiteIntervalTx(ctx, tx, previous, p, previousMissing); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.TsMs); err != nil {
+			return err
+		}
+	}
+	if p.TsMs > previous {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('missing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.Missing); err != nil {
 			return err
 		}
 	}
@@ -83,10 +93,17 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
  json=CASE WHEN excluded.last_ms>=last_ms THEN excluded.json ELSE json END,last_ms=MAX(last_ms,excluded.last_ms),
  grid_w=(grid_w*n+excluded.grid_w)/ (n+1),pv_w=(pv_w*n+excluded.pv_w)/(n+1),bat_w=(bat_w*n+excluded.bat_w)/(n+1),load_w=(load_w*n+excluded.load_w)/(n+1),bat_soc=(bat_soc*n+excluded.bat_soc)/(n+1),n=n+1,seen_ms=excluded.seen_ms`,
 		start, HistoryResolutionMS, p.TsMs, p.TsMs, 1, p.GridW, p.PVW, p.BatW, p.LoadW, p.BatSoC, p.JSON, seen)
-	return err
+	if err != nil {
+		return err
+	}
+	return putHistoryQuality(ctx, tx, "dashboard", start, HistoryResolutionMS, p.Missing)
 }
 
-func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *HistoryPoint) error {
+func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *HistoryPoint, previousMissing HistoryMissing) error {
+	point := *p
+	point.Missing |= previousMissing
+	point.ClearMissingValues()
+	p = &point
 	for from := previous; from < p.TsMs; {
 		start := bucketStart(from, ArchiveResolutionMS)
 		to := min(p.TsMs, start+ArchiveResolutionMS)
@@ -101,8 +118,11 @@ func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *Histo
 		_, err := tx.ExecContext(ctx, `INSERT INTO history_site_energy VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(start_ms,resolution_ms) DO UPDATE SET first_ms=MIN(first_ms,excluded.first_ms),last_ms=MAX(last_ms,excluded.last_ms),covered_ms=covered_ms+excluded.covered_ms,n=n+excluded.n,
  import_wh=import_wh+excluded.import_wh,export_wh=export_wh+excluded.export_wh,pv_wh=pv_wh+excluded.pv_wh,bat_charge_wh=bat_charge_wh+excluded.bat_charge_wh,bat_discharge_wh=bat_discharge_wh+excluded.bat_discharge_wh,load_wh=load_wh+excluded.load_wh,ev_wh=ev_wh+excluded.ev_wh`,
-			start, ArchiveResolutionMS, from, to, ms, intervals, math.Max(0, p.GridW)*hours, math.Max(0, -p.GridW)*hours, -p.PVW*hours, math.Max(0, p.BatW)*hours, math.Max(0, -p.BatW)*hours, p.LoadW*hours, math.Max(0, p.GridW-p.BatW-p.PVW-p.LoadW)*hours)
+			start, ArchiveResolutionMS, from, to, ms, intervals, math.Max(0, p.GridW)*hours, math.Max(0, -p.GridW)*hours, -p.PVW*hours, math.Max(0, p.BatW)*hours, math.Max(0, -p.BatW)*hours, p.LoadW*hours, siteEVWh(p, hours))
 		if err != nil {
+			return err
+		}
+		if err := putHistoryQuality(ctx, tx, "energy", start, ArchiveResolutionMS, p.Missing); err != nil {
 			return err
 		}
 		from = to
@@ -119,7 +139,15 @@ func (s *Store) siteEnergyFrom(ctx context.Context) (int64, bool, error) {
 	return from, err == nil, err
 }
 
+func siteEVWh(p *HistoryPoint, hours float64) float64 {
+	if p.Missing&(MissingGrid|MissingPV|MissingBattery|MissingLoad|MissingEV|MissingV2X) != 0 {
+		return 0
+	}
+	return math.Max(0, p.GridW-p.BatW-p.PVW-p.LoadW) * hours
+}
+
 type siteEnergyRow struct {
+	missing                                   HistoryMissing
 	start, width, first, last, covered, n     int64
 	imp, exp, pv, charge, discharge, load, ev float64
 }
@@ -130,14 +158,14 @@ type siteEnergyRow struct {
 func (s *Store) walkSiteEnergy(ctx context.Context, from, to int64, visit func(siteEnergyRow) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := s.history.QueryContext(ctx, `SELECT * FROM history_site_energy WHERE start_ms>=? AND start_ms<? AND first_ms>=? AND last_ms<=? ORDER BY start_ms`, bucketStart(from, EnergyLedgerDailyBucketMS), to, from, to)
+	rows, err := s.history.QueryContext(ctx, `SELECT e.*,COALESCE(q.missing,0) FROM history_site_energy e LEFT JOIN history_quality q ON q.kind='energy' AND q.start_ms=e.start_ms AND q.resolution_ms=e.resolution_ms WHERE e.start_ms>=? AND e.start_ms<? AND first_ms>=? AND last_ms<=? ORDER BY e.start_ms`, bucketStart(from, EnergyLedgerDailyBucketMS), to, from, to)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var r siteEnergyRow
-		if err := rows.Scan(&r.start, &r.width, &r.first, &r.last, &r.covered, &r.n, &r.imp, &r.exp, &r.pv, &r.charge, &r.discharge, &r.load, &r.ev); err != nil {
+		if err := rows.Scan(&r.start, &r.width, &r.first, &r.last, &r.covered, &r.n, &r.imp, &r.exp, &r.pv, &r.charge, &r.discharge, &r.load, &r.ev, &r.missing); err != nil {
 			return err
 		}
 		if err := visit(r); err != nil {
@@ -157,6 +185,7 @@ func (s *Store) aggregateDayEnergy(ctx context.Context, from, to int64) (DayEner
 		out.BatDischargedWh += r.discharge
 		out.LoadWh += r.load
 		out.Intervals += r.n
+		out.Missing |= r.missing
 		return nil
 	})
 	return out, err

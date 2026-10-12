@@ -22,10 +22,14 @@ func (s *Store) maintainDashboard(ctx context.Context, now time.Time) error {
 	for {
 		var n int64
 		err := s.writeArchiveBatch(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM history_quality WHERE kind='dashboard' AND (start_ms,resolution_ms) IN (SELECT start_ms,resolution_ms FROM history_dashboard WHERE last_ms<? ORDER BY last_ms LIMIT 128)`, now.Add(-AggregateRetention).UnixMilli()); err != nil {
+				return err
+			}
 			result, err := tx.ExecContext(ctx, `DELETE FROM history_dashboard WHERE (start_ms,resolution_ms) IN (SELECT start_ms,resolution_ms FROM history_dashboard WHERE last_ms<? ORDER BY last_ms LIMIT 128)`, now.Add(-AggregateRetention).UnixMilli())
 			if err != nil {
 				return err
 			}
+
 			n, err = result.RowsAffected()
 			return err
 		})
@@ -69,6 +73,12 @@ func (s *Store) rollDashboard(ctx context.Context, source, width, cutoff int64) 
 					p.start, width, p.first, p.last, p.n, p.grid/n, p.pv/n, p.bat/n, p.load/n, p.soc/n, p.json); err != nil {
 					return err
 				}
+				if err := putHistoryQuality(ctx, tx, "dashboard", p.start, width, p.missing); err != nil {
+					return err
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM history_quality WHERE kind='dashboard' AND resolution_ms=? AND start_ms>=? AND start_ms<?`, source, from, to); err != nil {
+				return err
 			}
 			_, err := tx.ExecContext(ctx, `DELETE FROM history_dashboard WHERE resolution_ms=? AND start_ms>=? AND start_ms<?`, source, from, to)
 			return err
@@ -88,14 +98,15 @@ func (s *Store) rollDashboard(ctx context.Context, source, width, cutoff int64) 
 }
 
 type dashboardRollup struct {
+	missing                  HistoryMissing
 	start, first, last, n    int64
 	grid, pv, bat, load, soc float64
 	json                     string
 }
 
 func readDashboardRollup(ctx context.Context, tx *sql.Tx, source, width, from, to int64) ([]dashboardRollup, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT start_ms,first_ms,last_ms,n,grid_w,pv_w,bat_w,load_w,bat_soc,json
- FROM history_dashboard WHERE resolution_ms=? AND start_ms>=? AND start_ms<? ORDER BY start_ms`, source, from, to)
+	rows, err := tx.QueryContext(ctx, `SELECT d.start_ms,first_ms,last_ms,n,grid_w,pv_w,bat_w,load_w,bat_soc,json,COALESCE(q.missing,0)
+ FROM history_dashboard d LEFT JOIN history_quality q ON q.kind='dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE d.resolution_ms=? AND d.start_ms>=? AND d.start_ms<? ORDER BY d.start_ms`, source, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +114,7 @@ func readDashboardRollup(ctx context.Context, tx *sql.Tx, source, width, from, t
 	var points []dashboardRollup
 	for rows.Next() {
 		var p dashboardRollup
-		if err := rows.Scan(&p.start, &p.first, &p.last, &p.n, &p.grid, &p.pv, &p.bat, &p.load, &p.soc, &p.json); err != nil {
+		if err := rows.Scan(&p.start, &p.first, &p.last, &p.n, &p.grid, &p.pv, &p.bat, &p.load, &p.soc, &p.json, &p.missing); err != nil {
 			return nil, err
 		}
 		if p.n <= 0 {
@@ -122,6 +133,7 @@ func readDashboardRollup(ctx context.Context, tx *sql.Tx, source, width, from, t
 			a.last, a.json = p.last, p.json
 		}
 		a.n += p.n
+		a.missing |= p.missing
 		a.grid += p.grid
 		a.pv += p.pv
 		a.bat += p.bat
@@ -151,10 +163,19 @@ func (s *Store) rollSiteEnergy(ctx context.Context, cutoff int64) error {
 		// live writer while it computes its small additive result.
 		var r siteEnergyRow
 		err := s.rollupTransaction(ctx, func(ctx context.Context, tx *sql.Tx) error {
+			if err := tx.QueryRowContext(ctx, `SELECT COALESCE(`+historyMissingAggregate+`,0) FROM history_quality WHERE kind='energy' AND resolution_ms=? AND start_ms>=? AND start_ms<?`, ArchiveResolutionMS, from, to).Scan(&r.missing); err != nil {
+				return err
+			}
 			return tx.QueryRowContext(ctx, `SELECT MIN(first_ms),MAX(last_ms),SUM(covered_ms),SUM(n),SUM(import_wh),SUM(export_wh),SUM(pv_wh),SUM(bat_charge_wh),SUM(bat_discharge_wh),SUM(load_wh),SUM(ev_wh) FROM history_site_energy WHERE resolution_ms=? AND start_ms>=? AND start_ms<?`, ArchiveResolutionMS, from, to).Scan(&r.first, &r.last, &r.covered, &r.n, &r.imp, &r.exp, &r.pv, &r.charge, &r.discharge, &r.load, &r.ev)
 		}, func(ctx context.Context, tx *sql.Tx) error {
 			_, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO history_site_energy VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, from, width, r.first, r.last, r.covered, r.n, r.imp, r.exp, r.pv, r.charge, r.discharge, r.load, r.ev)
 			if err != nil {
+				return err
+			}
+			if err := putHistoryQuality(ctx, tx, "energy", from, width, r.missing); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM history_quality WHERE kind='energy' AND resolution_ms=? AND start_ms>=? AND start_ms<?`, ArchiveResolutionMS, from, to); err != nil {
 				return err
 			}
 			_, err = tx.ExecContext(ctx, `DELETE FROM history_site_energy WHERE resolution_ms=? AND start_ms>=? AND start_ms<?`, ArchiveResolutionMS, from, to)

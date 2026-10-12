@@ -37,6 +37,11 @@ A separate module requires a concrete benefit and:
 
 A percentage goal and a goal to reach the car's own limit are distinct.
 State schema 7 blocks rollback to a Core that would ignore the saved goal mode.
+State schema 8 adds durable missing-value evidence for chart and energy buckets.
+An offline flow leaves other devices recording. Missing inputs make only their
+values and the derived household balance unknown. Retention, downsampling and
+full backups keep that evidence; a recovered sample cannot fill an earlier gap.
+Use a matching full backup when returning to an older Core.
 `GET /api/loadpoints` advertises `vehicle_limit_goal_supported`; clients must
 require that flag before saving `schedule.finish_at_vehicle_limit`. Existing
 percentage goals keep their meaning. In vehicle-limit mode, the planner uses

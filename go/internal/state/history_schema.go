@@ -2,7 +2,7 @@ package state
 
 var historySchema = append(append([]string{}, sqliteLegacyHistoryStmts...),
 	`CREATE TABLE IF NOT EXISTS ts_latest (driver_id INTEGER NOT NULL,metric_id INTEGER NOT NULL,ts_ms INTEGER NOT NULL,value REAL NOT NULL,PRIMARY KEY(driver_id,metric_id)) WITHOUT ROWID`,
-	dashboardSchema, siteEnergySchema, siteEnergyCursorSchema,
+	dashboardSchema, siteEnergySchema, siteEnergyCursorSchema, historyQualitySchema, historyDailyQualitySchema,
 	`CREATE INDEX IF NOT EXISTS idx_dashboard_last ON history_dashboard(last_ms)`,
 	`CREATE INDEX IF NOT EXISTS idx_dashboard_age ON history_dashboard(resolution_ms,start_ms)`,
 	`CREATE INDEX IF NOT EXISTS idx_site_energy_age ON history_site_energy(resolution_ms,start_ms)`,
