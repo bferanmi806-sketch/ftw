@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.141.3`, which has not shipped as stable. The published
-beta is `v0.141.3-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.141.4`, which has not shipped as stable. The published
+beta is `v0.141.4-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -138,6 +138,13 @@ only the source start rules recorded before the move. Keep data collected on
 the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
+
+The published `v0.141.4-beta.1` Core passed healthy, offline and invalid
+balance cases over two starts each on separate synthetic Linux copies.
+Known meter values remain in history while missing flows and totals stay
+unknown. It also records the time spent in forecast connection, query, scan
+and decode phases when a read fails. The timeout cause remains unproven.
+These checks do not qualify the older migration routes against this beta.
 
 The published `v0.141.2-beta.1` Core and helper preserve partial history in
 a full backup. Small synthetic meter/battery cases passed two starts,
