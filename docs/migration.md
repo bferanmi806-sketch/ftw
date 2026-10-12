@@ -156,6 +156,15 @@ They do not cover a complete Supervisor job, every community app, a signed
 driver-channel move or HA entity continuity. An isolated Linux systemd test does not establish a
 physical Pi cutover or a power-loss recovery.
 
+A separate two-host Linux ARM64 test moved a synthetic 3.8 custom systemd
+source to a fresh `v0.141.0-beta.1` native target. The exact published old
+helper created the full backup. Both hosts restarted with only the selected
+Core enabled. The checks retained the source's exact chart rows and stored
+hours, settings, credentials, goals and keys, verified new writes, and
+returned to the matching old binary while keeping the target data. The
+installer ran on the fresh target; this does not qualify an in-place
+install, every custom service, physical equipment or a Pi power cycle.
+
 The published `v0.141.0-beta.1` Linux ARM64 backup helper also passed process
 crash tests during preservation, activation, return and a later extraction.
 The tests check that incomplete copies cannot replace active data, all old
