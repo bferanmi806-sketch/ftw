@@ -15,6 +15,8 @@ const (
 	PushDriverOffline           = "driver.offline"
 	PushFuseOverLimit           = "fuse.over_limit"
 	PushBoxUnreachable          = "box.unreachable"
+	PushCloudGranted            = "cloud.granted"
+	PushCloudRevoked            = "cloud.revoked"
 )
 
 // PushSentence is one lock-screen sentence, exactly as the app wrote it.
@@ -33,4 +35,6 @@ var PushSentences = map[string]PushSentence{
 	PushDriverOffline:           {Title: "A device went quiet", Body: "{name} stopped answering."},
 	PushFuseOverLimit:           {Title: "The house is drawing too much", Body: "{phase} is over the fuse rating."},
 	PushBoxUnreachable:          {Title: "Your box is out of reach", Body: "It stopped answering. Power cut, or the internet at home is down."},
+	PushCloudGranted:            {Title: "FTW Cloud is on", Body: "Your box now shares a copy of its readings with FTW Cloud. You can turn it off in the app or on the box."},
+	PushCloudRevoked:            {Title: "FTW Cloud is off", Body: "Your box stopped sharing with FTW Cloud and asked it to delete its copy."},
 }
