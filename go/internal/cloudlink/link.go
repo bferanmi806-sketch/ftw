@@ -187,8 +187,11 @@ func New(opts Options) (*Link, error) {
 			pool = x509.NewCertPool()
 		}
 		pemBytes, err := os.ReadFile(DevRootCA)
-		if err != nil || !pool.AppendCertsFromPEM(pemBytes) {
-			return nil, fmt.Errorf("cloudlink: reading dev root CA %s: %v", DevRootCA, err)
+		if err != nil {
+			return nil, fmt.Errorf("cloudlink: reading dev root CA: %w", err)
+		}
+		if !pool.AppendCertsFromPEM(pemBytes) {
+			return nil, fmt.Errorf("cloudlink: %s holds no certificate Go can use", DevRootCA)
 		}
 		opts.RootCAs = pool
 	}

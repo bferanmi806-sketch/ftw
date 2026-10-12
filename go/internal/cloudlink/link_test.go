@@ -668,19 +668,28 @@ func TestBudgetRollsOver24HoursOfUptime(t *testing.T) {
 	}
 }
 
-func TestChangeTestsIgnoreAges(t *testing.T) {
+func TestChangeTestsIgnoreAgesAndNoise(t *testing.T) {
 	age := int64(5)
 	a := cloudwire.LP{Loadpoints: []cloudwire.Loadpoint{{ID: "x", SocAgeS: &age, Manual: &cloudwire.Manual{SinceAgeMs: 1}}},
 		Feedback: []cloudwire.Feedback{{Kind: "ev", AgeMs: &age}}}
 	older := int64(500)
 	b := cloudwire.LP{Loadpoints: []cloudwire.Loadpoint{{ID: "x", SocAgeS: &older, Manual: &cloudwire.Manual{SinceAgeMs: 900}}},
 		Feedback: []cloudwire.Feedback{{Kind: "ev", AgeMs: &older}}}
-	if lpKey(a) != lpKey(b) {
+	if lpChanged(a, b) {
 		t.Fatal("lp differs only in ages and still counts as changed")
 	}
-	b.Loadpoints[0].PowerW = 1
-	if lpKey(a) == lpKey(b) {
-		t.Fatal("a power change does not count")
+	b.Loadpoints[0].PowerW = 90
+	if lpChanged(a, b) {
+		t.Fatal("90 W of noise counts as a change")
+	}
+	b.Loadpoints[0].PowerW = 101
+	if !lpChanged(a, b) {
+		t.Fatal("a power change past the band does not count")
+	}
+	b.Loadpoints[0].PowerW = 0
+	b.Loadpoints[0].Plugged = true
+	if !lpChanged(a, b) {
+		t.Fatal("a plug-in does not count")
 	}
 	s1 := cloudwire.Live{Sources: map[string]cloudwire.Source{"a": {State: "live", LastOkMs: 1}}}
 	s2 := cloudwire.Live{Sources: map[string]cloudwire.Source{"a": {State: "live", LastOkMs: 9}}}

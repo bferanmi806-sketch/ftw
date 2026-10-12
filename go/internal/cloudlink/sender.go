@@ -74,7 +74,7 @@ type cadence struct {
 	lastFull   time.Time
 	liveKey    string
 	liveAt     time.Time
-	lpKey      string
+	lpLast     *cloudwire.LP
 	lpAt       time.Time
 	pricesKey  string
 	pricesAt   time.Time
@@ -217,8 +217,7 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 	if snap.allowed(cloudwire.MsgLP) {
 		if lp, ok := l.opts.Site.Loadpoints(); ok {
 			lp = l.projectLP(snap, lp)
-			key := lpKey(lp)
-			changed := key != st.lpKey
+			changed := st.lpLast == nil || lpChanged(*st.lpLast, lp)
 			switch {
 			case full || (changed && now.Sub(st.lpAt) >= max(period, lpPeriodMin)):
 				sent, err := w.sendBody(snap, cloudwire.MsgLP, &lp, false)
@@ -226,7 +225,7 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 					return err
 				}
 				if sent {
-					st.lpKey, st.lpAt = key, now
+					st.lpLast, st.lpAt = &lp, now
 				}
 			case changed:
 				waiting = true
@@ -401,10 +400,12 @@ func tableKey(l cloudwire.Live) string {
 	return digest([]any{table, l.FieldSources})
 }
 
+// lpKey is lp without its ages and its measured values, which lpChanged
+// compares with a deadband instead.
 func lpKey(lp cloudwire.LP) string {
 	c := cloudwire.LP{ControlRev: lp.ControlRev}
 	for _, p := range lp.Loadpoints {
-		p.SocAgeS = nil
+		p.SocAgeS, p.SocPermille, p.PowerW, p.SessionWh = nil, nil, 0, 0
 		if p.Manual != nil {
 			m := *p.Manual
 			m.SinceAgeMs = 0
@@ -413,10 +414,55 @@ func lpKey(lp cloudwire.LP) string {
 		c.Loadpoints = append(c.Loadpoints, p)
 	}
 	for _, f := range lp.Feedback {
-		f.AgeMs = nil
+		f.AgeMs, f.ActualW = nil, nil
 		c.Feedback = append(c.Feedback, f)
 	}
 	return digest(c)
+}
+
+// Deadbands for lp's measured values. A charging car moves its power every
+// reading; sending lp for each would cost about 12 MB a day. A change of
+// state goes at once, a reading only when it moved by more than this, and
+// the full lp every 15 minutes carries exact values. Live field 10 carries
+// the site's charging power every period anyway.
+const (
+	lpPowerBandW      = 100
+	lpPowerBandRatio  = 0.05
+	lpEnergyBandWh    = 100
+	lpSocBandPermille = 10
+)
+
+// lpChanged reports whether cur says something prev did not.
+func lpChanged(prev, cur cloudwire.LP) bool {
+	if lpKey(prev) != lpKey(cur) {
+		return true
+	}
+	moved := func(a, b int64) bool {
+		band := max(lpPowerBandW, int64(lpPowerBandRatio*float64(max(abs(a), abs(b)))))
+		return abs(a-b) > band
+	}
+	for i, p := range cur.Loadpoints {
+		q := prev.Loadpoints[i]
+		if moved(q.PowerW, p.PowerW) || abs(q.SessionWh-p.SessionWh) >= lpEnergyBandWh ||
+			(q.SocPermille == nil) != (p.SocPermille == nil) ||
+			(p.SocPermille != nil && abs(*q.SocPermille-*p.SocPermille) >= lpSocBandPermille) {
+			return true
+		}
+	}
+	for i, f := range cur.Feedback {
+		g := prev.Feedback[i]
+		if (g.ActualW == nil) != (f.ActualW == nil) || (f.ActualW != nil && moved(*g.ActualW, *f.ActualW)) {
+			return true
+		}
+	}
+	return false
+}
+
+func abs(v int64) int64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func pricesKey(p cloudwire.Prices) string {
