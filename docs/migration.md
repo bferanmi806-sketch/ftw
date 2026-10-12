@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.140.11`, which has not shipped as stable. Its published
-beta is `v0.140.11-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.141.0`, which has not shipped as stable. Its next
+beta is `v0.141.0-beta.1`; package qualification is pending. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -98,6 +98,23 @@ For a new Docker target, use its separate Compose project and the
 stopped through any conversion. Do not attach new Core to the source's live
 data volume.
 
+## If import or return stops
+
+Keep both Core processes and their autostart off. Retain the full backup and
+all active, staging and safety directories. Do not delete a hidden directory
+or bypass a check to make the command succeed.
+
+The new helper checks a restore point's complete file list before reverting.
+It refuses a partial point, an older point without that record, or a retry
+that would treat a partly moved active directory as complete. Recover the
+verified full backup into a separate directory instead; retain the current
+files too, including readings written after that backup.
+
+If recovery returns `safety_complete: false`, the previous complete data have
+returned, but the retained rejected target is partial. Keep it for inspection;
+do not start Core from it or try to switch back to it. Check the recovered
+installation and its start rules before enabling control.
+
 ## Switch control and verify
 
 1. Stop old Core and its updater. Disable the confirmed old systemd, Compose,
@@ -122,7 +139,7 @@ the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
 
-The published `.11` packages have passed representative SQLite/config copies
+The published `v0.140.11-beta.1` packages have passed representative SQLite/config copies
 from 2.3.2 and 3.8, and DuckDB copies from 3.2.0-beta.1. The 3.4.2-beta.4
 DuckDB proof used `.10` and still needs current-target qualification.
 The tests check settings, credentials, goals, identity, historical data,
@@ -166,6 +183,13 @@ en annan disk eller dator. Använd en separat värd eller ett nytt Pi-kort som m
 6. Starta nya Core. Kontrollera config, mål, identitet, gamla tidsperioder,
    arkiv, färska enhetsvärden, plan och nya skrivningar. Upprepa efter en
    planerad omstart och kontrollera att gamla Core fortfarande är avstängd.
+
+Vid ett avbrott eller fel: håll båda Core och deras autostart avstängda.
+Behåll backupen och alla data-, staging- och återställningskataloger. En
+ofullständig eller äldre återställningspunkt utan kvitto ska inte tvingas
+igång. Återställ fullbackupen till en separat katalog och behåll också data
+som skrevs efter backupen. `safety_complete: false` betyder att den sparade
+avvisade målkopian är ofullständig; använd den inte för en ny start.
 
 Vid återgång: stoppa nya Core först och använd rätt gammal version med dess
 sparade data. Behåll också nya data. Guidens provade datafall är avgränsade;

@@ -169,6 +169,15 @@ Pass `-config` to `create` when the seed has
 a name other than `<data>/config.yaml`. The config seed must be inside the
 data directory.
 
+
+From `v0.141.0-beta.1`, the helper records and checks a complete previous file
+list before revert. An interrupted move or an older safety point without that
+record stops before another import or revert can certify a partial directory.
+Keep Core stopped and retain all directories. Restore a verified full backup
+to a separate target; do not remove the check or discard newer readings.
+A returned `safety_complete: false` refers to the retained rejected target,
+which must not be reactivated. See [the migration guide](migration.md#if-import-or-return-stops).
+
 ## Svenska – kortversion att skicka till en användare
 
 1. Sätt i ett USB-minne eller anslut en annan disk till datorn där FTW körs.
