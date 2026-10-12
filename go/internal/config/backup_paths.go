@@ -2,9 +2,13 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +49,13 @@ func RelocateBackup(staging, target, source, databaseFile, seedFile string) erro
 		if source == "" {
 			source = backupSourceRoot(cfg, databaseFile)
 		}
+		if source == "" {
+			var err error
+			source, err = backupDriverSourceRoot(staging, databaseFile)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if err := relocateBackupPaths(cfg, source, target, databaseFile, seedFile); err != nil {
 			return nil, err
 		}
@@ -54,6 +65,12 @@ func RelocateBackup(staging, target, source, databaseFile, seedFile string) erro
 	}
 	if source == "" && !active {
 		source = backupSourceRoot(seed, databaseFile)
+		if source == "" {
+			source, err = backupDriverSourceRoot(staging, databaseFile)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if err := state.RewriteBackupDriverPaths(filepath.Join(staging, databaseFile), func(value string) (string, error) {
 		return relocateBackupDriverPath(value, source, target)
@@ -84,6 +101,53 @@ func RelocateBackup(staging, target, source, databaseFile, seedFile string) erro
 		return err
 	}
 	return writeConfigAtomic(defaultDurableWriter, seedPath, encoded)
+}
+
+// Old default-path manifests have no recorded root. Bind it to archived driver
+// bytes and their stored path/hash, rather than guessing from a directory name.
+func backupDriverSourceRoot(staging, databaseFile string) (string, error) {
+	files, err := state.BackupDriverFiles(filepath.Join(staging, databaseFile))
+	if err != nil || len(files) == 0 {
+		return "", err
+	}
+	root := ""
+	err = filepath.WalkDir(staging, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(staging, path)
+		if err != nil {
+			return err
+		}
+		for installed, hash := range files {
+			if !filepath.IsAbs(installed) || !strings.HasSuffix(filepath.Clean(installed), string(filepath.Separator)+rel) {
+				continue
+			}
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			h := sha256.New()
+			_, err = io.Copy(h, f)
+			f.Close()
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), hash) {
+				continue
+			}
+			candidate := filepath.Clean(strings.TrimSuffix(filepath.Clean(installed), rel))
+			if root != "" && candidate != root {
+				return errors.New("backup driver files imply different source roots; map external files before moving")
+			}
+			root = candidate
+		}
+		return nil
+	})
+	return root, err
 }
 
 func relocateBackupDriverPath(value, source, target string) (string, error) {

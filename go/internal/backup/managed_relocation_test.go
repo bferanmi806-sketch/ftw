@@ -15,13 +15,18 @@ import (
 	"github.com/srcfl/ftw/go/internal/state"
 )
 
-func managedBackupFixture(t *testing.T, previousExternal bool) (string, string) {
+func managedBackupFixture(t *testing.T, previousExternal bool, defaults ...bool) (string, string) {
 	t.Helper()
 	source := t.TempDir()
 	root := filepath.Join(source, "custom-repository")
 	database := filepath.Join(source, "state.db")
 	seed := filepath.Join(source, "config.yaml")
-	writeTestFile(t, seed, "site:\n  name: Driver migration\nfuse:\n  max_amps: 16\nstate:\n  path: "+database+"\ndevice_repository:\n  enabled: true\n  root_dir: "+root+"\n")
+	text := "site:\n  name: Driver migration\nfuse:\n  max_amps: 16\nstate:\n  path: " + database + "\ndevice_repository:\n  enabled: true\n  root_dir: " + root + "\n"
+	if len(defaults) > 0 && defaults[0] {
+		root = filepath.Join(source, "driver-repository")
+		text = "site:\n  name: Driver migration\nfuse:\n  max_amps: 16\ndevice_repository:\n  enabled: true\n"
+	}
+	writeTestFile(t, seed, text)
 	st, err := state.Open(database)
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +71,86 @@ func managedBackupFixture(t *testing.T, previousExternal bool) (string, string) 
 		t.Fatal(err)
 	}
 	return source, info.Path
+}
+
+func TestRestoreOldManagedBackupWithDefaultPaths(t *testing.T) {
+	source, archive := managedBackupFixture(t, false, true)
+	archive = withoutRelocationMetadata(t, archive)
+	target := t.TempDir()
+	result, err := RestoreContents(archive, target, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		cfg, err := config.Load(filepath.Join(target, "config.yaml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := state.Open(filepath.Join(target, "state.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := driverrepo.New(cfg.DeviceRepository, target, st)
+		active, err := st.ActiveDriverRepoInstall("drivers/meter.lua")
+		want := filepath.Join(target, "driver-repository", "installed", "2.0.0", "meter.lua")
+		prev := filepath.Join(target, "driver-repository", "installed", "1.0.0", "meter.lua")
+		if err != nil || active.InstalledPath != want || active.PreviousInstalledPath != prev || active.Version != "2.0.0" {
+			st.Close()
+			t.Fatalf("default-path selection at start %d: %+v %v", i, active, err)
+		}
+		path, err := filepath.EvalSymlinks(filepath.Join(m.EffectiveDir(), "meter.lua"))
+		resolvedWant, _ := filepath.EvalSymlinks(want)
+		st.Close()
+		if err != nil || path != resolvedWant {
+			t.Fatalf("effective driver: %s %v", path, err)
+		}
+	}
+	if _, err := RevertContents(target, result.SafetyDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(source, "driver-repository", "installed", "2.0.0", "meter.lua")); err != nil {
+		t.Fatal("source changed:", err)
+	}
+}
+
+func TestRestoreOldManagedBackupRejectsUnboundRoot(t *testing.T) {
+	for _, ambiguous := range []bool{false, true} {
+		t.Run(map[bool]string{false: "wrong-hash", true: "ambiguous-root"}[ambiguous], func(t *testing.T) {
+			source, _ := managedBackupFixture(t, false, true)
+			for _, version := range []string{"1.0.0", "2.0.0"} {
+				path := filepath.Join(source, "driver-repository", "installed", version, "meter.lua")
+				if ambiguous {
+					body, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					writeTestFile(t, filepath.Join(source, "installed", version, "meter.lua"), string(body))
+				} else {
+					writeTestFile(t, path, "different driver bytes")
+				}
+			}
+			st, err := state.Open(filepath.Join(source, "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := Create(context.Background(), CreateOptions{State: st, StatePath: filepath.Join(source, "state.db"), DataDir: source, OutputDir: t.TempDir()})
+			st.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			archive := withoutRelocationMetadata(t, info.Path)
+			target := t.TempDir()
+			writeTestFile(t, filepath.Join(target, "prior-target"), "keep")
+			if _, err := RestoreContents(archive, target, time.Now()); err == nil {
+				t.Fatal("accepted unbound driver root")
+			}
+			body, _ := os.ReadFile(filepath.Join(target, "prior-target"))
+			entries, _ := os.ReadDir(target)
+			if string(body) != "keep" || len(entries) != 1 {
+				t.Fatal("failed restore changed target")
+			}
+		})
+	}
 }
 
 func TestRestoreKeepsManagedSelectionAndUndoPaths(t *testing.T) {

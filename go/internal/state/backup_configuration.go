@@ -71,6 +71,40 @@ func RewriteBackupConfiguration(path string, rewrite func([]byte) ([]byte, error
 	return tx.Commit()
 }
 
+// BackupDriverFiles reads the stored identities from an offline backup copy.
+// It does not create tables or change the database.
+func BackupDriverFiles(path string) (map[string]string, error) {
+	db, err := sql.Open("sqlite", ReadOnlyDatabaseURI(path))
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='driver_repo_installs'`).Scan(&tables); err != nil {
+		return nil, err
+	}
+	if tables == 0 {
+		return nil, nil
+	}
+	rows, err := db.Query(`SELECT installed_path, sha256 FROM driver_repo_installs`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	files := make(map[string]string)
+	for rows.Next() {
+		var name, hash string
+		if err := rows.Scan(&name, &hash); err != nil {
+			return nil, err
+		}
+		if prior, ok := files[name]; ok && prior != hash {
+			return nil, fmt.Errorf("backup driver path has conflicting hashes: %s", name)
+		}
+		files[name] = hash
+	}
+	return files, rows.Err()
+}
+
 // RewriteBackupDriverPaths maps durable selections and their undo paths in an
 // offline staging copy. It preserves activation, provenance and version history.
 func RewriteBackupDriverPaths(path string, rewrite func(string) (string, error)) error {
