@@ -158,8 +158,18 @@ driver choices remained. The trial used the official unsupported Supervisor
 devcontainer, not a supported HAOS host or real equipment.
 
 The full Supervisor return job restored files, but the old app failed to
-start because its private files had the wrong owner. A bounded owner repair
-on that test instance restored the matching old version and its data.
+start because its private files had the wrong owner. The separate
+[owner recovery command](https://github.com/srcfl/home-assistant-addons/blob/main/docs/restore-data-owner.md)
+now provides a checked route for that failure. Run it in the stopped app's
+matching image with only its verified data mounted. It preserves bytes,
+private file modes and internal links, and stops on external or broken links,
+hard links or extra mounts. Keep Start on boot and Watchdog off; record the
+image and data path before Supervisor removes the stopped container.
+
+A complete protected return job on that separate test instance passed the
+command, old Core start, retained chart rows and two archive hours, then a
+final stop. Its source was the same published HA 3.8 image. This command
+does not publish or update the retired app line.
 Automatic Supervisor return and HA entity continuity remain unqualified.
 Keep the original app and its data; do not treat a completed backup job as
 proof that the app can return without help.
