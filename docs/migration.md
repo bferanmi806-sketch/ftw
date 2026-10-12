@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.141.2`, which has not shipped as stable. The published
-beta is `v0.141.2-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.141.3`, which has not shipped as stable. The published
+beta is `v0.141.3-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -147,6 +147,22 @@ warning also leaves measured flows in the record. The browser shows the
 gap and warning, then new values after recovery. These checks do not qualify
 the older installation routes below against this newer beta; their actual
 tested target remains `v0.141.0-beta.1`.
+
+The published `v0.141.3-beta.1` helper also exports the older split SQLite
+history, whose schema has none of the six newer partial/quality tables.
+It refuses an incomplete set. Actual plain and protected Supervisor full
+backups from a synthetic published HA 3.8 source passed export, portable
+restore, two starts per route and revert with the published 0.141.3 packages.
+Old charts, stored hours, config, credentials, goals, identity and managed
+driver choices remained. The trial used the official unsupported Supervisor
+devcontainer, not a supported HAOS host or real equipment.
+
+The full Supervisor return job restored files, but the old app failed to
+start because its private files had the wrong owner. A bounded owner repair
+on that test instance restored the matching old version and its data.
+Automatic Supervisor return and HA entity continuity remain unqualified.
+Keep the original app and its data; do not treat a completed backup job as
+proof that the app can return without help.
 
 The published `v0.141.0-beta.1` packages have passed representative
 SQLite/settings copies from 0.130.4, 1.15.0, 2.3.2 and 3.8.0-beta.1.
