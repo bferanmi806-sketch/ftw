@@ -69,7 +69,7 @@ with a new FTW Docker image already built from its verified release package:
 ```bash
 mkdir -p ./ftw-backups
 docker run --rm --network none --user "$(id -u):$(id -g)" \
-  -v "$PWD/ftw-from-ha/data:/data:ro" \
+  -v "$PWD/ftw-from-ha/data:/data" \
   -v "$PWD/ftw-backups:/out" \
   --entrypoint /app/ftw-backup <your verified FTW image> \
   create -state /data/state.db -data /data -output /out \
@@ -77,7 +77,9 @@ docker run --rm --network none --user "$(id -u):$(id -g)" \
 ```
 
 Replace the source version with the version printed by the export; it is not
-the new helper's version. Use the helper's real path in your image. Do not
+the new helper's version. The extracted copy must be writable: SQLite may need
+to create WAL/SHM sidecars while opening an old database. The original Home
+Assistant backup stays unchanged. Use the helper's real path in your image. Do not
 run `create -data ./ftw-from-ha/data` on the host and assume that old absolute
 config paths have moved. The `/data` mount keeps that source root so verified
 restore can map config and managed-driver choices to the target directory.
