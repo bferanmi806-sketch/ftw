@@ -110,6 +110,9 @@ func (s *Store) forecastMeasurementLocked(now time.Time, siteMeter string, opts 
 		out.PVValid = false
 		out.PVReason = opts.PVInvalidReason
 	}
+	if opts.PVInvalidReason != "" || opts.HouseholdInvalidReason == "configured_pv_without_measurement_source" {
+		out.Known[DerPV] = false
+	}
 	if opts.HouseholdInvalidReason != "" {
 		fail(opts.HouseholdInvalidReason, false)
 	}

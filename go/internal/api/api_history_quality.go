@@ -47,28 +47,29 @@ func (s *Server) qualifyStatusHistory(resp map[string]any, siteMeter string) {
 				d[field] = source.PowerW
 			}
 			if source.Flow.DerType == telemetry.DerBattery {
-				d["soc"] = source.SoC
+				if source.SoC == nil {
+					d["bat_soc"] = nil
+				} else {
+					d["bat_soc"] = *source.SoC
+				}
 			}
 		}
 	}
 	var count int
-	var sum float64
 	for _, source := range r.Sources {
 		if source.Flow.DerType == telemetry.DerBattery {
 			if source.SoC == nil {
 				missing |= state.MissingSoC
 			}
 			count++
-			if source.SoC != nil {
-				sum += *source.SoC
-			}
 		}
 	}
 	if count == 0 {
 		missing |= state.MissingSoC
 	}
-	if count > 0 {
-		sum /= float64(count)
+	if missing&state.MissingSoC != 0 {
+		resp["bat_soc"] = nil
 	}
-	resp["bat_soc"] = missing.Value(state.MissingSoC, sum)
+	// handleStatus already weights known battery SoCs by capacity.
+	// Qualification only clears that value when a required input is missing.
 }

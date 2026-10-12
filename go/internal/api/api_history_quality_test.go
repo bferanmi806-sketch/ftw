@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/telemetry"
+	"math"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -55,7 +56,7 @@ func TestPartialHistoryAPIKeepsKnownFlowsAndNullsMissingValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	today := d.Days[len(d.Days)-1]
-	if today["import_wh"] != float64(10) || today["pv_wh"] != float64(2.5) || today["load_wh"] != nil || today["bat_charged_wh"] != nil || today["history_quality"] != "incomplete" {
+	if math.Abs(today["import_wh"].(float64)-10) > 1e-9 || math.Abs(today["pv_wh"].(float64)-2.5) > 1e-9 || today["load_wh"] != nil || today["bat_charged_wh"] != nil || today["history_quality"] != "incomplete" {
 		t.Fatal(today)
 	}
 	if d.Days[0]["import_wh"] != nil {
@@ -90,5 +91,46 @@ func TestLiveHistoryQualitySeparatesOfflineFromInvalidBalance(t *testing.T) {
 	srv.qualifyStatusHistory(resp, "meter")
 	if resp["bat_w"] != float64(0) || resp["load_w"] != float64(1200) || resp["history_quality"] != "complete" {
 		t.Fatal(resp)
+	}
+}
+
+func TestLiveHistoryQualityKeepsWeightedSoCAndClearsStaleDriverSoC(t *testing.T) {
+	tel := telemetry.NewStore()
+	for _, name := range []string{"meter", "large", "small"} {
+		tel.EnsureDriverHealth(name)
+	}
+	low, high := .2, .8
+	tel.Update("meter", telemetry.DerMeter, 1200, nil, nil)
+	tel.RecordDriverSuccess("meter")
+	tel.Update("large", telemetry.DerBattery, 100, &low, nil)
+	tel.RecordDriverSuccess("large")
+	tel.Update("small", telemetry.DerBattery, 100, &high, nil)
+	tel.RecordDriverSuccess("small")
+	srv := New(&Deps{Tel: tel, HistoryMeasurementSources: func() telemetry.ForecastOptions { return telemetry.ForecastOptions{} }})
+	drivers := map[string]any{"large": map[string]any{"bat_soc": low}, "small": map[string]any{"bat_soc": high}}
+	resp := map[string]any{"bat_soc": .3, "drivers": drivers}
+	srv.qualifyStatusHistory(resp, "meter")
+	if resp["bat_soc"] != .3 {
+		t.Error("capacity-weighted state of charge changed", resp)
+	}
+	tel.DriverHealthMut("small").SetOffline()
+	srv.qualifyStatusHistory(resp, "meter")
+	if resp["bat_soc"] != nil || drivers["small"].(map[string]any)["bat_soc"] != nil {
+		t.Fatal("offline battery keeps stale state of charge", resp)
+	}
+}
+
+func TestLiveHistoryQualityConfiguredPVWithoutMeasurementIsUnknown(t *testing.T) {
+	tel := telemetry.NewStore()
+	tel.EnsureDriverHealth("meter")
+	tel.Update("meter", telemetry.DerMeter, 1200, nil, nil)
+	tel.RecordDriverSuccess("meter")
+	srv := New(&Deps{Tel: tel, HistoryMeasurementSources: func() telemetry.ForecastOptions {
+		return telemetry.ForecastOptions{HouseholdInvalidReason: "configured_pv_without_measurement_source"}
+	}})
+	resp := map[string]any{}
+	srv.qualifyStatusHistory(resp, "meter")
+	if resp["pv_w"] != nil || resp["load_w"] != nil {
+		t.Fatal("unmeasured configured PV reported as zero", resp)
 	}
 }
