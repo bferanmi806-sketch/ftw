@@ -174,6 +174,14 @@ verified new writes. The broker and subscriber kept their process start
 times. The test checked saved Compose and container restart policies; it
 did not reboot Docker or the host, run the old updater, or control equipment.
 
+A separate test moved the published 2.3.2 AMD64 Docker image to the published
+`v0.141.0-beta.1` ARM64 Core and helper. All 29 checks passed, including two
+target starts, new writes and return to old Core with data, settings,
+credentials, goals, identity and shared MQTT retained. Both binary architectures
+were checked. The AMD64 source ran through emulation on Apple Silicon.
+This covers the tested Linux Docker copy across CPU architectures; it does
+not qualify 32-bit sources or native macOS/Windows paths.
+
 The published `v0.141.0-beta.1` Linux ARM64 backup helper also passed process
 crash tests during preservation, activation, return and a later extraction.
 The tests check that incomplete copies cannot replace active data, all old
