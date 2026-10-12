@@ -41,25 +41,28 @@ Fredrik decided the following on 12 October 2026.
    account of its own. `ftwcloudd` lives in a public repository,
    `srcfl/ftw-cloud`, under AGPL-3.0-only. The wire format lives in
    `go/protocol` here, under Apache-2.0
-   ([#1588](https://github.com/srcfl/ftw/pull/1588)). *Why:* a service that
-   reads household data should show its code, and a separate module keeps
-   control code out of its build.
-2. **Readable, not encrypted,** so Sourceful can compute statistics and
+   ([#1588](https://github.com/srcfl/ftw/pull/1588), where a lawyer still
+   confirms the relicensing). *Why:* a service that reads household data
+   should show its code, and a separate module keeps control code out of its
+   build.
+2. **Readable by Sourceful, not end-to-end encrypted,** so it can compute
+   statistics and
    aggregates. In return the service must be very secure. It reads and never
    controls, and never chooses which actions a user is offered. The box signs
    every message. The relay and escrow stay blind and do not change.
 3. **The iPhone app is the way into FTW Cloud,** which may become a paid
-   service. A household that wants only local operation runs the box itself,
+   service. A household that does not want FTW Cloud runs the box itself,
    updates included, with the box's own page, the webapp over the blind relay
    and ntfy. This turns away from #1323; see below.
 4. **Consent at first use,** in plain words. FTW Cloud is part of the app's
    service, on contract (GDPR art. 6(1)(b)). Statistics have their own switch
-   in the same flow, off by default, on consent (art. 6(1)(a) and 7(4)). A
-   lawyer must confirm both. Because consent comes at first use, this ADR
+   in the same flow, off by default, on consent (art. 6(1)(a)) that is free
+   in the sense of art. 7(4). A lawyer must confirm both. Because consent comes at first use, this ADR
    sets the statistics rules now.
-5. **No padding on cloud traffic.** It uses lane 1 frames, because lane 0 is
-   always padded. The service reads the content anyway, so padding would hide
-   only timing from the network, at about three times the data.
+5. **No padding on cloud traffic.** It uses lane 1 frames without the bulk
+   buckets, because lane 0 is always padded. The service reads the content
+   anyway, so padding would hide only size and timing from the network, at
+   about three times the data.
 6. **Apple sees event codes.** *Assumed; Fredrik has not answered.* Alerts
    carry the box-signed code and arguments in the APNs payload, because a
    fetch would need a token and a round trip before the alert shows.
@@ -86,11 +89,12 @@ box ──wss, TLS 1.3, signed frames──▶ ftwcloudd ◀──wss, Noise IK�
  └──Noise via the relay: commands, long history──▶ iPhone app, webapp
 ```
 
-- The box dials a fixed address over TLS 1.3 and checks a service signature
-  bound to that TLS session before it sends data, so a proxy in the middle
-  reads nothing. `ftwcloudd` ends TLS itself for that reason.
+- The box dials a fixed address over TLS 1.3. Box and service each check
+  that the other signed this TLS session's exporter value before any data
+  moves, so a proxy that ends TLS in the middle reads no household data. No
+  such proxy may sit in front of `ftwcloudd`.
 - Each message belongs to one class and each class to one scope. The box
-  drops driver names, device capabilities and inventory and uses opaque ids.
+  drops driver names and device capabilities and uses opaque ids.
   The service forwards the box's bytes unchanged, by scope.
 - The app runs Noise IK to a service key built into the app and gets the
   current state in the handshake reply. Widgets read with a short-lived token.
@@ -108,9 +112,10 @@ grant routes, limits and timers.
 **FTW Cloud reads and never controls. It never chooses the actions a user is
 offered.** Code enforces this:
 
-- The service can import only `go/protocol` from this repository, so it
-  cannot link control code. In Core, an import test keeps control, API and
-  loadpoint writers out of the uplink package.
+- The service can import only `go/protocol` from this repository, and #1588
+  checks that `go/protocol` imports nothing from Core, so the service cannot
+  link control code. In Core, an import test keeps control, API and loadpoint
+  writers out of the uplink package.
 - The service may send the box five message types. Anything else closes the
   socket, under a fuzz test. The box issues a grant only when an owner asks.
 - A false message meant to make a user tap the wrong action meets three
@@ -124,24 +129,26 @@ control path as two states.
 
 - **The grant lives on the box.** A missing grant reads as **off**, the
   opposite of `app_link`. An owner grants over an app session; any door may
-  revoke. Every change notifies all owners.
+  revoke. Every change notifies all owners. A viewer's app shows that the
+  home uses FTW Cloud, and viewers get no alerts.
 - **Scopes.** Live, history, plan, health and the new `ftw.events.read`.
   Inventory stays out.
 - **Roster.** The box signs the list of paired devices, their keys and the
   scopes their roles allow. The service learns devices only from it.
 - **Widgets** get a 7-day read token for live data and prices. It is not a
   device key and cannot command.
-- **Revocation.** A device revoke reaches the service within a second. A grant
+- **Revocation.** A device revoke reaches the service within a second while
+  the box is connected. A grant
   revoke deletes the home there, and the box keeps its key until it holds a
   signed purge receipt.
 
 ## Freshness
 
 Data read through FTW Cloud carries the new carrier state `cloud` and never
-looks fresher than the box said it was. The phone trusts a send time only
+looks fresher than the box would grade it. The phone trusts a send time only
 through an anchor it can check, and shows unanchored data as "cloud, age
-unverified", never live. A replay keeps its old send time and shows as stale.
-The service cannot sign, so it cannot clear staleness. The
+unverified", never live. The service cannot sign, so it cannot clear
+staleness. The
 [protocol](../protocol-cloud.md#freshness) states the rules and eight test
 vectors.
 
@@ -178,15 +185,13 @@ purpose or fields needs a new policy version and fresh consent.
 ## Security and retention
 
 The relay protects data by being unable to read it. The service can read it,
-so its protection comes from controls: grants only from an owner and off by
-default; a preview of the exact bytes; signed messages over TLS bound to the
-handshake; one code path to a home's data, with canary homes that alert if one
-home's data reaches another; no staff read path, under a test; two-person
-review, signed images and the running digest published at `/source`; host
-access only through logged SSM; outbound traffic only to APNs and AWS; and an
-erase test. The legal work is a privacy notice in Swedish and English, terms,
-a DPIA, records of processing, a DPA with AWS, AWS and Apple as the only
-subprocessors, a breach process, and export and erase.
+so its protection comes from controls: off by default; a preview of the exact
+bytes; one code path to a home's data, with canary homes that alert on a
+leak; no staff read path, under a test; two-person review and the running
+digest published at `/source`; host access only through logged SSM; outbound
+traffic only to APNs and AWS; and an erase test. The legal work is a privacy
+notice in Swedish and English, terms, a DPIA, records of processing, a DPA
+with AWS, a breach process, and export and erase.
 
 **The honest limit:** someone with root on the service host can read memory.
 The privacy notice says so.
@@ -194,7 +199,8 @@ The privacy notice says so.
 | Store | Kept |
 |---|---|
 | Live state | Memory only; readings dropped an hour after the box goes quiet |
-| Registry and APNs tokens | Until purge, or 90 days without a roster |
+| Registry | Until purge, or 90 days without a roster |
+| APNs registrations | Until purge, or 30 days without the box |
 | Events | A one-hour ring in memory |
 | Access logs | 14 days, with a keyed hash instead of the address |
 | SSM sessions and deploy log | 24 months |
@@ -229,11 +235,10 @@ turns away from that rule for the iPhone app, on purpose.**
 
 ## What changes from ADR 0006
 
-ADR 0006 said one remote path means one thing to threat-model, one pairing
-story and one place freshness can go wrong. For homes that turn FTW Cloud on,
-there are two paths and two places for freshness to go wrong; the carrier
-state `cloud` and box signatures answer the second. Pairing stays one story,
-because the service learns devices only from the box.
+ADR 0006 said one remote path means one thing to threat-model and one place
+freshness can go wrong. For homes that turn FTW Cloud on there are two of
+each; the carrier state `cloud` and box signatures answer the second. Pairing
+stays one story, because the service learns devices only from the box.
 
 ADR 0006 also removed Home Link partly because the relay learned the
 household. FTW Cloud brings back a stable household id at a Sourceful
@@ -259,7 +264,8 @@ later step stands on it and ships on its own.
 
 The statistics switch ships with the start flow in C4. The box records consent
 and `statsId` from then on, nothing is sent until C8, and the backfill covers
-the gap. A public launch needs C2–C4 and the legal work.
+the gap. The lawyer also confirms that order: if the DPIA in C8 changes the
+rules, the app asks again. A public launch needs C2–C4 and the legal work.
 
 ## Alternatives considered
 
@@ -267,8 +273,7 @@ the gap. A public launch needs C2–C4 and the legal work.
   path.
 - **The service in this repository:** it would link control code into an
   18 MB binary, beside the box's release keys.
-- **A proprietary service:** it cannot link AGPL code others wrote, and trust
-  would rest on promises.
+- **A proprietary service:** trust would rest on promises.
 - **Cloudflare Workers:** APNs only through undocumented behaviour, and EU-only
   TLS needs an Enterprise plan.
 - **API Gateway, IoT Core or Supabase Realtime:** per-message billing, about
@@ -278,11 +283,12 @@ the gap. A public launch needs C2–C4 and the legal work.
 
 | Risk | Cheapest way to reduce it |
 |---|---|
-| One bug exposes every home | One access path, canary homes, no readings on disk |
+| One bug exposes every home | One access path, canary homes, no live readings on disk |
 | An insider or the deploy path | Two-person review, a published digest, an SSM alert |
 | Composing state costs too much CPU on a Pi | Bench in C2 |
 | Signatures cost data on a 4G box, about 150 MB a month | Measure in C2 |
-| The network sees burst timing; Apple sees event codes | The privacy notice; no names in event arguments |
+| The network sees message sizes and timing | The privacy notice |
+| Apple sees the home id, event codes and Live Activity state | The privacy notice; no names in arguments; the M7 spike |
 | Claims or defaults drift back | Claim tests; a missing grant reads as off |
 | A paid app meets App Store purchase rules | Decide the payment path before charging |
 | AGPL code in the App Store | An App Store exception in `ftw-app` before outside code arrives |

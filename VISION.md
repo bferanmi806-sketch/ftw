@@ -243,10 +243,11 @@ the app starts fast and its alerts, widgets and Live Activities work while it
 is closed. FTW Cloud never sends control and never chooses which actions a
 user is offered; commands still go from the app to the box over the encrypted
 session. Statistics need their own consent, off by default. This turns away
-from an earlier aim that no feature should need a Sourceful service: the
-iPhone app needs FTW Cloud, while the box does not. A household that wants
-only local operation runs the box itself, updates included, and uses the
-box's own page, the webapp over the blind relay and ntfy.
+from [#1323](https://github.com/srcfl/ftw/issues/1323), which asks that no
+feature need a Sourceful service: the iPhone app needs FTW Cloud, while the
+box does not. A household that does not want FTW Cloud runs the box itself,
+updates included, and uses the box's own page, the webapp over the blind
+relay and ntfy.
 
 This document adds no new protocol operation, credential or access grant.
 New shared names belong in the contract registry and must ship with their

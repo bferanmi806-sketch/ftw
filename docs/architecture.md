@@ -356,12 +356,6 @@ NAT-traversal layer, no cloud account and no browser-managed site directory.
 See [ADR 0006](adr/0006-app-uplink.md) for why Home Link was removed rather
 than kept alongside it.
 
-Proposed, not shipped: [ADR 0008](adr/0008-ftw-cloud.md) adds FTW Cloud, a
-second outbound connection for homes whose owner turns it on. It carries a
-signed, readable copy of what the owner enabled to `cloud.ftw.energy`, and it
-never carries control. Commands and long history stay on the relay path.
-[protocol-cloud.md](protocol-cloud.md) specifies its wire format.
-
 The path is five packages:
 
 - [`go/internal/apiauth`](../go/internal/apiauth) — who is asking. One value,
@@ -401,6 +395,12 @@ The properties that matter:
   remains authoritative for telemetry freshness, validation, clamps, planning
   and dispatch. An unavailable relay leaves local control and local recovery
   intact.
+
+Proposed, not shipped: [ADR 0008](adr/0008-ftw-cloud.md) adds FTW Cloud, a
+second outbound connection for homes whose owner turns it on. It carries to
+`cloud.ftw.energy` a signed, readable copy of what the owner enabled, and it
+never carries control. Commands and long history stay on the relay path above.
+[protocol-cloud.md](protocol-cloud.md) specifies its wire format.
 
 ### Who is let in, and as what
 
