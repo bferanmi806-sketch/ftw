@@ -175,6 +175,16 @@ returned to the matching old binary while keeping the target data. The
 installer ran on the fresh target; this does not qualify an in-place
 install, every custom service, physical equipment or a Pi power cycle.
 
+A separate same-host test used the [native pilot](self-update.md#pilot-an-older-native-systemd-site)
+with a synthetic 3.8 systemd source: `/opt/ftw/ftw`, the `ftw` user and a
+data bind. The corrected operator CLI and published `v0.141.0-beta.1`
+package passed 24 checks. Charts, stored hours, settings, credentials,
+goals, identity and new writes survived the switch and a machine restart
+with one Core. Return to the matching old Core passed another restart,
+and both off-host backups remain. This covers that Linux pilot layout;
+it does not qualify every native install or physical power loss. The
+normal fresh-host installer still refuses an existing installation.
+
 The published 2.3.2 Docker image also passed a move to `v0.141.0-beta.1`
 using two Compose projects and separate named data volumes. A synthetic
 MQTT meter and an independent subscriber used the same broker throughout
