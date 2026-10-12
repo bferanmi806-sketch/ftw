@@ -139,15 +139,25 @@ the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
 
-The published `v0.140.11-beta.1` packages have passed representative SQLite/config copies
-from 2.3.2 and 3.8. The published `v0.141.0-beta.1` Core and converter pair
-passed DuckDB copies from 3.2.0-beta.1. The 3.4.2-beta.4
-DuckDB proof used `.10` and still needs current-target qualification.
-The tests check settings, credentials, goals, identity, historical data,
-two starts, new writes, backup/restore and matching old return. DuckDB tests
-include retained long-format Parquet and resumable conversion. Earlier
-0.130.4 and 1.15.0 copies were tested with `.8`; they still need current-target
-qualification.
+The published `v0.141.0-beta.1` packages have passed representative
+SQLite/settings copies from 0.130.4, 1.15.0, 2.3.2 and 3.8.0-beta.1.
+The matching Core and converter pair also passed DuckDB copies from
+3.2.0-beta.1 and 3.4.2-beta.4. Each test uses the published old binary or
+image and synthetic data. The checks retain exact old chart rows, settings,
+credentials, goals and identity over two target starts, new writes and
+return to the matching old Core.
+
+Those four SQLite sources also passed full-backup restore to both the same
+data path and a new path with the published target helper. Two synthetic
+Parquet rows in the old 2.x long format retain their bytes and JSON/CSV
+exports over two target starts. Stored settings, credentials, goals,
+identity and new writes remain, and revert returns the previous target.
+These small cases do not cover every older cold format or external file.
+
+DuckDB tests include hot SQLite, imported or retained long-format Parquet,
+500,000 extra raw values, interrupted conversion and resume, generation
+checks and portable backup/restore/revert. These copies do not qualify every
+old schema, archive format, platform or complete installation change.
 
 Supervisor-format tests cover plain, compressed and encrypted version 2/3
 components using the published 3.8 HA image. The offline exporter and `v0.141.0-beta.1`
