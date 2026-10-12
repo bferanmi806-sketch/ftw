@@ -165,6 +165,15 @@ returned to the matching old binary while keeping the target data. The
 installer ran on the fresh target; this does not qualify an in-place
 install, every custom service, physical equipment or a Pi power cycle.
 
+The published 2.3.2 Docker image also passed a move to `v0.141.0-beta.1`
+using two Compose projects and separate named data volumes. A synthetic
+MQTT meter and an independent subscriber used the same broker throughout
+backup, two target starts and return to old Core. The checks retained exact
+old chart rows, settings, credentials, goals, identity and Lua files, and
+verified new writes. The broker and subscriber kept their process start
+times. The test checked saved Compose and container restart policies; it
+did not reboot Docker or the host, run the old updater, or control equipment.
+
 The published `v0.141.0-beta.1` Linux ARM64 backup helper also passed process
 crash tests during preservation, activation, return and a later extraction.
 The tests check that incomplete copies cannot replace active data, all old

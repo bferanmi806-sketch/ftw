@@ -152,12 +152,19 @@ Den nya Docker-installationen använder en egen katalog.
 2. Ta en full backup och spara den utanför maskinen. Behåll också Compose-filer,
    overrides och `.env`, så att du kan återställa rätt gamla version.
 3. Kontrollera om projektet även kör Mosquitto eller andra tjänster som
-   utrustningen behöver. Ordna fortsatt MQTT innan du stoppar hela projektet.
-4. Stoppa den gamla installationen med dess riktiga Compose-filer och
-   projektnamn. Ett vanligt projekt kan stoppas med `docker compose down`
-   från rätt katalog. Använd inte `-v` och radera inga datakataloger.
+   utrustningen behöver. Behåll dem igång. Identifiera tjänsterna med
+   `docker compose config --services`, projektets riktiga filer och projektnamn.
+4. Stoppa bara gamla Core och updater. Heter Core-tjänsten `ftw`, kör
+   `docker compose stop ftw`, sedan
+   `docker update --restart=no "$(docker compose ps -aq ftw)"`. Gör samma sak
+   för updater om den finns. Sätt också `restart: "no"` för dessa tjänster i
+   gamla Compose-filerna. Kontrollera att containrarna är stoppade och har
+   restart policy `no`. Kör inte `docker compose down` om projektet fortfarande
+   ger utrustningen MQTT. Använd inte `-v` och radera inga datakataloger.
    Kontrollera även systemd, timers och egna skript som kan skapa eller starta
-   den igen. Stäng inte av Docker som helhet.
+   den igen. Ange brokerns tjänstenamn i senare Compose-kommandon:
+   `docker compose up -d` för hela gamla projektet startar gamla Core igen,
+   även med `restart: "no"`. Stäng inte av Docker som helhet.
 5. Följ [Docker-guiden för nya FTW](https://github.com/srcfl/ftw/blob/master/docs/native-beta.md#docker).
    Använd en ny katalog, normalt `~/ftw-local`, och en tom datakatalog.
    Återanvänd inte den gamla datakatalogen eller en redan befintlig testkatalog

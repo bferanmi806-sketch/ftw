@@ -164,13 +164,21 @@ because the native installer refused the old card.
    `~/forty-two-watts`; use the path found on this host. Save its Compose files
    and `.env` with the backup so recovery uses the same old version.
 2. Check whether that project also supplies Mosquitto or another needed
-   service. Arrange continued MQTT before stopping the whole project.
-3. Stop the old project with its actual files and project name. For a standard
-   project, run `docker compose down` from its directory (with `sudo` if
-   required). Do not add `-v`, delete data, or stop Docker as a whole.
+   service. Keep those services running. Use `docker compose config --services`
+   with the source's actual files and project name to identify them.
+3. Stop only the confirmed Core and updater services. For a Core service named
+   `ftw`, run `docker compose stop ftw`, then
+   `docker update --restart=no "$(docker compose ps -aq ftw)"`. Repeat for an
+   updater if one exists. Set `restart: "no"` for those services in the saved
+   source Compose files too. Check that their containers are stopped and their
+   restart policies are `no`. Do not run `docker compose down` while that
+   project still supplies needed MQTT. Do not add `-v` or delete data.
 4. Check systemd, timers and custom scripts that could recreate or start old
    Core or its updater at boot. Disable only the confirmed old start path.
    Docker's container restart policy is only one possible start path.
+   When keeping the broker, name its service in later Compose commands.
+   `docker compose up -d` for the whole old project starts old Core again,
+   even with `restart: "no"`.
 5. Prepare [Docker](#docker) in a new directory, normally `~/ftw-local`. Keep
    new Core stopped until [the copied data are imported](migration.md). Inspect
    an existing target directory before using it.
