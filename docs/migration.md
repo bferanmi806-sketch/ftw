@@ -154,6 +154,14 @@ exports over two target starts. Stored settings, credentials, goals,
 identity and new writes remain, and revert returns the previous target.
 These small cases do not cover every older cold format or external file.
 
+A separate 2.3.2 archive test passed 37 checks with 1,036,800 synthetic
+Parquet values in ten daily files and twelve series. Restore to the same
+and a new root retained exact hourly counts, sums, minimums, maximums and last timestamps
+over two starts. JSON/CSV exports, settings, goals, identity, new writes,
+revert and raw exports from the matching old Core passed. The compressed
+files total about 9 MiB; this tests row count on Linux ARM64 in Docker,
+not a large disk footprint, Pi/SD performance or physical power loss.
+
 DuckDB tests include hot SQLite, imported or retained long-format Parquet,
 500,000 extra raw values, interrupted conversion and resume, generation
 checks and portable backup/restore/revert. These copies do not qualify every
@@ -163,8 +171,14 @@ Supervisor-format tests cover plain, compressed and encrypted version 2/3
 components using the published 3.8 HA image. The offline exporter and `v0.141.0-beta.1`
 copy tests also cover synthetic managed-driver choices and internal links.
 They do not cover a complete Supervisor job, every community app, a signed
-driver-channel move or HA entity continuity. An isolated Linux systemd test does not establish a
-physical Pi cutover or a power-loss recovery.
+driver-channel move or HA entity continuity. An isolated Linux systemd test
+does not establish a physical Pi cutover or a power-loss recovery.
+
+Four separate managed-driver copy tests also passed with the published
+`v0.141.0-beta.1` helper and Core. Current and older default manifests,
+same and new data roots, two starts and revert keep the selected driver
+active and preserve its previous-version path. These checks use synthetic
+records and valid file hashes; they do not prove a signed-channel install.
 
 A separate two-host Linux ARM64 test moved a synthetic 3.8 custom systemd
 source to a fresh `v0.141.0-beta.1` native target. The exact published old
