@@ -25,7 +25,7 @@ const (
 	// SchemaVersion identifies the on-disk state format for update rollback.
 	// Increase it before a release that cannot safely reopen the same state.db
 	// with the prior Core version.
-	SchemaVersion = 8
+	SchemaVersion = 7
 	// LegacyReleaseMarker is the value release notes publish in the legacy
 	// `<!-- ftw-state-schema:N -->` marker. Only Cores before v3.6.0-beta.1
 	// (schema 4 and older) read it. Those Cores copied their whole history
@@ -1493,6 +1493,7 @@ func (s *Store) loadArchiveHistory(ctx context.Context, sinceMs, untilMs int64, 
 			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 2,1,86400000,ts_ms,0 FROM history_cold
 			WHERE ts_ms BETWEEN ? AND ?
 		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-1,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard d LEFT JOIN history_quality q ON q.kind='dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
+		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-2,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard_partial d LEFT JOIN history_quality q ON q.kind='partial_dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
  ),
 		deduped AS (
 			SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY ts_ms ORDER BY tier) AS rn FROM all_rows) WHERE rn=1
@@ -1516,19 +1517,19 @@ func (s *Store) loadArchiveHistory(ctx context.Context, sinceMs, untilMs int64, 
 			FROM deduped GROUP BY (ts_ms - ?) / ?
 		)
 		SELECT ts_ms,grid_w,pv_w,bat_w,load_w,bat_soc,
-		COALESCE((SELECT json FROM history_dashboard WHERE last_ms=b.ts_ms),
+		COALESCE((SELECT json FROM history_dashboard_partial WHERE last_ms=b.ts_ms),(SELECT json FROM history_dashboard WHERE last_ms=b.ts_ms),
  (SELECT json FROM history_hot WHERE ts_ms=b.ts_ms),
 		         (SELECT json FROM history_warm WHERE ts_ms=b.ts_ms),
 		         (SELECT json FROM history_cold WHERE ts_ms=b.ts_ms),'{}'),n,resolution_ms,first_ms,missing
-		FROM bucketed b ORDER BY ts_ms`, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, bucketMs)
+		FROM bucketed b ORDER BY ts_ms`, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, bucketMs)
 	} else {
 		rows, err = s.history.QueryContext(ctx, tierUnion+`
 			SELECT ts_ms,COALESCE(grid_w,0),COALESCE(pv_w,0),COALESCE(bat_w,0),COALESCE(load_w,0),COALESCE(bat_soc,0),
-			COALESCE((SELECT json FROM history_dashboard WHERE last_ms=b.ts_ms),
+			COALESCE((SELECT json FROM history_dashboard_partial WHERE last_ms=b.ts_ms),(SELECT json FROM history_dashboard WHERE last_ms=b.ts_ms),
  (SELECT json FROM history_hot WHERE ts_ms=b.ts_ms),
 			         (SELECT json FROM history_warm WHERE ts_ms=b.ts_ms),
 			         (SELECT json FROM history_cold WHERE ts_ms=b.ts_ms),'{}'),n,resolution_ms,first_ms,missing
-			FROM deduped b ORDER BY ts_ms LIMIT ?`, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, maxRawSeriesPoints+1)
+			FROM deduped b ORDER BY ts_ms LIMIT ?`, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, sinceMs, untilMs, maxRawSeriesPoints+1)
 	}
 	if err != nil {
 		return nil, err
@@ -1722,7 +1723,7 @@ func (s *Store) dailyEnergyFromArchive(sinceMs, untilMs int64) (DayEnergy, error
 func (s *Store) LoadDailyEnergy(day string) (DayEnergy, bool, error) {
 	const q = `
 		SELECT import_wh, export_wh, pv_wh, bat_charged_wh, bat_discharged_wh, load_wh,q.missing,q.n
-		FROM energy_daily d JOIN history_daily_quality q ON q.day=d.day WHERE d.day = ?
+		FROM energy_daily_partial d JOIN history_daily_quality q ON q.day=d.day WHERE d.day = ?
 	`
 	var d DayEnergy
 	err := s.history.QueryRow(q, day).Scan(
@@ -1746,7 +1747,7 @@ func (s *Store) SaveDailyEnergy(day string, de DayEnergy) error {
 	s.historyWriteMu.Lock()
 	defer s.historyWriteMu.Unlock()
 	const q = `
-		INSERT INTO energy_daily(
+		INSERT INTO energy_daily_partial(
 			day, import_wh, export_wh, pv_wh, bat_charged_wh, bat_discharged_wh, load_wh, computed_at_ms
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(day) DO UPDATE SET

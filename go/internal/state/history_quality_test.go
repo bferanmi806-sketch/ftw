@@ -139,3 +139,52 @@ func TestPartialHistorySurvivesRecoveryRetentionBackupAndRestart(t *testing.T) {
 		t.Fatal(got, err)
 	}
 }
+
+func TestPartialHistoryKeepsSchema7ReadersSafeAcrossReturn(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.EnableHistoryAggregation(); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().Add(-time.Minute).UnixMilli()
+	full := HistoryPoint{TsMs: base, GridW: 1200, BatW: 200, LoadW: 1000, BatSoC: .5, JSON: `{}`}
+	dashboardTick(t, s, "full", &full)
+	gap := HistoryPoint{TsMs: base + 1000, GridW: 1200, Missing: MissingBattery | MissingLoad | MissingSoC, JSON: `{}`}
+	dashboardTick(t, s, "gap", &gap)
+	var legacyRows, partialRows int
+	if err := s.history.QueryRow(`SELECT COUNT(*) FROM history_dashboard`).Scan(&legacyRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.history.QueryRow(`SELECT COUNT(*) FROM history_dashboard_partial`).Scan(&partialRows); err != nil {
+		t.Fatal(err)
+	}
+	if legacyRows != 1 || partialRows != 1 {
+		t.Fatal(legacyRows, partialRows)
+	}
+	var last int64
+	if err := s.history.QueryRow(`SELECT value FROM history_site_cursor WHERE key='last'`).Scan(&last); err != nil || last != 0 {
+		t.Fatal(last, err)
+	}
+	// An older Core resumes only complete observations in the original tables.
+	// The new cursor must follow that later writer without counting its interval twice.
+	legacyAt := base + 2000
+	if _, err := s.history.Exec(`UPDATE history_site_cursor SET value=? WHERE key='last'`, legacyAt); err != nil {
+		t.Fatal(err)
+	}
+	full.TsMs = base + 3000
+	dashboardTick(t, s, "return", &full)
+	d, err := s.DailyEnergy(base, base+4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	near(t, "known import before/after old writer", d.ImportWh, float64(2400000)/3600000)
+	if d.Missing&MissingLoad == 0 {
+		t.Fatal(d)
+	}
+	if SchemaVersion != 7 {
+		t.Fatal("native update requires schema 7", SchemaVersion)
+	}
+}

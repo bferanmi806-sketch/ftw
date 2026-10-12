@@ -24,18 +24,38 @@ const siteEnergyCursorSchema = `CREATE TABLE IF NOT EXISTS history_site_cursor (
 // A missing usable site snapshot breaks integration even if it recovers before
 // the maximum gap. The cursor and chart/energy rows share the tick receipt.
 func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoint) error {
+	// Older schema-7 Cores read only the original tables. Keep partial rows
+	// separate, and clear their cursor so rollback cannot bridge a gap.
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO history_partial_cursor SELECT key,value FROM history_site_cursor`); err != nil {
+		return err
+	}
+	var legacyLast, partialLast int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT value FROM history_site_cursor WHERE key='last'),0),COALESCE((SELECT value FROM history_partial_cursor WHERE key='last'),0)`).Scan(&legacyLast, &partialLast); err != nil {
+		return err
+	}
+	if legacyLast > partialLast {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, legacyLast); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('missing',0) ON CONFLICT(key) DO UPDATE SET value=0`); err != nil {
+			return err
+		}
+	}
 	if p == nil {
-		_, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('last',0) ON CONFLICT(key) DO UPDATE SET value=0`)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('last',0) ON CONFLICT(key) DO UPDATE SET value=0`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('last',0) ON CONFLICT(key) DO UPDATE SET value=0`)
 		return err
 	}
 	var previous int64
-	err := tx.QueryRowContext(ctx, `SELECT value FROM history_site_cursor WHERE key='last'`).Scan(&previous)
+	err := tx.QueryRowContext(ctx, `SELECT value FROM history_partial_cursor WHERE key='last'`).Scan(&previous)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 	hadCursor := err == nil
 	var from int64
-	err = tx.QueryRowContext(ctx, `SELECT value FROM history_site_cursor WHERE key='from'`).Scan(&from)
+	err = tx.QueryRowContext(ctx, `SELECT value FROM history_partial_cursor WHERE key='from'`).Scan(&from)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -53,14 +73,14 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
 		} else {
 			previous = 0
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('from',?)`, from); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('from',?)`, from); err != nil {
 			return err
 		}
 	}
 	if p.TsMs > previous {
 		if previous > 0 && p.TsMs-previous <= maxCostIntegrationGap.Milliseconds() {
 			var previousMissing HistoryMissing
-			err := tx.QueryRowContext(ctx, `SELECT value FROM history_site_cursor WHERE key='missing'`).Scan(&previousMissing)
+			err := tx.QueryRowContext(ctx, `SELECT value FROM history_partial_cursor WHERE key='missing'`).Scan(&previousMissing)
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
@@ -68,19 +88,35 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.TsMs); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.TsMs); err != nil {
 			return err
 		}
 	}
 	if p.TsMs > previous {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('missing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.Missing); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_partial_cursor VALUES('missing',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, p.Missing); err != nil {
 			return err
 		}
+	}
+	if p.TsMs > previous {
+		legacyLast := p.TsMs
+		if p.Missing != 0 {
+			legacyLast = 0
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO history_site_cursor VALUES('last',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, legacyLast); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO history_site_cursor SELECT key,value FROM history_partial_cursor WHERE key='from'`); err != nil {
+			return err
+		}
+	}
+	table, kind := "history_dashboard", "dashboard"
+	if p.Missing != 0 {
+		table, kind = "history_dashboard_partial", "partial_dashboard"
 	}
 	start := bucketStart(p.TsMs, HistoryResolutionMS)
 	var n int64
 	var seen []byte
-	err = tx.QueryRowContext(ctx, `SELECT n,seen_ms FROM history_dashboard WHERE start_ms=? AND resolution_ms=?`, start, HistoryResolutionMS).Scan(&n, &seen)
+	err = tx.QueryRowContext(ctx, `SELECT n,seen_ms FROM `+table+` WHERE start_ms=? AND resolution_ms=?`, start, HistoryResolutionMS).Scan(&n, &seen)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
@@ -88,7 +124,7 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
 	if !added {
 		return nil
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO history_dashboard VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err = tx.ExecContext(ctx, `INSERT INTO `+table+` VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(start_ms,resolution_ms) DO UPDATE SET first_ms=MIN(first_ms,excluded.first_ms),
  json=CASE WHEN excluded.last_ms>=last_ms THEN excluded.json ELSE json END,last_ms=MAX(last_ms,excluded.last_ms),
  grid_w=(grid_w*n+excluded.grid_w)/ (n+1),pv_w=(pv_w*n+excluded.pv_w)/(n+1),bat_w=(bat_w*n+excluded.bat_w)/(n+1),load_w=(load_w*n+excluded.load_w)/(n+1),bat_soc=(bat_soc*n+excluded.bat_soc)/(n+1),n=n+1,seen_ms=excluded.seen_ms`,
@@ -96,7 +132,7 @@ func (s *Store) recordDashboardTx(ctx context.Context, tx *sql.Tx, p *HistoryPoi
 	if err != nil {
 		return err
 	}
-	return putHistoryQuality(ctx, tx, "dashboard", start, HistoryResolutionMS, p.Missing)
+	return putHistoryQuality(ctx, tx, kind, start, HistoryResolutionMS, p.Missing)
 }
 
 func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *HistoryPoint, previousMissing HistoryMissing) error {
@@ -104,6 +140,10 @@ func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *Histo
 	point.Missing |= previousMissing
 	point.ClearMissingValues()
 	p = &point
+	table, kind := "history_site_energy", "energy"
+	if p.Missing != 0 {
+		table, kind = "history_site_energy_partial", "partial_energy"
+	}
 	for from := previous; from < p.TsMs; {
 		start := bucketStart(from, ArchiveResolutionMS)
 		to := min(p.TsMs, start+ArchiveResolutionMS)
@@ -115,14 +155,14 @@ func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *Histo
 			intervals = 1
 		}
 		hours := float64(ms) / 3600000
-		_, err := tx.ExecContext(ctx, `INSERT INTO history_site_energy VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		_, err := tx.ExecContext(ctx, `INSERT INTO `+table+` VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(start_ms,resolution_ms) DO UPDATE SET first_ms=MIN(first_ms,excluded.first_ms),last_ms=MAX(last_ms,excluded.last_ms),covered_ms=covered_ms+excluded.covered_ms,n=n+excluded.n,
  import_wh=import_wh+excluded.import_wh,export_wh=export_wh+excluded.export_wh,pv_wh=pv_wh+excluded.pv_wh,bat_charge_wh=bat_charge_wh+excluded.bat_charge_wh,bat_discharge_wh=bat_discharge_wh+excluded.bat_discharge_wh,load_wh=load_wh+excluded.load_wh,ev_wh=ev_wh+excluded.ev_wh`,
 			start, ArchiveResolutionMS, from, to, ms, intervals, math.Max(0, p.GridW)*hours, math.Max(0, -p.GridW)*hours, -p.PVW*hours, math.Max(0, p.BatW)*hours, math.Max(0, -p.BatW)*hours, p.LoadW*hours, siteEVWh(p, hours))
 		if err != nil {
 			return err
 		}
-		if err := putHistoryQuality(ctx, tx, "energy", start, ArchiveResolutionMS, p.Missing); err != nil {
+		if err := putHistoryQuality(ctx, tx, kind, start, ArchiveResolutionMS, p.Missing); err != nil {
 			return err
 		}
 		from = to
@@ -132,7 +172,7 @@ func addSiteIntervalTx(ctx context.Context, tx *sql.Tx, previous int64, p *Histo
 
 func (s *Store) siteEnergyFrom(ctx context.Context) (int64, bool, error) {
 	var from int64
-	err := s.history.QueryRowContext(ctx, `SELECT value FROM history_site_cursor WHERE key='from'`).Scan(&from)
+	err := s.history.QueryRowContext(ctx, `SELECT value FROM history_partial_cursor WHERE key='from' UNION ALL SELECT value FROM history_site_cursor WHERE key='from' LIMIT 1`).Scan(&from)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -158,7 +198,7 @@ type siteEnergyRow struct {
 func (s *Store) walkSiteEnergy(ctx context.Context, from, to int64, visit func(siteEnergyRow) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	rows, err := s.history.QueryContext(ctx, `SELECT e.*,COALESCE(q.missing,0) FROM history_site_energy e LEFT JOIN history_quality q ON q.kind='energy' AND q.start_ms=e.start_ms AND q.resolution_ms=e.resolution_ms WHERE e.start_ms>=? AND e.start_ms<? AND first_ms>=? AND last_ms<=? ORDER BY e.start_ms`, bucketStart(from, EnergyLedgerDailyBucketMS), to, from, to)
+	rows, err := s.history.QueryContext(ctx, `WITH energy AS (SELECT *, 'energy' AS kind FROM history_site_energy UNION ALL SELECT *, 'partial_energy' AS kind FROM history_site_energy_partial) SELECT e.start_ms,e.resolution_ms,e.first_ms,e.last_ms,e.covered_ms,e.n,e.import_wh,e.export_wh,e.pv_wh,e.bat_charge_wh,e.bat_discharge_wh,e.load_wh,e.ev_wh,COALESCE(q.missing,0) FROM energy e LEFT JOIN history_quality q ON q.kind=e.kind AND q.start_ms=e.start_ms AND q.resolution_ms=e.resolution_ms WHERE e.start_ms>=? AND e.start_ms<? AND first_ms>=? AND last_ms<=? ORDER BY e.start_ms`, bucketStart(from, EnergyLedgerDailyBucketMS), to, from, to)
 	if err != nil {
 		return err
 	}
