@@ -44,11 +44,13 @@ exact 0.x tags. Publication never installs a release on a site by itself.
 ### Pilot: an older native systemd site
 
 This is not the user migration path. `migrate-native` in the
-[operator CLI](../scripts/ftwctl.py) moves an older **direct native systemd**
+[operator CLI](https://github.com/srcfl/ftw/blob/af22b488cbda7945d78d30a915fa81b71fe8f1ce/scripts/ftwctl.py) moves an older **direct native systemd**
 site, one whose unit runs `/opt/ftw/ftw` as the `ftw` user, onto 0.x release
 slots. The owner's home box was moved with it. It stages the release under a
 separate root, `/opt/ftw-native` by default, and switches the unit with a
-drop-in, so such a box keeps a different layout from a fresh install. Run it
+drop-in, so such a box keeps a different layout from a fresh install. Use
+the linked script revision on the operator computer; older release checkouts
+can reject a valid backup timestamp on older Python. Run it
 on another computer, through an SSH tunnel to the box's API:
 
 ```bash
