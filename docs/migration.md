@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.141.0`, which has not shipped as stable. The published
-beta is `v0.141.0-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.141.2`, which has not shipped as stable. The published
+beta is `v0.141.2-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -138,6 +138,15 @@ only the source start rules recorded before the move. Keep data collected on
 the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
+
+The published `v0.141.2-beta.1` Core and helper preserve partial history in
+a full backup. Small synthetic meter/battery cases passed two starts,
+portable restore and return: a working meter keeps recording while the
+battery is offline, and missing flows and totals stay unknown. A balance
+warning also leaves measured flows in the record. The browser shows the
+gap and warning, then new values after recovery. These checks do not qualify
+the older installation routes below against this newer beta; their actual
+tested target remains `v0.141.0-beta.1`.
 
 The published `v0.141.0-beta.1` packages have passed representative
 SQLite/settings copies from 0.130.4, 1.15.0, 2.3.2 and 3.8.0-beta.1.
