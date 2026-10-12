@@ -94,6 +94,15 @@ class ExportTests(unittest.TestCase):
         tool.export_backup(self.backup, self.destination)
         self.assertEqual((self.destination / "data/cache-alias/proof.lua").read_bytes(), self.files["data/driver-repository/cache/proof.lua"])
 
+    def test_parent_after_directory_link_uses_its_actual_target(self):
+        self.files["data/shared/child/keep"] = b"directory exists"
+        self.files["data/shared/parent.lua"] = b"correct file"
+        self.files["data/drivers/parent.lua"] = b"wrong lexical parent"
+        self.make_backup(extra=[self.link("data/drivers/subdir", "../shared/child"),
+                                self.link("data/drivers/alias.lua", "subdir/../parent.lua")])
+        tool.export_backup(self.backup, self.destination)
+        self.assertEqual((self.destination / "data/drivers/alias.lua").read_bytes(), b"correct file")
+
     def test_external_foreign_missing_and_cyclic_links_stop(self):
         for links in [[self.link("data/bad", "/etc/passwd")],
                       [self.link("data/bad", "../../etc/passwd")],

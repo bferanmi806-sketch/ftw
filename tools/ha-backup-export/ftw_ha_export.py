@@ -93,37 +93,42 @@ def link_path(name, member):
         parts = PurePosixPath(target).parts
     else:
         parts = (PurePosixPath(name).parent / target).parts
-    result = []
-    for part in parts:
-        if part == "..":
-            if not result:
-                raise ExportError("Link leaves the backup")
-            result.pop()
-        elif part != ".":
-            result.append(part)
-    if not result or result[0] != "data":
+    if not parts or parts[0] != "data":
         raise ExportError("Link leaves the FTW data directory")
-    return "/".join(result)
+    # Preserve '..' until link expansion: a directory link can change which
+    # parent a later '..' names. Lexical cleanup can select the wrong file.
+    return "/".join(parts)
 
 
 def resolve_link(path, links, entries):
-    seen = set()
-    while True:
-        if path in seen or len(seen) >= 64:
+    seen, resolved = set(), []
+    pending = list(PurePosixPath(path).parts)
+    expansions = 0
+    while pending:
+        state = (tuple(resolved), tuple(pending))
+        if state in seen:
             raise ExportError("Archive has a link cycle or an excessive link chain")
-        seen.add(path)
-        parts = PurePosixPath(path).parts
-        changed = False
-        for length in range(1, len(parts) + 1):
-            prefix = "/".join(parts[:length])
-            if prefix in links:
-                path = "/".join([links[prefix], *parts[length:]])
-                changed = True
-                break
-        if not changed:
-            if path not in entries:
-                raise ExportError("Archive link target is missing")
-            return path
+        seen.add(state)
+        part = pending.pop(0)
+        if part == "..":
+            if len(resolved) <= 1:
+                raise ExportError("Link leaves the FTW data directory")
+            resolved.pop()
+            continue
+        resolved.append(part)
+        prefix = "/".join(resolved)
+        if prefix in links:
+            expansions += 1
+            if expansions > 64:
+                raise ExportError("Archive has an excessive link chain")
+            pending = [*PurePosixPath(links[prefix]).parts, *pending]
+            resolved = []
+        elif pending and entries.get(prefix, {}).get("kind") != "directory":
+            raise ExportError("Archive link crosses a missing directory or file")
+    result = "/".join(resolved)
+    if result not in entries:
+        raise ExportError("Archive link target is missing")
+    return result
 
 
 def sync_directory(path):
@@ -223,8 +228,8 @@ def unpack(archive, staging):
                 os.fsync(stream.fileno())
             hashes[name] = hashes[resolved]
         else:
-            target.symlink_to(os.path.relpath(staging / path, target.parent))
-        entries[name]["target"] = path
+            target.symlink_to(os.path.relpath(staging / resolved, target.parent))
+        entries[name]["target"] = resolved
     return entries, hashes, byte_count
 
 
