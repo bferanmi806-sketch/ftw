@@ -70,3 +70,70 @@ func RewriteBackupConfiguration(path string, rewrite func([]byte) ([]byte, error
 	}
 	return tx.Commit()
 }
+
+// RewriteBackupDriverPaths maps durable selections and their undo paths in an
+// offline staging copy. It preserves activation, provenance and version history.
+func RewriteBackupDriverPaths(path string, rewrite func(string) (string, error)) error {
+	uri := strings.Replace(ReadOnlyDatabaseURI(path), "mode=ro", "mode=rw", 1)
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL`); err != nil {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var tables int
+	if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='driver_repo_installs'`).Scan(&tables); err != nil {
+		return err
+	}
+	if tables == 0 {
+		return nil
+	}
+	rows, err := tx.Query(`SELECT id, installed_path, previous_installed_path FROM driver_repo_installs`)
+	if err != nil {
+		return err
+	}
+	type paths struct {
+		id                  int64
+		installed, previous string
+	}
+	var changes []paths
+	for rows.Next() {
+		var p paths
+		if err := rows.Scan(&p.id, &p.installed, &p.previous); err != nil {
+			rows.Close()
+			return err
+		}
+		installed, err := rewrite(p.installed)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("driver repository installed path: %w", err)
+		}
+		previous, err := rewrite(p.previous)
+		if err != nil {
+			rows.Close()
+			return fmt.Errorf("driver repository undo path: %w", err)
+		}
+		if installed != p.installed || previous != p.previous {
+			changes = append(changes, paths{p.id, installed, previous})
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, p := range changes {
+		if _, err := tx.Exec(`UPDATE driver_repo_installs SET installed_path=?, previous_installed_path=? WHERE id=?`, p.installed, p.previous, p.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}

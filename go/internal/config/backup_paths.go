@@ -52,6 +52,14 @@ func RelocateBackup(staging, target, source, databaseFile, seedFile string) erro
 	}); err != nil {
 		return err
 	}
+	if source == "" && !active {
+		source = backupSourceRoot(seed, databaseFile)
+	}
+	if err := state.RewriteBackupDriverPaths(filepath.Join(staging, databaseFile), func(value string) (string, error) {
+		return relocateBackupDriverPath(value, source, target)
+	}); err != nil {
+		return err
+	}
 	if seed == nil && !active {
 		return nil
 	}
@@ -76,6 +84,29 @@ func RelocateBackup(staging, target, source, databaseFile, seedFile string) erro
 		return err
 	}
 	return writeConfigAtomic(defaultDurableWriter, seedPath, encoded)
+}
+
+func relocateBackupDriverPath(value, source, target string) (string, error) {
+	if value == "" || (source != "" && filepath.Clean(source) == filepath.Clean(target)) {
+		return value, nil
+	}
+	if (len(value) > 1 && value[1] == ':') || strings.HasPrefix(value, `\\`) {
+		return "", errors.New("path uses another platform; map it into the data directory before moving")
+	}
+	if !filepath.IsAbs(value) {
+		if !backupPathInside(".", value) {
+			return "", errors.New("path leaves the backup; copy it into the data directory before moving")
+		}
+		return filepath.Join(target, value), nil
+	}
+	if source != "" && backupPathInside(source, value) {
+		rel, _ := filepath.Rel(source, value)
+		return filepath.Join(target, rel), nil
+	}
+	if source == "" && backupPathInside(target, value) {
+		return value, nil
+	}
+	return "", errors.New("path is outside the known backup root; copy it into the data directory before moving")
 }
 
 func backupSourceRoot(cfg map[string]any, databaseFile string) string {
