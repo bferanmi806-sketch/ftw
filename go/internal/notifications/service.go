@@ -103,6 +103,12 @@ func DefaultRules() []config.NotificationRule {
 		// the sentences come from the catalogue, never from templates.
 		{Type: PushDriverOffline, Enabled: false, ThresholdS: DefaultThresholdS, Priority: 4, CooldownS: DefaultCooldownS},
 		{Type: PushFuseOverLimit, Enabled: false, ThresholdS: 30, Priority: 5, CooldownS: 900},
+		// FTW Cloud on or off. The only rules on by default: each says the
+		// house has started or stopped sending a readable copy of itself to
+		// a Sourceful service, and every owner should hear that without
+		// having opted in first. An owner may still turn them off.
+		{Type: PushCloudGranted, Enabled: true, Priority: 3},
+		{Type: PushCloudRevoked, Enabled: true, Priority: 3},
 	}
 }
 
@@ -117,6 +123,7 @@ func KnownRuleTypes() []string {
 		EventFuseOverLimit, EventConcurrentDriversOffline,
 		PushChargingConnected, PushChargingSessionComplete, PushChargingInterrupted,
 		PushUpdateInstalled, PushDriverOffline, PushFuseOverLimit,
+		PushCloudGranted, PushCloudRevoked,
 	}
 }
 

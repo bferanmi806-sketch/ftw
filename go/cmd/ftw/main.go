@@ -2438,6 +2438,12 @@ func main() {
 		slog.Info("app link disabled — set app_link.enabled to turn it on")
 	}
 
+	// FTW Cloud: a signed, readable copy of the house for the owner's phones,
+	// off until an owner turns it on. It reads; it never controls.
+	cloudNotify := &cloudNotices{}
+	cloudLink := startCloudLink(ctx, statePath, Version, st, appEnroll,
+		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, priceSvc, appAPI, cloudNotify)
+
 	// The anonymous fleet ping: how many boxes, which versions, which drivers.
 	// Its separate relay HTTP door keeps daily totals; the encrypted app path
 	// stays opaque and stores no routed traffic.
@@ -2471,6 +2477,7 @@ func main() {
 		BatteryIdentity: batteryIdentity,
 		AppEnroll:       appEnrollForAPI(appEnroll, appUplink, st, appLinkEnabled),
 		FleetPing:       fleetPinger,
+		Cloud:           cloudForAPI(cloudLink),
 		CfgMu:           cfgMu, Cfg: cfg, ConfigPath: *configPath,
 		ConfigApplier:       applyConfigChange,
 		DriverDir:           resolveDriverDir(),
@@ -2620,6 +2627,7 @@ func main() {
 		return amps, limitA, true
 	})
 	notifSvc.Subscribe(bus)
+	cloudNotify.svc.Store(notifSvc)
 	// Persist every dispatch to state.notification_log via a bus
 	// subscriber so the notifications package stays free of storage
 	// logic. The UI reads this table through /api/notifications/history.

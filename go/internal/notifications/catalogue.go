@@ -18,6 +18,8 @@ const (
 	PushDriverOffline           = protocol.PushDriverOffline
 	PushFuseOverLimit           = protocol.PushFuseOverLimit
 	PushBoxUnreachable          = protocol.PushBoxUnreachable
+	PushCloudGranted            = protocol.PushCloudGranted
+	PushCloudRevoked            = protocol.PushCloudRevoked
 )
 
 // PushSentence is one lock-screen sentence, exactly as the app wrote it.
