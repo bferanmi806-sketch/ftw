@@ -54,6 +54,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/ha"
 	"github.com/srcfl/ftw/go/internal/loadmodel"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
+	"github.com/srcfl/ftw/go/internal/localzone"
 	modbuscli "github.com/srcfl/ftw/go/internal/modbus"
 	"github.com/srcfl/ftw/go/internal/mpc"
 	mqttcli "github.com/srcfl/ftw/go/internal/mqtt"
@@ -870,7 +871,7 @@ func main() {
 		if s.Empty() {
 			return st.SaveConfig(key, "{}")
 		}
-		b, err := s.MarshalStored()
+		b, err := json.Marshal(s)
 		if err != nil {
 			return err
 		}
@@ -881,8 +882,8 @@ func main() {
 		if !ok || v == "" || v == "{}" {
 			return loadpoint.Schedule{}, false
 		}
-		s, err := loadpoint.UnmarshalStored([]byte(v))
-		if err != nil {
+		var s loadpoint.Schedule
+		if err := json.Unmarshal([]byte(v), &s); err != nil {
 			slog.Warn("failed to parse persisted loadpoint schedule",
 				"lp", id, "err", err)
 			return loadpoint.Schedule{}, false
@@ -1128,7 +1129,7 @@ func main() {
 			economics := mpc.SiteEconomics{
 				FuseMaxW:   newCfg.Fuse.MaxPowerW(),
 				MaxExportW: newCfg.Site.MaxExportW,
-				Timezone:   forecastTimezone(),
+				Timezone:   localzone.Name(),
 			}
 			if newCfg.Price != nil {
 				economics.ExportBonusOreKwh = newCfg.Price.ExportBonusOreKwh
@@ -1792,7 +1793,7 @@ func main() {
 			mpcSvc.DemandTopN = cfg.Price.DemandTopN
 			mpcSvc.DemandNightWeight = cfg.Price.DemandNightWeight
 		}
-		mpcSvc.Timezone = forecastTimezone()
+		mpcSvc.Timezone = localzone.Name()
 		mpcSvc.HouseholdMeasurement = func() telemetry.ForecastReading {
 			site := forecastSettings.Snapshot()
 			return tel.ForecastMeasurementNow(site.Meter, site.Options)

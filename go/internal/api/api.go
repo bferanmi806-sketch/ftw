@@ -46,6 +46,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/ha"
 	"github.com/srcfl/ftw/go/internal/loadmodel"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
+	"github.com/srcfl/ftw/go/internal/localzone"
 	"github.com/srcfl/ftw/go/internal/mpc"
 	"github.com/srcfl/ftw/go/internal/notifications"
 	"github.com/srcfl/ftw/go/internal/ocpp"
@@ -2342,7 +2343,7 @@ func parseRange(s string) int64 {
 // Response: {"days": [{"day":"YYYY-MM-DD","import_wh":..., "export_wh":...,
 //
 //	"pv_wh":..., "bat_charged_wh":..., "bat_discharged_wh":...,
-//	"load_wh":...}], "tz": "Local"}
+//	"load_wh":...}], "tz": "Europe/Stockholm"}
 //
 // Buckets are local-day. Today is the last entry. Mirrors the integration
 // loop in handleStatus's energy-today block — same site convention, same
@@ -2435,7 +2436,7 @@ func (s *Server) handleEnergyDaily(w http.ResponseWriter, r *http.Request) {
 			"load_wh":           de.LoadWh,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"days": out, "tz": loc.String()})
+	writeJSON(w, 200, map[string]any{"days": out, "tz": localzone.Name()})
 }
 
 // ---- /api/prices ----
@@ -3937,6 +3938,9 @@ func (s *Server) applyLoadpointSchedule(id string, raw json.RawMessage) (int, st
 	if sched.TimeOfDayMinUTC < 0 || sched.TimeOfDayMinUTC >= 1440 {
 		return 400, "time_of_day_min_utc must be 0..1439"
 	}
+	if min, ok := sched.TimeOfDayMin(); ok && (min < 0 || min >= 1440) {
+		return 400, "time_of_day_min must be 0..1439"
+	}
 	if sched.Days > 0x7F {
 		return 400, "days must be a 7-bit weekday mask (0..127, bit 0 = Monday)"
 	}
@@ -3989,7 +3993,11 @@ func (s *Server) replanForScheduleChange(id string) {
 // PUT /api/loadpoints/{id}/schedule replaces the loadpoint's schedule.
 // The body is the schedule object itself:
 //
-//	{"soc_pct": 80, "time_of_day_min_utc": 360, "recurring": true, "days": 31}
+//	{"soc": 0.8, "time_of_day_min": 420, "time_of_day_min_utc": 300, "recurring": true, "days": 31}
+//
+// time_of_day_min is the ready time on the household clock and wins
+// when present. Older clients send only time_of_day_min_utc, the UTC
+// minute of that time on today's date.
 //
 // Priced Configure where its sibling POST …/target is Actuate, because
 // a schedule is a standing instruction about future days: saved late,
