@@ -163,7 +163,7 @@ func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapsh
 	events := make(chan cloudwire.Envelope, 4)
 	readErr := make(chan error, 1)
 	go func() {
-		readErr <- l.read(conn, events)
+		readErr <- l.read(conn, snap, events)
 	}()
 	sendErr := make(chan error, 1)
 	go func() {
@@ -244,8 +244,10 @@ func parseDownlink(kind int, msg []byte) (cloudwire.Envelope, error) {
 
 // read is the downlink. After the handshake the service may send watch,
 // resync and purged; challenge and hello_ok a second time are refused like
-// any stranger. Each is handed to the sender, which owns what it changes.
-func (l *Link) read(conn *websocket.Conn, events chan<- cloudwire.Envelope) error {
+// any stranger. watch and resync go to the sender, which owns the cadence.
+// A purge receipt is taken here, before the service hangs up, so the box
+// never misses one it was sent.
+func (l *Link) read(conn *websocket.Conn, snap grantSnapshot, events chan<- cloudwire.Envelope) error {
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	conn.SetPingHandler(func(data string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -258,7 +260,11 @@ func (l *Link) read(conn *websocket.Conn, events chan<- cloudwire.Envelope) erro
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 		switch env.T {
-		case cloudwire.MsgWatch, cloudwire.MsgResync, cloudwire.MsgPurged:
+		case cloudwire.MsgPurged:
+			if l.acceptPurged(snap, env) {
+				return errPurged
+			}
+		case cloudwire.MsgWatch, cloudwire.MsgResync:
 			events <- env
 		default:
 			return fmt.Errorf("%w: %q after the handshake", errService, env.T)

@@ -166,16 +166,21 @@ func (w *writer) downlink(snap grantSnapshot, st *cadence, env cloudwire.Envelop
 		if slices.Contains(b.What, cloudwire.ResyncRoster) {
 			st.rosterAt = time.Time{}
 		}
-	case cloudwire.MsgPurged:
-		var b cloudwire.Purged
-		if !snap.g.Revoked || !l.verifiedByService(snap.home, env) || cloudwire.Unmarshal(env.B, &b) != nil ||
-			b.What != cloudwire.PurgedHome || !bytes.Equal(b.GrantID, snap.g.ID) {
-			return nil
-		}
-		l.finishPurge(b.AtMs)
-		return errPurged
 	}
 	return nil
+}
+
+// acceptPurged finishes a revoke on a valid receipt: signed by the service,
+// for this home and grant, while the grant is being revoked.
+func (l *Link) acceptPurged(snap grantSnapshot, env cloudwire.Envelope) bool {
+	var b cloudwire.Purged
+	cur := l.current()
+	if cur.g == nil || !cur.g.Revoked || cur.home != snap.home || !l.verifiedByService(snap.home, env) ||
+		cloudwire.Unmarshal(env.B, &b) != nil || b.What != cloudwire.PurgedHome || !bytes.Equal(b.GrantID, cur.g.ID) {
+		return false
+	}
+	l.finishPurge(b.AtMs)
+	return true
 }
 
 // tick sends whatever is due.
