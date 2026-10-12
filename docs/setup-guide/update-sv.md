@@ -1,16 +1,16 @@
 # Byt till nya FTW och håll det uppdaterat
 
-**Första stabila versionen av nya serien är `v0.140.5`.** FTW 2.x och 3.x får
-inga fler uppdateringar. [English](../native-beta.md).
+**Detta utkast gäller `v0.140.10`; stable är ännu inte publicerad.** FTW
+2.x och 3.x får inga fler uppdateringar. [English](../native-beta.md).
 
 ## Kort svar
 
 | Du kör | Gör så här |
 |---|---|
 | Nya FTW 0.x, native | Öppna **More → Version → Update FTW** i webbsidan, eller kör `ftw update` på boxen. Inget mer. |
-| Nya FTW 0.x i Docker | Sätt `FTW_VERSION=v0.140.5` i `.env` och kör `docker compose up -d --build`. [Detaljer](#docker-från-det-nya-releasepaketet) |
+| Nya FTW 0.x i Docker | Sätt `FTW_VERSION=v0.140.10` i `.env` och kör `docker compose up -d --build`. [Detaljer](#docker-från-det-nya-releasepaketet) |
 | Inget FTW än, på 64-bitars Linux eller ett nytt Pi-kort | [Installera](#installera-på-det-nya-kortet-eller-en-tom-linux-maskin) med den stabila taggen. |
-| Gamla FTW 2.x, 3.x eller den gamla Pi-imagen | Går inte att uppdatera på plats. Sätt upp nya FTW på ett andra SD-kort eller en annan maskin och behåll den gamla. [Steg](#byt-på-raspberry-pi-med-ett-nytt-sd-kort) |
+| Gamla FTW 2.x, 3.x eller den gamla Pi-imagen | Flytta data och config med en full backup till ett andra SD-kort eller en annan maskin. [Steg](#byt-på-raspberry-pi-med-ett-nytt-sd-kort) |
 | Home Assistant-appen | Ingen ny app än. Kör nya FTW på en annan Linux-maskin och koppla Home Assistant via MQTT. [Steg](#välj-en-väg) |
 | Windows eller macOS | Stöds inte. Använd en Raspberry Pi eller en annan 64-bitars Linux-maskin. |
 
@@ -18,19 +18,18 @@ Låt boxen ha ström och tryck inte Restart medan uppdateringen pågår. Vänta 
 uppdateringen är klar. På native återgår `ftw rollback` till föregående
 kompatibla release. För Docker, följ [Docker-steget](#docker-från-det-nya-releasepaketet).
 
-Nya serien börjar med tom data. Flytten av gamla inställningar, historik,
-identitet och mål är inte klar än. Kopiera inte gamla databaser till en ny
-installation; behöver du gamla data flyttade, ta hjälp med just din
-installation.
+**Ta med inställningar, historik, identitet och mål.** Börja med
+[Flytta med din data](../migration.md#svenska). Ta en full backup, importera
+på en separat kopia och kontrollera resultatet innan nya FTW tar över.
+Behåll gamla installationen och en backup utanför maskinen för återgång.
+En befintlig anläggning använder sina sparade inställningar.
 
-Lagringskonvertering är en del av flytten. Läs
-[historikkonvertering](../history-conversion.md) för SQLite/Parquet och DuckDB
-och [native-piloten](../self-update.md#pilot-an-older-native-systemd-site)
-för dess stödda tjänstelayout. De ger ingen allmän flytt för Docker, Pi-images
-eller Home Assistant. Behåll aktiv config och dess hemligheter; API:t visar
-maskerade värden och ger ingen full export av dem.
+Guiden anger provade datafall och kvarvarande arbete för andra layoutar.
+Vid ett importfel: behåll båda kopiorna och lös felet före start. Maskerad
+API-config är ingen full export. DuckDB använder
+[målversionens konverterare](../history-conversion.md).
 
-Resten av sidan har detaljerna. Den nya serien börjar med `v0.131.0-beta.1`.
+Den nya serien börjar med `v0.131.0-beta.1`.
 Äldre 0.x-versioner, till och med 0.130.x, hör till den gamla serien. `beta` i
 en gammal installation flyttar den inte till nya serien, och 3.x-beta är inget
 steg på vägen.
@@ -125,10 +124,10 @@ den igen vid omboot.
    som kan styra samma utrustning. Ordna MQTT om utrustningen behöver det.
    En broker på gamla kortet följer inte med.
 6. **I SSH på nya kortet:** följ [Installera på det nya kortet](#installera-på-det-nya-kortet-eller-en-tom-linux-maskin)
-   nedan. Öppna sedan `http://<Pi:ns-IP>:8080/setup` och ställ in anläggningen.
-   Historik, inlärning och gamla inställningar ligger kvar på gamla kortet;
-   de följer inte automatiskt med. Använd mål och ready-by-scheman i stället
-   för gamla kalenderhändelser.
+   nedan. [Importera din backup](../migration.md#restore-a-full-backup-on-a-new-native-target)
+   innan nya Core tar över. Kontrollera sparade mål och inställningar. Den
+   sparade API-porten kan skilja sig från 8080. Använd mål och ready-by-scheman
+   för tidigare kalenderhändelser.
 7. Kontrollera rätt version, friska enheter, färska mätvärden och aktuell plan.
    Starta sedan om Pi:n när anläggningen kan tåla avbrottet och kontrollera
    samma saker igen.
@@ -144,8 +143,8 @@ du kan identifiera och stoppa gamla Core och updater, hantera deras startregler
 och bevara MQTT. Välj annars nytt kort eller be om hjälp. En nekad
 native-installation på gamla kortet är inte ett skäl att fortsätta med Docker.
 
-Den nya Docker-installationen använder en egen katalog och egen data.
-Den flyttar inte gamla data.
+Den nya Docker-installationen använder en egen katalog.
+[Importera en verifierad kopia](../migration.md#svenska) av dina data där.
 
 1. Identifiera det gamla Compose-projektet, dess Core, updater, datakataloger
    och startregler. Vanliga kataloger är `/opt/ftw`, `~/ftw` och
@@ -163,7 +162,8 @@ Den flyttar inte gamla data.
    Använd en ny katalog, normalt `~/ftw-local`, och en tom datakatalog.
    Återanvänd inte den gamla datakatalogen eller en redan befintlig testkatalog
    utan att först kontrollera vad den innehåller.
-6. Ställ in anläggningen och kontrollera version, enheter, mätvärden och plan.
+6. Importera din backup med nya Core stoppad. Kontrollera sparade inställningar,
+   historik, version, enheter, mätvärden och plan innan den tar över.
    Kontrollera att bara en Core körs och styr utrustningen. Upprepa kontrollen
    efter en planerad omboot.
 
@@ -183,7 +183,7 @@ kortet, gå tillbaka till kortbytet ovan. `--fresh-host` betyder att ingen
 FTW-installation eller dess data finns här, även om den är stoppad.
 
 1. Öppna [Releases](https://github.com/srcfl/ftw/releases) på din vanliga dator.
-   Välj den senaste **stabila** taggen, `v0.140.5` eller senare utan `-beta`.
+   Välj den senaste **stabila** taggen, `v0.140.10` eller senare utan `-beta`.
    Välj en beta bara om du provar nya byggen. Releasen ska ha Linux-paket och
    SHA-256-fil för din maskin. Använd inte `releases/latest`; den pekar på
    gamla 2.x.

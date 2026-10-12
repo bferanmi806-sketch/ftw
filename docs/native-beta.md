@@ -1,33 +1,34 @@
 # Install and update FTW
 
-**The first stable release of the new line is `v0.140.5`.** FTW 2.x and 3.x
-get no more updates. [Svenska](setup-guide/update-sv.md).
+**This draft targets `v0.140.10`; stable has not been published yet.** FTW
+2.x and 3.x get no more updates. [Svenska](setup-guide/update-sv.md).
 
 ## Quick answer
 
 | You run | Do this |
 |---|---|
 | New FTW 0.x, native | Open **More → Version → Update FTW** in the web UI, or run `ftw update` on the box. Nothing else. |
-| New FTW 0.x in Docker | Set `FTW_VERSION=v0.140.5` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
+| New FTW 0.x in Docker | Set `FTW_VERSION=v0.140.10` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
 | No FTW yet, on 64-bit Linux or a new Pi card | [Install](#install) with the stable tag. |
-| Old FTW 2.x, 3.x or the old Pi image | No update in place. Set up new FTW on a second SD card or host and keep the old one. [Steps](#coming-from-an-older-ftw) |
-| Home Assistant app | No new app yet. Run new FTW on another Linux host and connect Home Assistant over MQTT. [Steps](#coming-from-an-older-ftw) |
+| Old FTW 2.x, 3.x or the old Pi image | Move data and config through a full backup to a second SD card or host. [Steps](#coming-from-an-older-ftw) |
+| Home Assistant app | Keep the app backup and move to another Linux host; keep Home Assistant on MQTT. [Steps](#coming-from-an-older-ftw) |
 | Windows or macOS | Not supported. Use a Raspberry Pi or another 64-bit Linux machine. |
 
 While an update runs, keep the box powered and do not press Restart. Wait for
 the update to finish. On native, `ftw rollback` returns to the previous
 compatible release. For Docker, follow [Update new Docker](#update-new-docker).
 
-The new line starts with empty data. Moving old settings, history, identity
-and goals is not ready yet. Do not copy old databases into a new install;
-if you need the old data moved, ask for help with your exact installation.
+**Keep your settings, history, identity and goals when you move.** Follow
+[Move with your data](migration.md) to choose the source format, export a full
+backup, import a separate copy and check the result before switching control.
+A new site uses setup; an existing site uses its saved settings. Keep the old
+installation and an off-host backup for return.
 
-Storage conversion is one part of that move. See
-[history conversion](history-conversion.md) for SQLite/Parquet and DuckDB,
-and [the native pilot](self-update.md#pilot-an-older-native-systemd-site)
-for its supported service layout. Neither is a general migration for Docker,
-Pi images or Home Assistant. Preserve the active config and its credentials,
-not just the masked config shown by the API.
+The migration guide names the data cases tested with the published beta and
+the work still needed for other layouts. An import error is a stop point:
+keep both copies and resolve it before starting Core. The masked config API
+is not a full settings export. DuckDB uses the exact target's
+[history converter](history-conversion.md); it needs no intermediate release.
 
 The rest of this page has the details, for people and agents. The owner runs
 the host; FTW supplies the commands. Native systemd and Docker on 64-bit Linux
@@ -116,10 +117,10 @@ running Core; inspect containers and their restart rules. A service called
 ## Coming from an older FTW
 
 Move directly to the new line using one of the paths below. Keep the old
-installation and its data for recovery; the new setup does not import them.
-Before switching, save device addresses, goals and schedules, and make a
-verified full backup using the tools your installed version supports. Keep
-that backup off the host. Not every old version has the same backup UI.
+installation and its data for recovery. Use [Move with your data](migration.md)
+for a verified full backup and an import into the separate target. Keep the
+backup off the host. Check saved settings, credentials, goals and historical
+periods on that target before it takes control. Not every old version has the same backup UI.
 Calendar support is gone: use loadpoint targets and ready-by schedules.
 
 **Only one Core may control the equipment.** An old Core can keep controlling
@@ -144,7 +145,8 @@ new Core, and stop new Core before returning to the old install.
    control the same equipment. If the old card supplied MQTT, arrange a broker
    for the new setup. The old card's broker does not move with FTW.
 6. **In SSH on the new card:** follow [Install](#install), then open
-   `http://<host>:8080/setup` and set up the site again.
+   [import the saved data](migration.md#restore-a-full-backup-on-a-new-native-target)
+   before the new Core takes control. The saved API port may differ from 8080.
 7. Follow [Verify the switch](#verify-the-switch).
 
 To return, shut down and put the old card back. Also stop any new FTW you ran
@@ -169,10 +171,11 @@ because the native installer refused the old card.
 4. Check systemd, timers and custom scripts that could recreate or start old
    Core or its updater at boot. Disable only the confirmed old start path.
    Docker's container restart policy is only one possible start path.
-5. Follow [Docker](#docker) in a new directory with separate empty data,
-   normally `~/ftw-local`. If that directory already exists, inspect it first;
-   do not overwrite an earlier test or attach the old data directory.
-6. Set up the site and follow [Verify the switch](#verify-the-switch).
+5. Prepare [Docker](#docker) in a new directory, normally `~/ftw-local`. Keep
+   new Core stopped until [the copied data are imported](migration.md). Inspect
+   an existing target directory before using it.
+6. Check the imported settings and data, then follow
+   [Verify the switch](#verify-the-switch).
 
 To return, stop the new project first, then start the saved old project with
 its original files and version pin. Restore only the start rules you disabled.
@@ -192,7 +195,7 @@ return to [the second-card steps](#raspberry-pi-use-a-second-sd-card) first.
 This section does not update or migrate an old installation.
 
 Use the newest stable tag from [Releases](https://github.com/srcfl/ftw/releases),
-`v0.140.5` or later with no `-beta` in it. Choose a beta only if you test new
+`v0.140.10` or later with no `-beta` in it. Choose a beta only if you test new
 builds. Check that the release includes the Linux package for your
 architecture and its SHA-256 file. Do not use `releases/latest`: it still
 points to the retired 2.x line. Copy the tag from the release title; do not

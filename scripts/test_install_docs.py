@@ -67,6 +67,42 @@ printf '%s\\n' 'echo INSTALL >> "$FTW_TEST_LOG"' > "$1"''')
         calls = self.log.read_text() if self.log.exists() else ''
         return result, calls
 
+    def test_migration_restore_stops_on_failure_and_leaves_core_off(self):
+        blocks = re.findall(r'```bash\n(.*?)\n```',
+                            (ROOT / 'docs/migration.md').read_text(), re.S)
+        block = next(b for b in blocks if 'helper=/opt/ftw/releases/' in b)
+        release = self.work / 'releases' / 'v0.140.10'
+        release.mkdir(parents=True)
+        helper = release / 'ftw-backup'
+        helper.write_text('#!/bin/bash\nset -eu\necho "helper $*" >> "$FTW_TEST_LOG"\n'
+                          '[ "$FTW_TEST_FAIL" != "$1" ]\n')
+        helper.chmod(0o755)
+        self.stub('systemctl', 'echo "systemctl $*" >> "$FTW_TEST_LOG"')
+        self.stub('chown', 'echo "chown $*" >> "$FTW_TEST_LOG"')
+        block = block.replace('tag=v0.X.Y', 'tag=v0.140.10')
+        block = block.replace('/opt/ftw/releases', str(self.work / 'releases'))
+        block = block.replace('/var/lib/ftw', str(self.work / 'target'))
+        for failure in ('verify', 'restore', ''):
+            with self.subTest(failure=failure):
+                self.log.write_text('')
+                self.env['FTW_TEST_FAIL'] = failure
+                result = subprocess.run(['bash', '-c', block], env=self.env,
+                                        cwd=self.work, capture_output=True, text=True)
+                calls = self.log.read_text()
+                self.assertIn('systemctl disable --now ftw', calls)
+                self.assertNotIn('systemctl start', calls)
+                self.assertNotIn('systemctl enable', calls)
+                if failure:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn('chown', calls)
+                    if failure == 'verify':
+                        self.assertNotIn('helper restore', calls)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('helper verify', calls)
+                    self.assertIn('helper restore', calls)
+                    self.assertIn('chown -R ftw:ftw', calls)
+
     def test_translations_use_the_same_native_commands(self):
         self.assertEqual(recipe(EN, '--fresh-host'), recipe(SV, '--fresh-host'))
 
@@ -89,7 +125,7 @@ printf '%s\\n' 'echo INSTALL >> "$FTW_TEST_LOG"' > "$1"''')
         self.assertFalse(Path(download).exists())
 
     def test_native_success_runs_download_and_removes_temp_file(self):
-        for tag in ('v0.140.5', 'v0.138.2-beta.1'):
+        for tag in ('v0.140.10', 'v0.138.2-beta.1'):
             with self.subTest(tag=tag):
                 self.log.write_text('')
                 result, calls = self.run_recipe('--fresh-host', tag=tag)
