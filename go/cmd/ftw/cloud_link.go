@@ -337,6 +337,20 @@ func startCloudLink(
 	return link
 }
 
+// cloudByeWait bounds how long shutdown waits for the bye to leave.
+const cloudByeWait = 2 * time.Second
+
+// cloudEventQueue turns a rendered notification into an event for the
+// uplink, which cuts the names out before it signs.
+func cloudEventQueue(link *cloudlink.Link) func(notifications.Message) bool {
+	return func(m notifications.Message) bool {
+		return link.QueueEvent(cloudlink.EventIn{
+			Kind: m.Kind, Priority: m.Priority, Args: m.Args,
+			Driver: m.Device, Loadpoint: m.LoadpointID, At: m.At,
+		})
+	}
+}
+
 // cloudForAPI hands the link to the API, or nothing: a typed nil in an
 // interface would pass the routes' nil check and panic on first use.
 func cloudForAPI(link *cloudlink.Link) api.CloudGrant {

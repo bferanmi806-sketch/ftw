@@ -120,8 +120,16 @@ func (w *writer) run(ctx context.Context, events <-chan cloudwire.Envelope) erro
 			} else if now.Sub(purgeSince) > purgeWait {
 				return errors.New("cloudlink: no purge receipt yet")
 			}
-		} else if err := w.tick(snap, st, now); err != nil {
-			return err
+		} else {
+			if err := w.closeIfAsked(snap); err != nil {
+				return err
+			}
+			if err := w.sendEvents(snap, now); err != nil {
+				return err
+			}
+			if err := w.tick(snap, st, now); err != nil {
+				return err
+			}
 		}
 
 		select {

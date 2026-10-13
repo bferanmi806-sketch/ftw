@@ -69,7 +69,7 @@ func (l *Link) once(ctx context.Context, snap grantSnapshot) (time.Duration, err
 		l.attempt = 0
 	}
 	l.mu.Unlock()
-	if errors.Is(err, errPurged) {
+	if errors.Is(err, errPurged) || errors.Is(err, errClosed) {
 		return 0, nil
 	}
 	return l.backoff(), err
