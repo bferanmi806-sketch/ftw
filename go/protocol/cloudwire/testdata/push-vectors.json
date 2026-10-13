@@ -176,6 +176,82 @@
         "verdict": "generic",
         "home": "aaaaaaaaaaaaaaaaaaaaaaaaaa"
       }
+    },
+    {
+      "name": "box clock not synced, anchored by rule U",
+      "payload": "{\"aps\":{\"alert\":{\"title-loc-key\":\"push.title\",\"loc-key\":\"push.generic\"},\"mutable-content\":1,\"sound\":\"default\"},\"ftw\":{\"v\":1,\"home\":\"fjzyr67buzpyncqmjliwgezvde\",\"event\":\"o2FiWIqpYmxwa2ozSFpPUk5DV0hzY3NlcQxjc3Jja0RVWVdXUW1uLVhnZGFyZ3OgZGJvb3RQsLCwsLCwsLCwsLCwsLCwsGRraW5kcmNoYXJnaW5nLmNvbm5lY3RlZGdldmVudElkbFEyWnJNalIwZHpWaGhzZXZlcml0eWRpbmZvaHVwdGltZU1zGgABFVhhdGVldmVudGNzaWdYQFNotNXPkQUfb07DO7RwspScyA+HtdtuE/R6EAOdZFzmMBTAeJfa+x5KFmmfsdQNg7Q3ffV+WLE0KNonhgL6OXY=\"}}",
+      "sig": "5368b4d5cf91051f6f4ec33bb470b2949cc80f87b5db6e13f47a10039d645ce63014c07897dafb1e4a16699fb1d40d83b4377df57e58b13428da278602fa3976",
+      "offset": {
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "boot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "offsetMs": 1791820740000,
+        "learnedAtMs": 1791817211000
+      },
+      "nowMs": 1791820812200,
+      "want": {
+        "verdict": "event",
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "kind": "charging.connected",
+        "src": "DUYWWQmn-Xg",
+        "lp": "j3HZORNCWHs",
+        "boot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "seq": 12,
+        "atMs": 1791820810640
+      }
+    },
+    {
+      "name": "box clock ahead, anchored by rule U",
+      "payload": "{\"aps\":{\"alert\":{\"title-loc-key\":\"push.title\",\"loc-key\":\"push.generic\"},\"mutable-content\":1,\"sound\":\"default\"},\"ftw\":{\"v\":1,\"home\":\"fjzyr67buzpyncqmjliwgezvde\",\"event\":\"o2FiWJqqYmxwa2ozSFpPUk5DV0hzY3NlcQ1jc3Jja0RVWVdXUW1uLVhnZGFyZ3OgZGJvb3RQsLCwsLCwsLCwsLCwsLCwsGRraW5kcmNoYXJnaW5nLmNvbm5lY3RlZGZ3YWxsTXMbAAABoTDX7iBnZXZlbnRJZGxRMlpyTWpSMGR6Vmhoc2V2ZXJpdHlkaW5mb2h1cHRpbWVNcxoAARVYYXRlZXZlbnRjc2lnWEAT0WQabV0OknG7SmU38U/KFBl7E6LdxOZZMNh9lOK/hi2WqRrVsSfQKUrKe8k65zfTUYHCQjuGSyi03B3vwg4W\"}}",
+      "sig": "13d1641a6d5d0e9271bb4a6537f14fca14197b13a2ddc4e65930d87d94e2bf862d96a91ad5b127d0294aca7bc93ae737d35181c2423b864b28b4dc1defc20e16",
+      "offset": {
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "boot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "offsetMs": 1791820740000,
+        "learnedAtMs": 1791817211000
+      },
+      "nowMs": 1791820812200,
+      "want": {
+        "verdict": "event",
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "kind": "charging.connected",
+        "src": "DUYWWQmn-Xg",
+        "lp": "j3HZORNCWHs",
+        "boot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "seq": 13,
+        "atMs": 1791820810640
+      }
+    },
+    {
+      "name": "rule U from another boot",
+      "payload": "{\"aps\":{\"alert\":{\"title-loc-key\":\"push.title\",\"loc-key\":\"push.generic\"},\"mutable-content\":1,\"sound\":\"default\"},\"ftw\":{\"v\":1,\"home\":\"fjzyr67buzpyncqmjliwgezvde\",\"event\":\"o2FiWIqpYmxwa2ozSFpPUk5DV0hzY3NlcQxjc3Jja0RVWVdXUW1uLVhnZGFyZ3OgZGJvb3RQsLCwsLCwsLCwsLCwsLCwsGRraW5kcmNoYXJnaW5nLmNvbm5lY3RlZGdldmVudElkbFEyWnJNalIwZHpWaGhzZXZlcml0eWRpbmZvaHVwdGltZU1zGgABFVhhdGVldmVudGNzaWdYQGk/DH/IlyDThxxoaZe5v0fNthUnu8QnNIlvDjReA36nwi4S1d0vPiDfNV2JwE4iyT57heDhaU27bERXLSNGRnc=\"}}",
+      "sig": "693f0c7fc89720d3871c686997b9bf47cdb61527bbc42734896f0e345e037ea7c22e12d5dd2f3e20df355d89c04e22c93e7b85e0e1694dbb6c44572d23464677",
+      "offset": {
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "boot": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+        "offsetMs": 1791820740000,
+        "learnedAtMs": 1791817211000
+      },
+      "nowMs": 1791820812200,
+      "want": {
+        "verdict": "generic",
+        "home": "fjzyr67buzpyncqmjliwgezvde"
+      }
+    },
+    {
+      "name": "rule U learned over a day ago",
+      "payload": "{\"aps\":{\"alert\":{\"title-loc-key\":\"push.title\",\"loc-key\":\"push.generic\"},\"mutable-content\":1,\"sound\":\"default\"},\"ftw\":{\"v\":1,\"home\":\"fjzyr67buzpyncqmjliwgezvde\",\"event\":\"o2FiWIqpYmxwa2ozSFpPUk5DV0hzY3NlcQxjc3Jja0RVWVdXUW1uLVhnZGFyZ3OgZGJvb3RQsLCwsLCwsLCwsLCwsLCwsGRraW5kcmNoYXJnaW5nLmNvbm5lY3RlZGdldmVudElkbFEyWnJNalIwZHpWaGhzZXZlcml0eWRpbmZvaHVwdGltZU1zGgABFVhhdGVldmVudGNzaWdYQJYY1B25q3N9kJEsHpndMcA9zIZD70klDsFbQdtklHF3eIWxYd1qbRN1eQaszxJWNQc8zatRazb3KwxDyiFMj/0=\"}}",
+      "sig": "9618d41db9ab737d90912c1e99dd31c03dcc8643ef49250ec15b41db649471777885b161dd6a6d13757906accf125635073ccdab516b36f72b0c43ca214c8ffd",
+      "offset": {
+        "home": "fjzyr67buzpyncqmjliwgezvde",
+        "boot": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "offsetMs": 1791820740000,
+        "learnedAtMs": 1791734412199
+      },
+      "nowMs": 1791820812200,
+      "want": {
+        "verdict": "generic",
+        "home": "fjzyr67buzpyncqmjliwgezvde"
+      }
     }
   ]
 }

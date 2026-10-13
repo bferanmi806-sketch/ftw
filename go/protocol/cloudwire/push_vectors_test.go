@@ -41,9 +41,18 @@ type pushVectorCase struct {
 	Payload string `json:"payload"`
 	// Sig is the event's stored signature, hex, empty when there is no
 	// event or it is unsigned.
-	Sig   string        `json:"sig"`
-	NowMs int64         `json:"nowMs"`
-	Want  pushVectorOut `json:"want"`
+	Sig string `json:"sig"`
+	// Offset is rule U's anchor the phone holds, absent when it holds none.
+	Offset *pushVectorOffset `json:"offset,omitempty"`
+	NowMs  int64             `json:"nowMs"`
+	Want   pushVectorOut     `json:"want"`
+}
+
+type pushVectorOffset struct {
+	Home        string `json:"home"`
+	Boot        string `json:"boot"`
+	OffsetMs    int64  `json:"offsetMs"`
+	LearnedAtMs int64  `json:"learnedAtMs"`
 }
 
 type pushVectorOut struct {
@@ -71,17 +80,18 @@ func TestPushVectors(t *testing.T) {
 	at := func(uptime int64) *int64 { return i64(wall + uptime - 60_000) }
 
 	var stored pushVectorFile
-	if !*update {
-		raw, err := os.ReadFile(pushVectorsPath)
-		if err != nil {
-			t.Fatalf("%v (run with -update to create it)", err)
-		}
+	if raw, err := os.ReadFile(pushVectorsPath); err == nil {
 		if err := json.Unmarshal(raw, &stored); err != nil {
 			t.Fatal(err)
 		}
+	} else if !*update {
+		t.Fatalf("%v (run with -update to create it)", err)
 	}
 	storedSig := func(i int, name string) []byte {
 		if i >= len(stored.Cases) || stored.Cases[i].Name != name {
+			if *update {
+				return nil
+			}
 			t.Fatalf("push vector %d is not %q in %s; regenerate with -update", i, name, pushVectorsPath)
 		}
 		sig, _ := hex.DecodeString(stored.Cases[i].Sig)
@@ -112,6 +122,18 @@ func TestPushVectors(t *testing.T) {
 	signedAsOther := connected
 	signedAsOther.Seq = 16
 
+	// Rule U: the phone learned phone time minus box uptime an hour before
+	// the event, so the anchor carries 0.01 % of that hour as margin.
+	learned := *at(71_000) - 60*60*1000
+	ruleU := &Offset{Boot: boot, OffsetMs: wall - 60_000, LearnedAtMs: learned}
+	otherBoot := &Offset{Boot: bytes.Repeat([]byte{0xb1}, BootBytes), OffsetMs: ruleU.OffsetMs, LearnedAtMs: learned}
+	dayOld := &Offset{Boot: boot, OffsetMs: ruleU.OffsetMs, LearnedAtMs: fresh0(connected) - RuleULifetimeMs - 1}
+	byRuleU := func(e Event, nowMs int64) pushVectorOut {
+		return pushVectorOut{Verdict: AlertEvent, Home: home, Kind: e.Kind, Args: e.Args, Src: e.Src, LP: e.LP,
+			Boot: hex.EncodeToString(e.Boot), Seq: e.Seq,
+			AtMs: ruleU.OffsetMs + e.UptimeMs - (nowMs-learned)/ruleUDriftDivisor}
+	}
+
 	type spec struct {
 		name    string
 		key     *ecdsa.PrivateKey // signer; nil for no event
@@ -119,10 +141,11 @@ func TestPushVectors(t *testing.T) {
 		event   *Event
 		alert   Alert // Home and Kind; Event is filled in
 		mutate  func(env []byte) []byte
+		offset  *Offset // rule U's anchor the phone holds for home
 		nowMs   int64
 		want    pushVectorOut
 	}
-	fresh := func(e Event) int64 { return *e.WallMs + 1_200 }
+	fresh := fresh0
 	event := func(e Event) pushVectorOut {
 		at := min(*e.WallMs, fresh(e))
 		if e.Ts != nil {
@@ -174,6 +197,14 @@ func TestPushVectors(t *testing.T) {
 		{name: "a home the phone does not hold", key: box, signFor: home, event: &connected,
 			alert: Alert{Home: "aaaaaaaaaaaaaaaaaaaaaaaaaa"}, nowMs: fresh(connected),
 			want: pushVectorOut{Verdict: AlertGeneric, Home: "aaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+		{name: "box clock not synced, anchored by rule U", key: box, signFor: home, event: &noClock,
+			alert: Alert{Home: home}, offset: ruleU, nowMs: fresh(connected), want: byRuleU(noClock, fresh(connected))},
+		{name: "box clock ahead, anchored by rule U", key: box, signFor: home, event: &ahead,
+			alert: Alert{Home: home}, offset: ruleU, nowMs: fresh(connected), want: byRuleU(ahead, fresh(connected))},
+		{name: "rule U from another boot", key: box, signFor: home, event: &noClock,
+			alert: Alert{Home: home}, offset: otherBoot, nowMs: fresh(connected), want: generic},
+		{name: "rule U learned over a day ago", key: box, signFor: home, event: &noClock,
+			alert: Alert{Home: home}, offset: dayOld, nowMs: fresh(connected), want: generic},
 	}
 
 	keys := map[string][]byte{home: boxPK, otherHome: otherPK}
@@ -189,12 +220,11 @@ func TestPushVectors(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if *update {
+			sig = storedSig(i, s.name)
+			if *update && Verify(&s.key.PublicKey, s.signFor, Envelope{T: MsgEvent, B: body, Sig: sig}) != nil {
 				if sig, err = Sign(rand.Reader, s.key, s.signFor, MsgEvent, body); err != nil {
 					t.Fatal(err)
 				}
-			} else {
-				sig = storedSig(i, s.name)
 			}
 			if err := Verify(&s.key.PublicKey, s.signFor, Envelope{T: MsgEvent, B: body, Sig: sig}); err != nil {
 				t.Fatalf("%s: stored signature does not verify: %v", s.name, err)
@@ -216,7 +246,13 @@ func TestPushVectors(t *testing.T) {
 			t.Fatalf("%s: %d bytes is over APNs' 4 KB", s.name, len(payload))
 		}
 
-		view := ReadAlert(payload, func(h string) []byte { return keys[h] }, s.nowMs)
+		offset := func(h string) *Offset {
+			if h != home {
+				return nil
+			}
+			return s.offset
+		}
+		view := ReadAlert(payload, func(h string) []byte { return keys[h] }, offset, s.nowMs)
 		got := pushVectorOut{Verdict: view.Verdict, Home: view.Home, Kind: view.Kind, Args: view.Args,
 			Src: view.Src, LP: view.LP, Seq: view.Seq, AtMs: view.AtMs}
 		if view.Boot != nil {
@@ -225,8 +261,12 @@ func TestPushVectors(t *testing.T) {
 		if !equalOut(got, s.want) {
 			t.Errorf("%s: got %+v, want %+v", s.name, got, s.want)
 		}
-		out.Cases = append(out.Cases, pushVectorCase{Name: s.name, Payload: string(payload),
-			Sig: hex.EncodeToString(sig), NowMs: s.nowMs, Want: s.want})
+		c := pushVectorCase{Name: s.name, Payload: string(payload), Sig: hex.EncodeToString(sig), NowMs: s.nowMs, Want: s.want}
+		if s.offset != nil {
+			c.Offset = &pushVectorOffset{Home: home, Boot: hex.EncodeToString(s.offset.Boot),
+				OffsetMs: s.offset.OffsetMs, LearnedAtMs: s.offset.LearnedAtMs}
+		}
+		out.Cases = append(out.Cases, c)
 	}
 
 	got, err := json.MarshalIndent(out, "", "  ")
@@ -246,6 +286,9 @@ func TestPushVectors(t *testing.T) {
 			"and pair it with srcfl/ftw-cloud and the app", pushVectorsPath)
 	}
 }
+
+// fresh0 is a phone clock 1.2 s after the event's wallMs.
+func fresh0(e Event) int64 { return *e.WallMs + 1_200 }
 
 func equalOut(a, b pushVectorOut) bool {
 	if len(a.Args) == 0 && len(b.Args) == 0 {

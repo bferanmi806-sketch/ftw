@@ -1,6 +1,7 @@
 package cloudwire
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/srcfl/ftw/go/protocol"
@@ -160,7 +161,8 @@ type AlertView struct {
 	Boot []byte
 	Seq  uint64
 	// AtMs is when the event happened by the phone's reading of the box
-	// clock: never later than it arrived.
+	// clock, less rule U's drift margin when rule U anchors it: never later
+	// than it arrived.
 	AtMs int64
 }
 
@@ -168,12 +170,21 @@ type AlertView struct {
 // before the phone stops trusting it (rule N).
 const ClockLeadMs = 2000
 
+// Offset is rule U's anchor for one home, as the phone keeps it for its
+// notification extension: phone time minus box uptime, the smallest learned
+// over Noise for Boot, and when it was last learned.
+type Offset struct {
+	Boot        []byte
+	OffsetMs    int64
+	LearnedAtMs int64
+}
+
 // ReadAlert is the reference for what a phone's notification extension does
 // with an alert payload. boxKey returns the key the phone learned over Noise
-// for a home, nil when it has none; nowMs is the phone's clock at arrival.
-// Whether a (boot, seq) was seen before is the caller's state, not this
-// function's.
-func ReadAlert(payload []byte, boxKey func(home string) []byte, nowMs int64) AlertView {
+// for a home, nil when it has none; offset returns rule U's anchor for a
+// home, nil when it has none; nowMs is the phone's clock at arrival. Whether
+// a (boot, seq) was seen before is the caller's state, not this function's.
+func ReadAlert(payload []byte, boxKey func(home string) []byte, offset func(home string) *Offset, nowMs int64) AlertView {
 	var p struct {
 		FTW *Alert `json:"ftw"`
 	}
@@ -204,10 +215,13 @@ func ReadAlert(payload []byte, boxKey func(home string) []byte, nowMs int64) Ale
 		return view
 	}
 	var ev Event
-	if Unmarshal(env.B, &ev) != nil || ev.WallMs == nil || *ev.WallMs > nowMs+ClockLeadMs {
+	if Unmarshal(env.B, &ev) != nil {
 		return view
 	}
-	at := min(*ev.WallMs, nowMs)
+	at, ok := alertSendTime(ev, offset(a.Home), nowMs)
+	if !ok {
+		return view
+	}
 	if ev.Ts != nil {
 		at = min(at, *ev.Ts)
 	}
@@ -217,4 +231,21 @@ func ReadAlert(payload []byte, boxKey func(home string) []byte, nowMs int64) Ale
 	}
 	return AlertView{Verdict: AlertEvent, Home: a.Home, Kind: ev.Kind, Args: ev.Args, Src: ev.Src, LP: ev.LP,
 		Boot: ev.Boot, Seq: ev.Seq, AtMs: at}
+}
+
+// alertSendTime anchors an event as View anchors a message: the earlier of
+// rule N and rule U, and when rule U gives it, earlier by the drift margin so
+// the margin counts against the age. A box clock more than ClockLeadMs ahead
+// gives no rule N. ok is false when neither rule applies.
+func alertSendTime(ev Event, off *Offset, nowMs int64) (at int64, ok bool) {
+	if ev.WallMs != nil && *ev.WallMs <= nowMs+ClockLeadMs {
+		at, ok = min(*ev.WallMs, nowMs), true
+	}
+	if off == nil || !bytes.Equal(off.Boot, ev.Boot) || nowMs-off.LearnedAtMs > RuleULifetimeMs {
+		return at, ok
+	}
+	if u := min(off.OffsetMs+ev.UptimeMs, nowMs); !ok || u <= at {
+		at, ok = u-max(0, nowMs-off.LearnedAtMs)/ruleUDriftDivisor, true
+	}
+	return at, ok
 }
