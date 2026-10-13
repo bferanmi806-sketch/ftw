@@ -144,7 +144,26 @@ balance cases over two starts each on separate synthetic Linux copies.
 Known meter values remain in history while missing flows and totals stay
 unknown. It also records the time spent in forecast connection, query, scan
 and decode phases when a read fails. The timeout cause remains unproven.
-These checks do not qualify the older migration routes against this beta.
+These checks alone do not qualify the older migration routes against this beta.
+
+A separate protected full backup and full return passed on a separate HAOS 18.3
+ARM64 VM, with Supervisor 2026.09.3 reporting supported and healthy. Its
+published HA 3.8 FTW source used synthetic data. Export and full FTW backup
+with the exact published `v0.141.4-beta.1` Core/helper passed two target
+starts, new writes and revert on a separate Linux ARM64 data copy. Old
+chart rows, two archive hours, settings, credentials, goals and identity
+remained. The checks verify root relocation and the older planner and SoC
+field mappings rather than requiring those fields to keep their old form.
+Native installation and physical cutover need separate proof.
+
+The protected HAOS return restored a synthetic template sensor's entity ID,
+unique ID and state, and both HA and FTW test files. Old FTW still needed
+the owner recovery command below before it could start. That command kept
+all 61 checked files' bytes and modes and both internal links. The matching
+old Core then returned with its chart rows and two archive hours. The VM
+and FTW test targets are stopped; their backups and data remain.
+This does not qualify FTW MQTT discovery or entity continuity, every
+community app, real equipment or power-loss recovery.
 
 The published `v0.141.2-beta.1` Core and helper preserve partial history in
 a full backup. Small synthetic meter/battery cases passed two starts,
@@ -177,7 +196,7 @@ A complete protected return job on that separate test instance passed the
 command, old Core start, retained chart rows and two archive hours, then a
 final stop. Its source was the same published HA 3.8 image. This command
 does not publish or update the retired app line.
-Automatic Supervisor return and HA entity continuity remain unqualified.
+Automatic Supervisor return and FTW HA entity continuity remain unqualified.
 Keep the original app and its data; do not treat a completed backup job as
 proof that the app can return without help.
 
