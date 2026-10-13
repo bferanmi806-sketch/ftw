@@ -56,6 +56,12 @@ consistent copy of `cache.db`: savings history is costed from its past
 prices, and a price provider sends only today and tomorrow. Managed-driver
 links that point inside the persistent directory become relative links in the
 archive, so restore can move the data to another directory or machine.
+
+The archive also leaves out `cloud.key` and `cloud.key.tmp`. Pairing and
+WebPush keys remain. After a full restore, FTW Cloud stays off until the
+owner grants it again under a new home ID. Local control and stored goals
+remain available.
+
 Backup never follows these
 links to copy a host file; verification rejects link chains that escape the
 data directory or form a cycle.

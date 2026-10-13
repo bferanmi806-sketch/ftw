@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.141.5`, which has not shipped as stable. The published
-beta is `v0.141.5-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.142.0`, which has not shipped as stable. The published
+beta is `v0.142.0-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -30,6 +30,11 @@ Active SQLite settings take precedence over an old YAML seed. The config API
 masks secrets and is not a full export. Include environment files and service
 or Compose definitions needed to explain the source's paths and credentials.
 Preserve shared MQTT and other services used by the equipment.
+
+FTW Cloud needs a new owner grant after a full-backup restore. The backup
+keeps pairing and WebPush keys but leaves out `cloud.key` and its temporary
+file. A restored Cloud grant reads as off until the owner turns Cloud on
+again under a new home ID. Local operation and stored goals remain.
 
 ## Export a complete source copy
 
@@ -148,19 +153,34 @@ the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
 
-The published `v0.141.5-beta.1` Core passed healthy, offline and invalid
+The published `v0.142.0-beta.1` Core passed healthy, offline and invalid
 balance cases over two starts each on separate synthetic Linux copies.
 Known meter values remain in history while missing flows and totals stay
 unknown. It also records the time spent in forecast connection, query, scan
 and decode phases when a read fails. The timeout cause remains unproven.
 These checks alone do not qualify the older migration routes against this beta.
 
-The published `v0.141.5-beta.1` helper also passed full backup, verification,
+The published `v0.142.0-beta.1` helper also passed full backup, verification,
 portable restore and revert on separate copies of published HA 3.8 split
 SQLite and current partial/quality history. Historical rows, settings and
 identity remained after explicit data-root and restore-generation mappings.
 Revert kept new target writes in its safety directory. These are data-copy
 checks; the HAOS, MQTT and installation tests below retain their own versions.
+
+The same published Core and helper passed a separate Cloud restore check
+without network access. Core created a local grant on the source copy. A
+verified full backup omitted the Cloud key, and two restored starts kept
+Cloud off. A new explicit grant used a different home ID. Source keys and
+modes, pairing identity and WebPush identity remained. This tests local
+restore behavior, not a connection to the Cloud service.
+
+The published `v0.142.0-beta.1` Core, helper and converter also passed 30
+checks from published `v3.2.0-beta.1` with retained Parquet and 500,000 extra
+synthetic DuckDB rows. A process kill interrupted the copy before publication;
+resume checked the source, and a changed source stopped it. Two target
+starts and two portable-restore starts kept history, goals, settings and
+identity. Return and revert retained both copies. This does not qualify
+an installation change, Pi/SD performance or physical power loss.
 
 A separate protected full backup and full return passed on a separate HAOS 18.3
 ARM64 VM, with Supervisor 2026.09.3 reporting supported and healthy. Its
@@ -364,6 +384,9 @@ en annan disk eller dator. Använd en separat värd eller ett nytt Pi-kort som m
    drivrutiner och arkiv. Home Assistant-backup behöver sin nyckel. Använd
    den länkade exportören för FTW-komponenten och följ dess README för full
    backup med den gamla roten `/data`.
+   FTW Cloud kräver ett nytt godkännande efter full återställning. Backupen
+   utelämnar Cloud-nyckeln; återställd Cloud är avstängd tills ägaren slår på
+   den igen med ett nytt home-ID. Pairing, WebPush och sparade mål består.
    Ligger filer på externa sökvägar: behåll den stoppade källan och samla
    filerna i en extra skrivbar kopia. Mappa bara kända sökvägar i kopians
    aktiva SQLite-config och YAML-seed. Behåll övriga inställningar. Lägg
