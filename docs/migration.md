@@ -45,6 +45,15 @@ SQLite read-only without upgrading it. Pass `-core-version` with the verified
 external files and their path mapping explicit; the helper requires its
 config seed inside the data tree.
 
+For an external layout, keep the stopped source and its config seed intact.
+Use a second writable copy to collect the database, required archives, keys
+and driver files inside one data tree. Map each known file path in that
+copy's active SQLite config and YAML seed; keep all other settings and
+credentials. If the source has no stored config, keep YAML as its source
+until Core imports it. Do not add a `config_database` reference to a database
+that has no stored config. Verify the resulting full backup and restore it
+on a separate target. An unresolved external path must stop the move.
+
 Do not start an old Core merely to inspect the migration copy. Preserve the
 original bytes and use the full-backup inspector or converter. When a format
 or source is unknown, keep the copy and resolve that case before starting it.
@@ -294,6 +303,18 @@ were checked. The AMD64 source ran through emulation on Apple Silicon.
 This covers the tested Linux Docker copy across CPU architectures; it does
 not qualify 32-bit sources or native macOS/Windows paths.
 
+One external Linux layout from published 2.3.2 also passed 36 checks with
+the published `v0.141.4-beta.1` ARM64 Core and helper. Its database used a
+subdirectory, while the config seed, driver files and Parquet archive used
+other paths. The helper refused an external config seed and stopped a move
+with unresolved paths before replacing target data. A separate copy with
+explicit path mappings retained 25 old chart rows, two Parquet values,
+settings, credentials, goals, keys and driver files over two target starts
+and return to old Core. The check compared every old config field, with
+explicit mappings for paths, old planner choice and units. Revert kept new
+target data. This covers that stopped-copy layout, not every external mount,
+an installer change, physical equipment or power loss.
+
 The published `v0.141.0-beta.1` Linux ARM64 backup helper also passed process
 crash tests during preservation, activation, return and a later extraction.
 The tests check that incomplete copies cannot replace active data, all old
@@ -301,7 +322,7 @@ and new files remain, and a complete backup can restore on a separate target.
 These tests use synthetic files and do not prove recovery from physical
 power loss or an interrupted installation change.
 
-Large archives on Pi/SD, external layouts, cross-platform and 32-bit sources,
+Large archives on Pi/SD, other external layouts, cross-platform and 32-bit sources,
 complete Supervisor control, interrupted installation changes and physical cutover
 remain release requirements. Unknown formats keep their source data and
 require a checked import path.
@@ -319,6 +340,11 @@ en annan disk eller dator. Använd en separat värd eller ett nytt Pi-kort som m
    drivrutiner och arkiv. Home Assistant-backup behöver sin nyckel. Använd
    den länkade exportören för FTW-komponenten och följ dess README för full
    backup med den gamla roten `/data`.
+   Ligger filer på externa sökvägar: behåll den stoppade källan och samla
+   filerna i en extra skrivbar kopia. Mappa bara kända sökvägar i kopians
+   aktiva SQLite-config och YAML-seed. Behåll övriga inställningar. Lägg
+   inte till `config_database` om databasen saknar lagrad config. Olösta
+   externa sökvägar ska stoppa flytten före aktivering.
 3. Installera exakt målversion på den separata Linuxmaskinen. Stoppa och
    stäng av nya tjänstens autostart före import. Använd blocket ovan för en
    verifierad `.ftwbak`; det lämnar Core stoppad.
