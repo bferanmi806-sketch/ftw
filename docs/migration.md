@@ -294,6 +294,23 @@ same and new data roots, two starts and revert keep the selected driver
 active and preserve its previous-version path. These checks use synthetic
 records and valid file hashes; they do not prove a signed-channel install.
 
+A later two-host test passed 39 checks from the published 3.8 Core and
+helper to the published `v0.142.0-beta.1` native package. The unchanged
+installer refused the source's existing `ftw` account and installed on a
+fresh Debian 13 ARM64 target. Full backup transfer, two target starts and
+matching old return retained 24 exact chart rows, two stored hours, settings,
+credentials, goals and keys. The check compared every selected old config
+field after explicit path, planner, SoC and forecast-margin mappings.
+The source data stayed intact and new target writes had no errors.
+
+Real systemd rules kept only the selected Core running after both test
+machines restarted, including after return. Both stopped full backups were
+verified off the guest, and both machines ended stopped with data retained.
+These OrbStack machine restarts test Linux service startup, not a physical
+Pi power cycle. The source has no Parquet files; this test does not add
+Parquet coverage, every custom layout, in-place installation or equipment
+control.
+
 A separate two-host Linux ARM64 test moved a synthetic 3.8 custom systemd
 source to a fresh `v0.141.0-beta.1` native target. The exact published old
 helper created the full backup. Both hosts restarted with only the selected
