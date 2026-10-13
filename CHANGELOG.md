@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.141.6
+
+### Patch Changes
+
+- 22a8f32: A phone that opens the app just after the hour finds the box at once over the relay. The relay turns its rendezvous handles on the hour but closes each box's old room on its own turn in a five-minute spread, so a phone could wait up to five minutes in an empty room. The box now joins the new hour's handle when the hour turns and keeps the old one until the relay closes it.
+
+## 0.141.5
+
+### Patch Changes
+
+- 85e1b7a: Limit charging steps to the charger's max power when loading, saving and planning, and show a warning. Show the latest planning failure in Plan instead of leaving it on Preparing.
+
+## 0.141.4
+
+### Patch Changes
+
+- 18945ce: Report connection wait, SQL query, scan and decode times when a forecast read fails, without recording measurement values or extending its deadline.
+
+## 0.141.3
+
+### Patch Changes
+
+- 3d07f27: Export stopped older split SQLite history without requiring the later partial-history tables. Refuse incomplete quality tables and preserve the source during backup.
+
 ## 0.141.2
 
 ### Patch Changes
