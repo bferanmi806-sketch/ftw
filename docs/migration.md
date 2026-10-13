@@ -365,6 +365,20 @@ were checked. The AMD64 source ran through emulation on Apple Silicon.
 This covers the tested Linux Docker copy across CPU architectures; it does
 not qualify 32-bit sources or native macOS/Windows paths.
 
+A separate test passed 42 checks from one custom Linux 386 build of the
+unchanged 2.3.2 source to the published `v0.142.1-beta.1` ARM64 Core and
+helper. The ELF32 source ran under QEMU user emulation and wrote current
+history with millisecond timestamps. A verified full backup from a stopped,
+writable export copy kept the source unchanged. Two ARM64 starts retained
+25 exact old chart rows, two Parquet values, stored goals and credentials,
+identity and all old YAML config fields after checked path, planner, SoC
+and PV-unit mappings. New writes had no errors or rejected ticks. Return
+to the matching 32-bit build and revert passed; the old source, backups
+and new target database remain. All test containers are stopped.
+This is a data-copy check for that custom build. It is not a published
+32-bit package, an ARMv7/Pi test, a 32-bit OS, an installer change, reboot
+or physical power-loss proof.
+
 One external Linux layout from published 2.3.2 also passed 36 checks with
 the published `v0.141.4-beta.1` ARM64 Core and helper. Its database used a
 subdirectory, while the config seed, driver files and Parquet archive used
@@ -384,7 +398,7 @@ and new files remain, and a complete backup can restore on a separate target.
 These tests use synthetic files and do not prove recovery from physical
 power loss or an interrupted installation change.
 
-Large archives on Pi/SD, other external layouts, cross-platform and 32-bit sources,
+Large archives on Pi/SD, other external layouts, cross-platform and other 32-bit sources,
 complete Supervisor control, interrupted installation changes and physical cutover
 remain release requirements. Unknown formats keep their source data and
 require a checked import path.
