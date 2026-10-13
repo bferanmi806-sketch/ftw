@@ -162,8 +162,24 @@ the owner recovery command below before it could start. That command kept
 all 61 checked files' bytes and modes and both internal links. The matching
 old Core then returned with its chart rows and two archive hours. The VM
 and FTW test targets are stopped; their backups and data remain.
-This does not qualify FTW MQTT discovery or entity continuity, every
-community app, real equipment or power-loss recovery.
+This template check does not test FTW MQTT entities, every community app,
+real equipment or power-loss recovery.
+
+A separate MQTT move on that own HAOS VM kept the same broker running while
+only the selected FTW Core ran. The published HA 3.8 source and exact
+`v0.141.4-beta.1` target kept all 44 recorded MQTT entity IDs, unique IDs
+and device links through two target starts and matching old return. The same
+grid sensor reported 700 W, then the target's new synthetic 800 W, then the
+old source's 700 W. Old chart rows and both stored hours remained; new ticks
+had no failed or rejected writes. Both full backups remain off the VM.
+
+The checks compare credentials and identity without exporting their values.
+They verify the old Balanced forecast margin's move to the current Balanced
+style, alongside the root, planner and SoC mappings. A guest OS reboot with
+the old app's Start on boot, Watchdog and auto-update off started neither
+old Core nor the removed target. This covers one synthetic MQTT setup and a
+Docker data target on HAOS. It does not qualify every entity or command,
+community layout, native installer, real device or power-loss case.
 
 The published `v0.141.2-beta.1` Core and helper preserve partial history in
 a full backup. Small synthetic meter/battery cases passed two starts,
@@ -196,7 +212,8 @@ A complete protected return job on that separate test instance passed the
 command, old Core start, retained chart rows and two archive hours, then a
 final stop. Its source was the same published HA 3.8 image. This command
 does not publish or update the retired app line.
-Automatic Supervisor return and FTW HA entity continuity remain unqualified.
+Automatic Supervisor return remains unqualified. This older devcontainer
+check did not test FTW MQTT entities.
 Keep the original app and its data; do not treat a completed backup job as
 proof that the app can return without help.
 
