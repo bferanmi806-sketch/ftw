@@ -10,6 +10,7 @@ const PushCatalogueVersion = 1
 const (
 	PushChargingConnected       = "charging.connected"
 	PushChargingSessionComplete = "charging.session_complete"
+	PushChargingGoalAtRisk      = "charging.goal_at_risk"
 	PushChargingInterrupted     = "charging.interrupted"
 	PushUpdateInstalled         = "update.installed"
 	PushDriverOffline           = "driver.offline"
@@ -30,6 +31,7 @@ type PushSentence struct {
 var PushSentences = map[string]PushSentence{
 	PushChargingConnected:       {Title: "Car plugged in", Body: "Open to see charging status, check the battery level and set a ready time."},
 	PushChargingSessionComplete: {Title: "Car charged", Body: "{kwh} kWh delivered — ready to go."},
+	PushChargingGoalAtRisk:      {Title: "The car may not be ready", Body: "It will not reach {target} % by {by} at this pace."},
 	PushChargingInterrupted:     {Title: "Charging stopped early", Body: "The car stopped charging before it was done."},
 	PushUpdateInstalled:         {Title: "Your box updated itself", Body: "Now running {version}. Everything came back on its own."},
 	PushDriverOffline:           {Title: "A device went quiet", Body: "{name} stopped answering."},

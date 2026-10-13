@@ -68,6 +68,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/selfupdate"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/telemetry"
+	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
 // Version gets injected at build time via -ldflags. Defaults to "dev" for
@@ -2660,6 +2661,20 @@ func main() {
 		notifSvc.AddPublisher(webPush)
 		deps.WebPush = webPush
 	}
+	// FTW Cloud carries the catalogue's events to the owners' phones,
+	// signed, when the grant includes them. The publisher only queues.
+	if cloudLink != nil {
+		notifSvc.AddPublisher(notifications.CloudPublisher{Queue: cloudEventQueue(cloudLink)})
+	}
+	notifSvc.SetChargingFacts(func(id string) (notifications.ChargingFacts, bool) {
+		lp, ok := lpMgr.State(id)
+		if !ok {
+			return notifications.ChargingFacts{}, false
+		}
+		return notifications.ChargingFacts{
+			Plugged: lp.PluggedIn, LevelKnown: lp.PluggedIn && lp.SoCSource != "assumed", HasGoal: lp.TargetSoC > 0,
+		}, true
+	})
 	if appUplink != nil {
 		deps.PushResync = appUplink.ResyncDeadman
 	}
@@ -2776,6 +2791,7 @@ func main() {
 		select {
 		case <-sigc:
 			slog.Info("shutting down")
+			cloudLink.Bye(cloudwire.ByeShutdown, cloudByeWait)
 			markNativeCleanExit(nativeRoot)
 			flushHistoryOnStop(st)
 			if err := st.RecordEvent("shutdown"); err != nil {
@@ -2788,6 +2804,9 @@ func main() {
 			} else {
 				slog.Info("restart requested via API — exiting cleanly so the supervisor brings us back")
 			}
+			// A restart the box chose, an update among them: FTW Cloud holds
+			// back "box out of reach" until the box is back.
+			cloudLink.Bye(cloudwire.ByeUpdate, cloudByeWait)
 			markNativeCleanExit(nativeRoot)
 			flushHistoryOnStop(st)
 			if err := st.RecordEvent("restart"); err != nil {
@@ -3195,6 +3214,15 @@ func main() {
 							"lp", lp.ID, "prev_w", prev, "curr_w", curr)
 					}
 					evDrawPrev[lp.ID] = curr
+				}
+			}
+
+			// A car whose plan cannot make its goal: the loadpoint manager
+			// tells the household once per plug-in, from a plan that is
+			// neither being remade nor out of date.
+			if mpcSvc != nil {
+				if snap := mpcSvc.PlanSnapshot(); snap.Plan != nil && !snap.Pending && !snap.Outdated {
+					lpMgr.ObservePlanShortfall(snap.Plan.LoadpointShortfallWh, tickNow)
 				}
 			}
 

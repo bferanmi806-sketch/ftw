@@ -14,6 +14,7 @@ const (
 	PushChargingConnected       = protocol.PushChargingConnected
 	PushChargingSessionComplete = protocol.PushChargingSessionComplete
 	PushChargingInterrupted     = protocol.PushChargingInterrupted
+	PushChargingGoalAtRisk      = protocol.PushChargingGoalAtRisk
 	PushUpdateInstalled         = protocol.PushUpdateInstalled
 	PushDriverOffline           = protocol.PushDriverOffline
 	PushFuseOverLimit           = protocol.PushFuseOverLimit

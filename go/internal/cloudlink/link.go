@@ -168,6 +168,15 @@ type Link struct {
 	attempt   int
 	purgedAt  int64
 	rosterDue bool
+
+	// events wait for the writer; eventsDropped counts those that never
+	// left. closing is set by Bye, after which the link does not dial
+	// again.
+	events        []EventIn
+	eventsDropped int64
+	closing       bool
+	byeWhy        string
+	byeDone       chan struct{}
 }
 
 // New loads the grant and the key and returns a link that runs once Run is
@@ -548,6 +557,10 @@ type Status struct {
 	BudgetReached bool  `json:"budgetReached"`
 	// PurgedAtMs is the time on the service's receipt for the last deletion.
 	PurgedAtMs int64 `json:"purgedAtMs,omitempty"`
+	// EventsDropped counts notifications that never reached the service:
+	// the queue was full, or the uplink was down for longer than a phone
+	// would still act on them.
+	EventsDropped int64 `json:"eventsDropped"`
 }
 
 // Status reports the grant and the link.
@@ -557,7 +570,7 @@ func (l *Link) Status() Status {
 	s := Status{
 		State: "off", Notice: l.notice, Available: len(l.opts.ServiceKeys) > 0,
 		Scopes: []string{}, Purposes: []string{}, Connected: l.connected,
-		LastSendAgeMs: -1, PurgedAtMs: l.purgedAt,
+		LastSendAgeMs: -1, PurgedAtMs: l.purgedAt, EventsDropped: l.eventsDropped,
 		BytesLast24h: l.budget.total(l.uptimeMs()), BudgetBytes: budgetBytes,
 	}
 	s.BudgetReached = s.BytesLast24h >= budgetBytes
@@ -654,6 +667,9 @@ func (l *Link) current() grantSnapshot {
 // Run keeps the uplink up while a grant is on, until ctx ends.
 func (l *Link) Run(ctx context.Context) error {
 	for {
+		if l.isClosing() {
+			return nil
+		}
 		snap := l.current()
 		if snap.g == nil || len(l.opts.ServiceKeys) == 0 {
 			select {
@@ -680,6 +696,12 @@ func (l *Link) Run(ctx context.Context) error {
 	}
 }
 
+func (l *Link) isClosing() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.closing
+}
+
 // allowed reports whether the grant lets a class leave the house.
 func (snap grantSnapshot) allowed(class string) bool {
 	scope, forwarded := cloudwire.ClassScope[class]
@@ -692,7 +714,7 @@ func (snap grantSnapshot) allowed(class string) bool {
 // caps is the classes this box sends under the grant.
 func (snap grantSnapshot) caps() []string {
 	var out []string
-	for _, c := range []string{cloudwire.MsgLive, cloudwire.MsgLP, cloudwire.MsgPrices, cloudwire.MsgHB} {
+	for _, c := range []string{cloudwire.MsgLive, cloudwire.MsgLP, cloudwire.MsgPrices, cloudwire.MsgHB, cloudwire.MsgEvent} {
 		if snap.allowed(c) {
 			out = append(out, c)
 		}
