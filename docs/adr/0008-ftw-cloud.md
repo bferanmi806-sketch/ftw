@@ -129,8 +129,8 @@ control path as two states.
 
 - **The grant lives on the box.** A missing grant reads as **off**, the
   opposite of `app_link`. An owner grants over an app session; any door may
-  revoke. Every change notifies all owners. A viewer's app shows that the
-  home uses FTW Cloud, and viewers get no alerts.
+  revoke. Turning it on or off notifies all owners. A viewer's app shows that
+  the home uses FTW Cloud, and viewers get no alerts.
 - **Scopes.** Live, history, plan, health and the new `ftw.events.read`.
   Inventory stays out.
 - **Roster.** The box signs the list of paired devices, their keys and the
@@ -149,8 +149,8 @@ looks fresher than the box would grade it. The phone trusts a send time only
 through an anchor it can check, and shows unanchored data as "cloud, age
 unverified", never live. The service cannot sign, so it cannot clear
 staleness. The
-[protocol](../protocol-cloud.md#freshness) states the rules and eight test
-vectors.
+[protocol](../protocol-cloud.md#freshness) states the rules and sixteen test
+cases.
 
 ## Statistics
 

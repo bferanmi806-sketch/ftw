@@ -2,15 +2,19 @@
 
 Proposed with [ADR 0008](adr/0008-ftw-cloud.md). Nothing here has shipped.
 This document is normative: "must" is a requirement on the box, the service
-or the phone. Byte-level test vectors land with the code, in this repository
-and in `srcfl/ftw-cloud`. Until then the text below is the reference, and the
-vectors described in [Freshness](#freshness) are the cases they must cover.
+or the phone. The bytes live in `go/protocol/cloudwire`, with golden vectors
+in its `testdata`: `cloud-vectors.json` for the uplink and
+`cloud-app-vectors.json` for one whole app session. `srcfl/ftw-cloud` and the
+phone replay them. `cloudwire.View` is the phone's
+[freshness](#freshness) rules in Go, and the cases listed there are its tests.
 
 The app protocol, which runs inside Noise between a phone and its box, is
 specified in
 [srcfl/ftw-webapp docs/protocol.md](https://github.com/srcfl/ftw-webapp/blob/main/docs/protocol.md).
-FTW Cloud reuses its frame layout, CBOR rules, field encoding and tile format,
-and changes nothing in it. Lane 0 and the relay stay as they are. The Go types
+FTW Cloud reuses its frame layout, CBOR rules, field encoding and tile format.
+It adds the `cloud.link` capability and one optional field to the app
+protocol's `hello_ok`, `cloud` (see
+[Session information](#session-information)), and changes nothing else. Lane 0 and the relay stay as they are. The Go types
 for both live in `go/protocol`, under Apache-2.0
 ([#1588](https://github.com/srcfl/ftw/pull/1588)).
 
@@ -25,7 +29,7 @@ for both live in `go/protocol`, under Apache-2.0
 | Connection | Opened by | Transport | What protects it |
 |---|---|---|---|
 | Uplink | Box | `wss://cloud.ftw.energy/v1/box` | TLS 1.3, a handshake bound to the TLS session on both sides, every box message signed |
-| App session | Phone | `wss://cloud.ftw.energy/v1/app` | TLS, then Noise IK to the service's static key |
+| App session | Phone | `wss://cloud.ftw.energy/v1/app?home=<id>` | TLS 1.3, then Noise IK to the service's static key |
 | Extension read | Extension | `GET https://cloud.ftw.energy/v1/now` | TLS and an extension token; the data inside is box-signed |
 | Push | Service | APNs | Box-signed payloads where they carry data |
 
@@ -64,7 +68,7 @@ offset  field    type     value on FTW Cloud
 - A receiver closes the connection on a lane 0 frame, a nonzero flag, bytes
   after `len`, or a text message.
 - Inside the app session the same frames ride as Noise transport messages,
-  also without padding.
+  one frame per message, also without padding.
 
 The app protocol pads lane 0 to a fixed size and cadence because the relay
 must learn nothing from the stream. The service reads the content, so padding
@@ -79,7 +83,11 @@ decision 5).
 Envelope = { t: text, b: bstr, sig: bstr }
 ```
 
-- CBOR, core deterministic encoding, text keys.
+- CBOR, core deterministic encoding, text keys. A map with a repeated key is
+  refused.
+- An empty list or map is `[]` or `{}`, never null. A number the box does not
+  know is `null`. Of the box's fields, only `wallMs`, `sources` and
+  `fieldSources` are ever left out.
 - `b` is the body, itself deterministic CBOR, carried as a byte string so that
   the signature covers exact bytes and the service can forward them unchanged.
 - `sig` is ES256 (ECDSA on P-256 with SHA-256), 64 bytes, `r ‖ s`
@@ -88,12 +96,14 @@ Envelope = { t: text, b: bstr, sig: bstr }
   byte), then the deterministic CBOR encoding of the array `[home, t, b]`,
   where `home` is the text home id.
 - The box signs with `cloud.key`. The service signs `hello_ok` and `purged`
-  with its service key. Every other envelope the service sends, and every
-  envelope between phone and service, has an empty `sig`.
+  with its service key, over the box's home id. Every other envelope the
+  service sends, and every envelope between phone and service, has an empty
+  `sig`.
 - A receiver verifies over the bytes it received, never over a re-encoding.
-- The box's public key reaches phones over Noise, beside the table of opaque
-  ids, the home id and the box's current `boot`, in the session information
-  every role receives. It never comes from the service.
+- The box's public key reaches phones over Noise, beside the tables of opaque
+  ids, the home id and the box's current `boot`, in the
+  [session information](#session-information) every role receives. It never
+  comes from the service.
 - Receivers ignore unknown keys in a body, as in the app protocol. The service
   drops and counts an unknown `t` from the box, so a newer box works with an
   older service. An unknown `t` from the service closes the uplink.
@@ -122,7 +132,7 @@ not repeat them.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `seq` | uint | Starts at 1 and rises by 1 per message, per boot |
+| `seq` | uint | Starts at 1 and rises by 1 per message, per boot, across reconnects |
 | `boot` | bstr, 16 B | Random, drawn at each Core start |
 | `uptimeMs` | uint | Box monotonic time since start, at send |
 | `wallMs` | uint | Box wall time at send. Present only while NTP has synced the box clock |
@@ -152,11 +162,12 @@ with two different values, so neither side's check passes through it.
    | `boxNonce` | bstr, 32 B | Random, for the service to sign |
    | `build` | text | Core version |
    | `clock` | text | `ntp` or `none` |
-   | `caps` | [text] | Uplink features this box speaks |
+   | `caps` | [text] | The classes this box sends under the grant, `roster` included |
    | `rosterSeq` | uint | The box's current roster number |
    | `grantId` | bstr, 16 B | The grant this connection serves |
 
-3. **Service → box: `hello_ok`**, signed by the service key.
+3. **Service → box: `hello_ok`**, signed by the service key over the box's
+   home id.
 
    | Field | Type | Meaning |
    |---|---|---|
@@ -170,10 +181,10 @@ with two different values, so neither side's check passes through it.
    check fails, the box closes and backs off. **It sends nothing but `hello`
    before this check passes.** A proxy that reads `hello` learns the box's
    public key and grant id, and cannot use them.
-4. **Box → service:** a `roster` when the service's number differs from its
-   own (see [Roster](#roster)); then one full message of each class the grant
-   allows; then the tiles missing from `have`. While a purge is pending, the
-   box sends only `bye` instead (see [Revocation](#revocation-and-deletion)).
+4. **Box → service:** a `roster`, at every connect (see [Roster](#roster));
+   then one full message of each class the grant allows; then the tiles
+   missing from `have`. While a purge is pending, the box sends only `bye`
+   instead (see [Revocation](#revocation-and-deletion)).
 5. After that the box sends on change, by the cadence rules.
 
 ## Classes
@@ -181,7 +192,10 @@ with two different values, so neither side's check passes through it.
 The box sends these. Each class belongs to one scope, and the service
 forwards a class only to devices whose effective scope includes it. These
 tables are the allowlist: a field the box sends must have a row here, and a
-test fails on any field without one. Driver names and device capabilities
+test fails on any field without one. `cloudwire.Fields` holds the same
+tables, and `TestFieldsMatchTheProtocolDocument` compares the two. It reads
+the rows under each class heading, each bold shape name and each numbered
+handshake step, so keep that layout. Driver names and device capabilities
 have no rows. Source kinds and counts, health counts and the statistics `has`
 list still show what kinds of equipment a site has.
 
@@ -190,7 +204,7 @@ list still show what kinds of equipment a site has.
 | Field | Type | Meaning |
 |---|---|---|
 | `fields` | map text→int | Frozen field ids 1–6 and 10, keyed and encoded as the app protocol's `delta` does: field 1 is the mode index, power in W |
-| `fieldSources` | map text→[text] | The sources each field's freshness follows |
+| `fieldSources` | map text→[text] | The sources each field's freshness follows. Sent only with `sources` |
 | `sources` | map text→Source | The source table. Sent whenever `srcRev` changes, and in every full message |
 | `srcRev` | uint | Rises by 1, per boot, each time the source table changes |
 | `ages` | map text→uint | For each source in state `live` or `lagging`, the age of its newest reading at send, in ms of box uptime |
@@ -220,15 +234,15 @@ list still show what kinds of equipment a site has.
 | `id` | text | Opaque loadpoint id |
 | `src` | text | Opaque source id of the charger, whose freshness the loadpoint follows |
 | `plugged` | bool | A car is connected |
-| `socPermille` | uint or null | Car charge level, null when unknown |
+| `socPermille` | uint or null | Car charge level, null when unplugged |
 | `socSource` | text | `vehicle`, `inferred` or `assumed`; empty when unplugged |
-| `socAgeS` | uint or null | Seconds since the level was last confirmed, at send |
+| `socAgeS` | uint or null | Seconds since the car last reported the level, at send. Null unless `socSource` is `vehicle` |
 | `targetPermille` | uint or null | The level to reach |
 | `readyByMs` | int or null | Wall time the car should be ready |
 | `recurring` | bool | The target comes from a weekly schedule |
 | `powerW` | int | Charging power, positive while charging |
 | `sessionWh` | uint | Energy delivered this session |
-| `session` | text | Session id; changes at each plug-in |
+| `session` | text | The number of plug-ins at this loadpoint since the box started, as text; empty when unplugged. With `boot` it names one plug-in. Core has no session id yet |
 | `manual` | Manual or null | Manual charging state, null when none |
 | `commandedW` | int or null | Power last commanded |
 | `commandedReason` | text | Stable code for that command |
@@ -247,8 +261,8 @@ list still show what kinds of equipment a site has.
 | `state` | text | The manual state |
 | `sinceAgeMs` | uint | Time in that state, at send |
 | `requestedW` | int or null | Power the user asked for |
-| `commandedW` | int or null | Power commanded for it |
-| `reason` | text | Stable code |
+| `commandedW` | int or null | Power commanded for it; null when none or zero |
+| `reason` | text | Why the hold is limited, as a stable code |
 
 **Feedback**
 
@@ -264,8 +278,19 @@ list still show what kinds of equipment a site has.
 | `actualW` | int or null | Measured power |
 | `ageMs` | uint or null | Age of that reading by box uptime, at send |
 
-The change test ignores `socAgeS`, `sinceAgeMs` and `ageMs`. The phone adds
-the time since the message.
+The change test ignores `socAgeS`, `sinceAgeMs` and `ageMs`; the phone adds
+the time since the message. It compares measured values with a deadband,
+because a charging car moves its power at every reading:
+
+- `powerW` and `actualW` count as changed when they move by more than
+  max(100 W, 5 % of the larger value), or `actualW` appears or goes;
+- `sessionWh` when it moves by 100 Wh or more;
+- `socPermille` when it moves by 10 or more, or appears or goes.
+
+Any other difference counts as a change. The full `lp` every 15 minutes
+carries exact values, and live field 10 carries the site's charging power at
+every period. Without the deadband, a simulated house with a car charging at
+11 kW sent 12.7 MB a day.
 
 ### `prices`: `ftw.live.read`
 
@@ -273,14 +298,17 @@ the time since the message.
 |---|---|---|
 | `zone` | text | Price zone |
 | `currency` | text | ISO 4217 code |
-| `t0Ms` | int | Wall time the first slot starts |
+| `t0Ms` | int | Wall time the first slot starts: the first stored slot from the start of today on the box's clock |
 | `slotMs` | uint | Slot length. Where stored slots differ in length, the box repeats a longer slot's price across `slotMs` slots |
 | `spotMinor` | [int or null] | Market price, minor units per kWh |
 | `totalMinor` | [int or null] | What the household pays, tariff and VAT included |
 
 `totalMinor` shows the household's tariff, and the privacy notice says so. The
-phone sees how far the slots reach. The box sends `prices` only when a hash of
-`t0Ms`, `slotMs`, `spotMinor` and `totalMinor` changes.
+phone sees how far the slots reach. The window runs from the start of today to
+the end of tomorrow. Because it starts at midnight and not now, its hash moves
+only when new prices land. The box looks at prices once a minute and sends
+`prices` only when a hash of `t0Ms`, `slotMs`, `spotMinor` and `totalMinor`
+changes. A gap between stored slots is `null`.
 
 ### `plan`: `ftw.plan.read`
 
@@ -379,7 +407,7 @@ The service never forwards these to a phone.
 |---|---|---|
 | `id` | bstr, 16 B | Grant id |
 | `scopes` | [text] | A subset of `cloud_scopes` |
-| `purposes` | [text] | A subset of `cloud_purposes` |
+| `purposes` | [text] | A subset of `cloud_purposes`: `serve` always, and `stats` while the owner contributes to statistics |
 | `controller` | text | The data controller: `sourceful` unless a partner pairing flow sets another. No such flow exists yet |
 
 **`stats`**, only while `grant.purposes` contains `stats`.
@@ -397,8 +425,8 @@ energy ledger's flow names: `grid_import`, `grid_export`, `pv_generation`,
 `battery_charge`, `battery_discharge`, `consumer_use`, `vehicle_charge` and
 `vehicle_discharge`. A flow the site lacks is absent.
 
-The service refuses `stats` for a `statsId` it has deleted, so a box restored
-from an older backup cannot turn a withdrawn consent back on.
+The service refuses `stats` for a `statsId` it has deleted, so an old grant
+record cannot turn a withdrawn consent back on.
 
 **`stats.withdraw`** `{statsId}`. The service deletes that id's rows within
 24 hours.
@@ -412,15 +440,18 @@ back `box.unreachable` until the box returns or an hour passes.
 - The box keeps the latest value per class and sends a class only when its
   content changed. The change test ignores `lastOkMs`, as the app protocol's
   source comparison does, and the age fields named under `live` and `lp`.
+  `lp` adds the deadband described there.
 - Each class goes at most once per period: 5 s by default, 1 s while a
   `watch` is in force. `lp` goes at most every 2 s until a Pi 4 bench shows
-  what composing it costs.
-- Two messages skip the period. A `live` whose source table changed goes at
-  once, with `sources`. An `hb` goes when it is due.
+  what composing it costs. The box reads its state no faster than a message
+  could go.
+- Two messages skip the period. The box looks at its source table every
+  second, and a `live` whose table changed goes then, with `sources` and
+  `fieldSources`. An `hb` goes when it is due.
 - `plan` goes only when `decisionId` changes, `prices` only when its hash
   changes, `tiles` when a bucket closes, and `event` at once.
 - Every 15 minutes, and after a `resync`, the box sends a full `live` with
-  `sources` and a full `lp`.
+  `sources` and `fieldSources`, and a full `lp`.
 - **Heartbeat.** The box sends `hb` whenever neither `live` nor `hb` has left
   for H, where H = clamp(the smallest `staleAfterMs` among sources ÷ 2,
   2 s, 15 s), and 15 s when there are no sources. It sends no `hb` while a
@@ -436,7 +467,7 @@ a text message or a lane 0 frame closes the uplink. A fuzz test covers it.
 |---|---|---|
 | `challenge` | `{v, nonce}` | First message. Unsigned |
 | `hello_ok` | See Handshake | Signed by the service key |
-| `watch` | `{hz: 1}` | Raises the period to 1 s for 60 s. The service resends it while a phone asks. Without it the box returns to 5 s |
+| `watch` | `{hz: 1}` | Raises the period to 1 s for 60 s. While any phone of the home looks, the service sends it at once, every 50 s after that, and again when the box connects. Without it the box returns to 5 s. The box ignores any other `hz` |
 | `resync` | `{what, tiles}` | `what` holds `full`, `tiles` or `roster`; `tiles` lists tile ids. The box honours at most one per 5 minutes and ignores the rest |
 | `purged` | `{atMs, what, grantId, statsId}` | Signed by the service key. `what` is `home` or `stats`. Sent once every deletion it names is done |
 
@@ -459,39 +490,63 @@ config, update or instruction from the service.
 
 ## Roster
 
-- The box sends a roster at connect when the service's number differs from its
-  own, on every change within one control tick, and every 6 hours to renew
-  `ttlS`.
-- If `hello_ok.rosterSeq` is above the box's own, as after a restore from an
-  older backup, the box moves its number past the service's and sends a new
-  roster, so revokes made since the backup still arrive.
+- The box sends a roster at every connect, on every change within one control
+  tick, and every 6 hours. Each one renews `ttlS`, so a box that returns after
+  20 hours offline does not have 4 hours left.
+- If `hello_ok.rosterSeq` is above the box's own, the box moves its number past
+  the service's and sends a new roster. A box whose state went back in time
+  therefore cannot undo revokes the service already holds.
 - The service accepts a roster whose `rosterSeq` is at least the one it
   holds. An equal number renews `ttlS`. A lower one is ignored.
 - When `ttlS` runs out with no newer roster, the service closes the home's
-  sessions and refuses new sessions and token reads until a roster arrives.
+  sessions with 4403 and refuses new sessions and token reads until a roster
+  arrives.
 - **Effective scope** of a device is its `scopes` intersected with
   `grant.scopes`.
-- A device that leaves the roster, or whose `epoch` changes, loses its
-  sessions, tokens and APNs registrations within a second of the service
-  receiving the roster, which needs the uplink to be up.
+- A device that leaves the roster loses its sessions (4403), tokens and APNs
+  registrations within a second of the service receiving the roster, which
+  needs the uplink to be up. A device whose `epoch`, `role` or effective scope
+  changes has its sessions closed with 4409, so it reconnects and learns its
+  new access. A new `epoch` also drops its tokens and APNs registrations.
 - The service learns devices only from the roster. It never adds one.
 
 ## App session
 
-1. The phone opens `wss://cloud.ftw.energy/v1/app` and runs
-   `Noise_IK_25519_ChaChaPoly_SHA256` as initiator. The responder's static key
-   is a service Noise key built into the app. The prologue is
-   `ftw.cloud.v1:` followed by the home id, which the phone learned from the
-   box over Noise.
-2. The service accepts the handshake only if the phone's static key is in the
-   home's current roster and not suspended.
-3. Handshake message 1 carries `now {hz}`. Message 2 carries a CBOR array of
-   box envelopes in rising `seq`: for each class the device may read, the
-   newest one the service holds, the newest `live` that carried `sources`,
-   and the newest `hb`. After the array comes the service's own
-   `{lastSeenMs, online}`.
-4. The service then forwards each new box envelope the device may read,
-   unchanged, as unpadded lane 1 frames.
+1. The phone opens `wss://cloud.ftw.energy/v1/app?home=<id>` over TLS 1.3,
+   with no `Origin` header, and runs `Noise_IK_25519_ChaChaPoly_SHA256` as
+   initiator. The responder's static key is a service Noise key built into
+   the app. The prologue is `ftw.cloud.v1:` followed by the home id, which the
+   phone learned from the box (see [Session information](#session-information)).
+   The query only says which home to look in: the prologue binds it, so a
+   query that names another home fails the handshake.
+2. Handshake message 1 carries an unsigned `now` envelope, `{hz}`: 1 while the
+   phone is looking at the home, 0 while it is not.
+3. The service admits the phone only if the static key that message 1 proved
+   is in the home's roster, the roster has not run out, and no owner has
+   suspended the device. Every refusal closes with 4403 before message 2.
+4. Message 2 carries an unsigned `snapshot` envelope, below.
+5. After that the service forwards each new box envelope the device may read,
+   unchanged and in the order the box sent them, one unpadded lane 1 frame per
+   Noise transport message. It takes the snapshot and starts the stream under
+   one lock, so no envelope falls between them.
+
+**`snapshot`**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `envelopes` | [Envelope] | Box envelopes in rising `seq`, each the box's own CBOR map, unchanged: for each class the device may read, the newest one the service holds; the newest `live` that carried `sources`; and the newest `hb`. Empty after an hour without the box |
+| `lastSeenMs` | int | Service wall time when it last heard from the box |
+| `online` | bool | The box's uplink is up now |
+| `more` | uint | How many envelopes did not fit in message 2. They follow it as ordinary frames, in rising `seq` |
+
+The phone accepts the envelopes that follow as it accepts any forwarded
+envelope. An envelope too large for one Noise message is not forwarded; the
+phone sees the gap through the next `hb`.
+
+**Watch.** While at least one phone of a home looks, the service keeps the
+box's `watch` in force: at once, every 50 s, inside the box's 60 s, and when
+the box connects. When no phone looks, it stops, and the box returns to 5 s
+within 60 s.
 
 **Phone to service.** These use the envelope with an empty `sig`. The
 service acts on these and ignores other types; a reply has the type named in
@@ -499,7 +554,7 @@ the table.
 
 | `t` | Who | Effect |
 |---|---|---|
-| `watch` | Any device | Ask for 1 s updates for 60 s |
+| `watch` | Any device | `{hz}`: 1 when the phone looks at the home, 0 when it looks away. It holds until the next `watch` or the end of the session |
 | `tiles.get` | Devices with `ftw.history.read` | `{have}`, tile id to etag. The service answers with the `tiles` envelopes the phone lacks |
 | `token.get` | Any device | Answered with `token {token, expiresInS}`. A new token replaces the device's old one |
 | `push.register` | Any device | `{apnsToken, environment, kind, activityId}`. One registration per APNs token; a Live Activity and its push-to-start each register their own |
@@ -507,11 +562,64 @@ the table.
 | `suspend` | Owner | `{deviceId}`. Suspends a device |
 | `unsuspend` | Owner | `{deviceId}`. Lifts a suspension |
 
-A suspension can only narrow access, never beyond what the roster allows. It
-holds until an owner lifts it or the roster drops the device, and it works
-while the box is offline, until the roster runs out. Anything the service
-says itself, such as `lastSeenMs`, carries no box signature, and the phone
-never shows it as a reading.
+A suspension can only narrow access, never beyond what the roster allows. The
+service ignores one from a viewer and one that names a device outside the
+roster. Suspending a device closes its sessions with 4403. A suspension holds
+until an owner lifts it, or the roster drops the device or changes its
+`epoch`, and it works while the box is offline, until the roster runs out.
+Anything the service says itself, such as `lastSeenMs`, carries no box
+signature, and the phone never shows it as a reading.
+
+**Close codes.** The service ends a session with one of these. A refusal says
+nothing about which check failed.
+
+| Code | Meaning | The phone |
+|---|---|---|
+| 4400 | The phone broke the protocol | Retries with backoff |
+| 4403 | Refused: no such home, a device not in the roster, a suspended device, a roster that ran out, a grant that is off, a purged home, or a handshake to another service key or home | Before message 2, tries the app's other service key once, at once. Otherwise asks again slowly |
+| 4408 | A newer session from the same device took over | Does not retry |
+| 4409 | The roster changed what this device may read | Reconnects at once, once; then retries with backoff |
+| 4429 | The home has as many sessions as the service allows, as at the relay | Retries with backoff |
+| 1013 | The phone fell too far behind | Retries with backoff and gets a fresh snapshot |
+
+- **Backoff** is full jitter from 0.5 s to 60 s, as on the uplink. It also
+  covers a lost socket.
+- **Slowly** is a random delay between half and all of min(15 s × 2ⁿ, 5 min),
+  where n counts the refusals in a row: 7.5 to 15 s at first, at most 5 min.
+  A refusal changes only when the roster or grant does, or when a service
+  that restarted has heard from the box again.
+- The phone dials at once, whatever it waits for, when the app comes to the
+  front or the network changes.
+
+**Limits.** Per home, 16 sessions. Per device, one session; a newer one
+replaces the older with 4408. Per phone, 256 envelopes queued, past which the
+session closes with 1013. A phone message larger than 4 KiB, a text message,
+or more than 20 messages in a burst and then 2 a second closes the session
+with 4400. Message 1 must arrive within 10 s. Pings and deadlines are the
+uplink's. A restarted service refuses a home's phones with 4403 until that
+home's box has connected again (see [Service state](#service-state)).
+
+### Session information
+
+Every role learns what it needs to read FTW Cloud from the box, over its own
+Noise session, in the app protocol's `hello_ok.cloud`.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pk` | bstr, 65 B | The box's `cloud.key` public key. Every box envelope from the service must verify with it |
+| `home` | text | The home id, cut from `pk` |
+| `boot` | bstr, 16 B | The uplink's current `boot`. It counts from the same Core start as `hello_ok.clock.uptimeMs`, which anchors rule U |
+| `sources` | map text→text | Opaque source id to driver name |
+| `loadpoints` | map text→text | Opaque loadpoint id to loadpoint id |
+
+- The box sends `cloud` only while the grant is on. It leaves it out while
+  the grant is off or a revoke waits for its receipt, when it holds no
+  `cloud.key`, and in floor mode. Without it the phone reads through the
+  relay only.
+- The tables name the drivers and loadpoints the box knows at `hello`. One
+  added later has no name on the phone until its next session with the box.
+- The box lists `cloud.link` in `hello_ok.caps` when its build can run the
+  uplink. A build that names no service does not.
 
 ## Extension token
 
@@ -564,21 +672,25 @@ accepted per class and per boot, and drops a message of that class whose
 `seq` is not higher. It processes the envelopes of a snapshot in rising
 `seq`. A message from another boot replaces the current boot only if it is
 anchored and its send time is later than the newest message the phone holds.
-When the boot changes, the phone drops the source table and field values it
-held and waits for that boot's full `live`.
+When the boot changes, the phone drops the source table, field values and
+loadpoints it held, and shows none until that boot's full `live` arrives. The
+phone checks the signature, decodes the body and checks `seq` before it
+changes anything, so a message it drops leaves what it holds as it was.
 
 **Anchors.** The phone trusts a send time only by one of two rules.
 
 - **Rule N.** The message has `wallMs`. Send time = the earlier of `wallMs`
   and the phone's time of arrival, so a fast box clock cannot make data look
-  fresher. If any message of a boot arrives with `wallMs` more than 2 s ahead
-  of the phone clock, the phone stops using rule N for that boot.
+  fresher. If the phone accepts a message of a boot whose `wallMs` is more
+  than 2 s ahead of its arrival, it stops using rule N for that boot.
 - **Rule U.** During a Noise session with the box, the phone records phone
-  time minus box uptime for messages that carry the box's `boot` and
-  `uptimeMs`, and keeps the smallest offset per boot. Send time = offset +
-  `uptimeMs`. Box clocks drift, so the phone adds 0.01 % of the time since the
-  offset was last learned to every age, and drops the anchor 24 hours after
-  it was last learned.
+  time minus box uptime for each message from the box that carries
+  `uptimeMs`, `hello_ok.clock` among them, under the boot that
+  `hello_ok.cloud.boot` names. It keeps the smallest offset per boot, and
+  keeps it across app starts. Send time = offset + `uptimeMs`. Box clocks
+  drift, so when rule U gives the send time, the phone adds 0.01 % of the time
+  since the offset was last learned to every age. It drops the anchor
+  24 hours after it was last learned.
 - When both apply, the phone uses the earlier send time. When neither does,
   the data is unanchored: it shows as "cloud, age unverified", at best
   `stale`, and never `live`.
@@ -598,15 +710,18 @@ zero.
    that is `live` up to S, `lagging` up to 2S, `stale` up to 6S and `down`
    beyond. A source missing from `ages` keeps B.
 4. The effective state is the worse of B and that grade, in the order `live`,
-   `lagging`, `stale`, `down`, `never`.
+   `lagging`, `stale`, `down`, `never`. A state the phone does not know ranks
+   as `never`.
 5. A field follows the worst of its sources in `fieldSources`. A field with no
    source, such as the mode, is `live` while t ≤ 2H and `stale` after. A
-   loadpoint follows its charger source in `src`.
+   loadpoint follows its charger source in `src`. A source the table lacks
+   counts as `stale`.
 
 The service cannot sign, so it cannot make a source look fresher. It can only
 delay, drop or replay, and each of those ages the data or marks it stale.
 
-**Vectors.** Each case below becomes a byte vector, replayed in Go and Swift.
+**Cases.** `cloudwire.View` runs each case below as a test, except case 15,
+which belongs to the notification extension. The phone's port replays them.
 In all of them the phone uses rule N with 100 ms in transit unless stated.
 
 1. **A quiet live source stays live.** One source, S = 10 s, read every
@@ -643,8 +758,9 @@ In all of them the phone uses rule N with 100 ms in transit unless stated.
     data ages as in case 2.
 12. **A reboot clears the old table.** The phone holds boot X's table with
     `srcRev` 9. Boot Y's `hb` arrives, anchored and later, with `srcRev` 3,
-    and boot Y's full `live` is dropped. The phone shows every source `stale`
-    and no field as current until boot Y's full `live` arrives.
+    and boot Y's full `live` is dropped. The phone drops boot X's table and
+    values, and shows no sources and no fields until boot Y's full `live`
+    arrives.
 13. **Rule U drift counts against freshness.** The offset was learned 10 hours
     ago. Every age gains 3.6 s, and at 24 hours the anchor lapses.
 14. **A snapshot with mixed `seq`.** Message 2 holds `prices` with `seq` 5 and
@@ -661,29 +777,43 @@ In all of them the phone uses rule N with 100 ms in transit unless stated.
 The grant lives in the box's state store under `cloud/grant_v1`, not in the
 config document, so a whole-document config write cannot reset it. It holds
 the grant id, scopes, purposes, a fingerprint of `cloud.key`, `grantKey`, the
-granting device, a hash of the policy text, the time or `clock-unknown`, the
-data controller and, with statistics on, the `statsId`.
+granting device or door, the version of the consent text the owner accepted,
+the time or 0 when the clock was not set, and the data controller. With
+statistics on, it also holds the `statsId` and the version of the statistics
+consent text.
 
 - A missing record, or a fingerprint that does not match `cloud.key`, reads
-  as **off**, and the box says so. This is the opposite of `app_link` and
-  `fleet_ping`, where a missing section reads as on.
-- The box never backs up `cloud.key`. A box restored onto new hardware has
-  FTW Cloud off until an owner turns it on again, under a new home id. A box
-  restored in place keeps its key; the roster and `stats` rules above stop an
-  older grant from undoing later changes.
+  as **off**, and `GET /api/cloud` says why. This is the opposite of
+  `app_link` and `fleet_ping`, where a missing section reads as on.
+- The box never backs up `cloud.key`, and a restore never brings it back:
+  restore moves the whole data directory aside. A restored box, in place or
+  on new hardware, has FTW Cloud off until an owner turns it on again, under
+  a new home id and a new `grantKey`. The old home at the service ages out as
+  under [Silence](#revocation-and-deletion).
 - A grant works with the relay off.
 
 | Route | Who may call it |
 |---|---|
-| `GET /api/cloud` | Owner. State, scopes, bytes sent in the last 24 hours of uptime, whether the byte budget is reached |
-| `GET /api/cloud/preview` | Owner. The exact bytes that leave the house |
-| `POST /api/cloud/grant` | Owner over an app session. On the LAN, only from loopback or with the house password |
-| `POST /api/cloud/stats` | Same gate, as a separate action |
-| `DELETE /api/cloud/grant`, `DELETE /api/cloud/stats` | Any door, because narrowing access is safe |
+| `GET /api/cloud` | An owner's session, or a client on the LAN. State, scopes, purposes, bytes sent in the last 24 hours of uptime, whether the byte budget is reached |
+| `GET /api/cloud/preview` | The same. The exact bytes that leave the house |
+| `POST /api/cloud/grant {scopes, policy}` | An owner's session. On the LAN, only from loopback or with the house password. On a grant already on, it changes the scopes and keeps the key, home id and `grantKey` |
+| `POST /api/cloud/stats {policy}` | The same gate, as a separate consent. 409 while the grant is off or a revoke waits for its receipt |
+| `DELETE /api/cloud/grant`, `DELETE /api/cloud/stats` | An owner's session, or any client on the LAN, because narrowing access is safe |
 
-Every change pushes `cloud.granted` or `cloud.revoked` to all owners and
-writes an audit line on the box. The box cannot verify the app's step-up, so
-the grant screen claims no more than an owner session.
+A viewer's session gets 403 on every route, and so does a request with
+forwarding headers. No route asks for a step-up: the box cannot verify the
+app's, so the grant screen claims no more than an owner's session.
+
+- Turning FTW Cloud on pushes `cloud.granted` to all owners, and turning it
+  off pushes `cloud.revoked`. A change of scopes, and turning statistics on
+  or off, push nothing. Every change writes an audit line on the box. A grant,
+  a change of scopes and a statistics change each send a new roster.
+- `POST /api/cloud/stats` draws a `statsId` the first time and keeps it while
+  statistics stay on. Turning statistics on again after a withdrawal draws a
+  new one.
+- `DELETE /api/cloud/stats` removes `stats` from the purposes at once. The
+  box keeps the `statsId` until `purged {what: "stats"}` arrives, so that
+  `stats.withdraw` can name it.
 
 ## Revocation and deletion
 
@@ -714,15 +844,21 @@ only readings it stores. Its registry holds the home id, the box key, the
 roster, suspensions, the current and deleted `statsId`s, APNs registrations
 and token hashes.
 
+A restarted service holds the registry but no readings and no rosters in
+memory. It admits a home's phones again once that home's box has connected
+and sent its roster.
+
 A rebuilt host starts with an empty registry. Boxes send their rosters again
 and phones register again at their next start. Suspensions are lost, so an
 owner must suspend again.
 
 ## Registry names
 
-The contract registry does not hold these names yet. A separate pair of pull
-requests adds them in `srcfl/ftw-webapp` first, then copies them here and to
-`srcfl/ftw-app`.
+The contract registry does not hold these names yet.
+[srcfl/ftw-webapp#81](https://github.com/srcfl/ftw-webapp/pull/81) adds them
+there first; [#1595](https://github.com/srcfl/ftw/pull/1595) and
+[srcfl/ftw-app#15](https://github.com/srcfl/ftw-app/pull/15) copy them here and
+to the app.
 
 | Name | Kind | Goes into |
 |---|---|---|
@@ -731,25 +867,41 @@ requests adds them in `srcfl/ftw-webapp` first, then copies them here and to
 | `cloud_purposes` | List: `serve`, `stats` | `registry.yaml`, new block |
 | `cloud.link` | Capability: the box can run the FTW Cloud uplink. Absent means the app uses the relay only and offers no FTW Cloud | `registry.yaml`, `capabilities` |
 | `cloud` | Carrier state, between `relay` and `cache` | `registry.yaml`, `carrier_states` |
-| `cloud.granted`, `cloud.revoked` | Push kinds, sent to every owner when the grant changes | `push-catalogue.yaml` |
+| `cloud.granted`, `cloud.revoked` | Push kinds, sent to every owner when FTW Cloud is turned on or off | `push-catalogue.yaml` |
 
-Class names, field names and the signing tags are not registry names. They
-live here and in `go/protocol`, held by golden vectors in both repositories.
+Class names, field names, close codes and the signing tags are not registry
+names. They live here and in `go/protocol`, held by golden vectors in both
+repositories.
+
+Role names, `owner` and `viewer`, are registry names, but `go/protocol` does
+not generate them yet, so `srcfl/ftw-cloud` spells `owner` by hand. Generating
+the registry's roles would remove that copy.
 
 ## Numbers in one place
 
 | What | Value |
 |---|---|
-| Reconnect backoff | 0.5 s to 60 s, full jitter |
-| Ping, read deadline, write deadline | 15 s, 45 s, 10 s |
+| Reconnect backoff, box and phone | 0.5 s to 60 s, full jitter |
+| Phone retry after 4403 | Half to all of min(15 s × 2ⁿ, 5 min) |
+| Ping, read deadline, write deadline | 15 s, 45 s, 10 s, on both sockets |
 | Period per class | 5 s; 1 s while watched; `lp` at least 2 s |
-| `watch` lasts | 60 s |
+| Source table change sent within | 1 s |
+| `lp` deadband | Power more than max(100 W, 5 %); `sessionWh` 100 Wh; `socPermille` 10 |
+| `prices` looked at | Every minute |
+| Box's `watch` lasts | 60 s |
+| Service renews the box's `watch` | Every 50 s while a phone looks |
+| Phone's `watch` lasts | Until the next `watch` or the end of the session |
 | Heartbeat H | clamp(smallest `staleAfterMs` ÷ 2, 2 s, 15 s) |
 | Full state | Every 15 minutes |
 | `resync` honoured | At most one per 5 minutes |
 | Event ring on the box | 32 |
 | Byte budget | 20 MB per 24 hours of uptime |
-| Largest frame from the service | 4 KiB |
+| Largest frame from the service to the box | 4 KiB |
+| Largest message from a phone | 4 KiB |
+| Sessions | 16 per home; one per device |
+| Envelopes queued per phone | 256 |
+| Phone messages | 20 in a burst, then 2 a second |
+| App session message 1 | Within 10 s |
 | Roster `ttlS`, renewal | 24 hours, every 6 hours |
 | Extension token | 7 days |
 | Alert age for buttons | 10 minutes |
