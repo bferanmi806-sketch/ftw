@@ -75,10 +75,16 @@ func TestInitiatorAndResponderMeet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if resp.RemoteStatic() != nil {
+		t.Fatal("the responder named a key before message 1")
+	}
 	m1, _ := init.WriteMessage([]byte("now"))
 	p1, err := resp.ReadMessage(m1)
 	if err != nil || string(p1) != "now" {
 		t.Fatalf("message 1: %q %v", p1, err)
+	}
+	if !bytes.Equal(resp.RemoteStatic(), phone.Public()) {
+		t.Fatal("after message 1 the responder does not know the initiator's key")
 	}
 	m2, _ := resp.WriteMessage([]byte("snapshot"))
 	p2, err := init.ReadMessage(m2)
