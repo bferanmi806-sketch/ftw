@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -721,5 +722,229 @@ func TestTheLinkReadsTheBoxNoFasterThanItCanSend(t *testing.T) {
 	h.site.mu.Unlock()
 	if live > 5 || lp > 1 {
 		t.Fatalf("in 3 s the link read live %d times and loadpoints %d times", live, lp)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Session information for phones
+// --------------------------------------------------------------------------
+
+// A phone learns the box's key, home id, boot and names over Noise. With them
+// it verifies what the service forwards, anchors its times and names its
+// sources.
+func TestSessionInfoLetsAPhoneCheckAndNameWhatTheServiceForwards(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	if s := h.link.SessionInfo(); s != nil {
+		t.Fatalf("session information with FTW Cloud off: %+v", s)
+	}
+	h.grant(t)
+	env := svc.waitFor(cloudwire.MsgLive, 5*time.Second)
+
+	s := h.link.SessionInfo()
+	if s == nil {
+		t.Fatal("no session information with FTW Cloud on")
+	}
+	if len(s.PK) != cloudwire.PublicKeyBytes || s.Home != cloudwire.HomeID(s.PK) || s.Home != svc.home {
+		t.Fatalf("key %x and home %q; the service saw home %q", s.PK, s.Home, svc.home)
+	}
+	pub, err := cloudwire.ParsePublicKey(s.PK)
+	if err != nil || cloudwire.Verify(pub, s.Home, env) != nil {
+		t.Fatalf("a forwarded live does not verify with the session key: %v", err)
+	}
+	var live cloudwire.Live
+	if err := cloudwire.Unmarshal(env.B, &live); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Boot) != cloudwire.BootBytes || !bytes.Equal(s.Boot, live.Boot) {
+		t.Fatalf("session boot %x, live boot %x", s.Boot, live.Boot)
+	}
+
+	gk := h.link.current().g.GrantKey
+	wantSources := map[string]string{
+		cloudwire.SourceID(gk, meterName):   meterName,
+		cloudwire.SourceID(gk, chargerName): chargerName,
+	}
+	if !maps.Equal(s.Sources, wantSources) {
+		t.Fatalf("sources %v, want %v", s.Sources, wantSources)
+	}
+	for id := range live.Sources {
+		if s.Sources[id] == "" {
+			t.Fatalf("live names source %q, which the session cannot name", id)
+		}
+	}
+	if want := map[string]string{cloudwire.LoadpointID(gk, lpName): lpName}; !maps.Equal(s.Loadpoints, want) {
+		t.Fatalf("loadpoints %v, want %v", s.Loadpoints, want)
+	}
+}
+
+// Turning FTW Cloud off withdraws the session information at once, before the
+// service confirms the deletion.
+func TestSessionInfoGoesWithTheGrant(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	h.grant(t)
+	if h.link.SessionInfo() == nil {
+		t.Fatal("no session information with FTW Cloud on")
+	}
+	if err := h.link.Revoke("test"); err != nil {
+		t.Fatal(err)
+	}
+	if s := h.link.SessionInfo(); s != nil || h.link.Status().State != "revoking" {
+		t.Fatalf("while revoking: %+v", s)
+	}
+}
+
+func TestAvailableFollowsTheServiceKeys(t *testing.T) {
+	svc := newFakeService(t)
+	if !newHarness(t, svc).link.Available() {
+		t.Fatal("a build with a service key says FTW Cloud is unavailable")
+	}
+	link, err := New(Options{Site: &fakeSite{}, Roster: fakeRoster{}, KV: &memKV{},
+		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), ServiceKeys: []*ecdsa.PublicKey{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.Available() {
+		t.Fatal("a build without a service key says FTW Cloud is available")
+	}
+}
+
+// --------------------------------------------------------------------------
+// Statistics
+// --------------------------------------------------------------------------
+
+func (h *harness) record(t *testing.T) grantRecord {
+	t.Helper()
+	g, err := loadJSON[grantRecord](h.kv, grantKey)
+	if err != nil || g == nil {
+		t.Fatalf("grant record: %v", err)
+	}
+	return *g
+}
+
+func (h *harness) nextRoster(t *testing.T) cloudwire.Roster {
+	t.Helper()
+	var r cloudwire.Roster
+	if err := cloudwire.Unmarshal(h.svc.waitFor(cloudwire.MsgRoster, 3*time.Second).B, &r); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// Statistics are a second consent under a grant already on. The box draws a
+// statsId once, keeps it while statistics stay on, tells the service through
+// the roster and sends no statistics yet.
+func TestStatisticsAreASecondConsentUnderTheGrant(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-10"}); !errors.Is(err, ErrNotGranted) {
+		t.Fatalf("statistics with FTW Cloud off: %v", err)
+	}
+	h.grant(t)
+	first := h.nextRoster(t)
+	svc.waitFor(cloudwire.MsgLive, 5*time.Second)
+	if err := h.link.Stats(StatsRequest{}); !errors.Is(err, ErrGrantRequest) {
+		t.Fatalf("statistics without a policy: %v", err)
+	}
+
+	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-10", By: "app:aaaa1111"}); err != nil {
+		t.Fatal(err)
+	}
+	r := h.nextRoster(t)
+	if strings.Join(r.Grant.Purposes, ",") != "serve,stats" || r.RosterSeq <= first.RosterSeq {
+		t.Fatalf("roster after statistics on: purposes %v, seq %d after %d", r.Grant.Purposes, r.RosterSeq, first.RosterSeq)
+	}
+	if st := h.link.Status(); strings.Join(st.Purposes, ",") != "serve,stats" {
+		t.Fatalf("status purposes %v", st.Purposes)
+	}
+	g := h.record(t)
+	if len(g.StatsID) != statsIDBytes || g.StatsPolicy != "stats-2026-10" || g.Policy != "2026-10" {
+		t.Fatalf("grant record %+v", g)
+	}
+
+	// Asked again, the same id.
+	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-11"}); err != nil {
+		t.Fatal(err)
+	}
+	if again := h.record(t); !bytes.Equal(again.StatsID, g.StatsID) || again.StatsPolicy != "stats-2026-11" {
+		t.Fatalf("statsId %x became %x", g.StatsID, again.StatsID)
+	}
+
+	// A restart reads it back.
+	reopened, err := New(Options{Site: h.site, Roster: fakeRoster{}, KV: h.kv, KeyPath: h.keyPath,
+		ServiceKeys: h.link.opts.ServiceKeys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st := reopened.Status(); strings.Join(st.Purposes, ",") != "serve,stats" {
+		t.Fatalf("after a restart: %+v", st)
+	}
+
+	for _, env := range svc.received() {
+		if env.T == "stats" {
+			t.Fatal("the box sent statistics")
+		}
+	}
+}
+
+// Turning statistics off forgets the statsId; turning them on again draws a
+// new one, because the service refuses an id it has deleted.
+func TestStoppingStatisticsForgetsTheID(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	if err := h.link.StopStats("lan"); err != nil {
+		t.Fatalf("statistics off with FTW Cloud off: %v", err)
+	}
+	h.grant(t)
+	h.nextRoster(t)
+	if err := h.link.Stats(StatsRequest{Policy: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	h.nextRoster(t)
+	old := h.record(t).StatsID
+
+	if err := h.link.StopStats("lan"); err != nil {
+		t.Fatal(err)
+	}
+	r := h.nextRoster(t)
+	if strings.Join(r.Grant.Purposes, ",") != "serve" {
+		t.Fatalf("roster after statistics off: %v", r.Grant.Purposes)
+	}
+	if g := h.record(t); len(g.StatsID) != 0 || g.StatsPolicy != "" || strings.Join(g.Purposes, ",") != "serve" {
+		t.Fatalf("grant record after statistics off: %+v", g)
+	}
+	if err := h.link.StopStats("lan"); err != nil {
+		t.Fatalf("statistics off twice: %v", err)
+	}
+
+	if err := h.link.Stats(StatsRequest{Policy: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if renewed := h.record(t).StatsID; len(renewed) != statsIDBytes || bytes.Equal(renewed, old) {
+		t.Fatalf("statsId %x after %x", renewed, old)
+	}
+}
+
+func TestNoStatisticsWhileTheCopyIsBeingDeleted(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	h.grant(t)
+	if err := h.link.Revoke("test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrPurgePending) {
+		t.Fatalf("statistics while revoking: %v", err)
+	}
+}
+
+func TestABuildWithoutAServiceRefusesStatistics(t *testing.T) {
+	link, err := New(Options{Site: &fakeSite{}, Roster: fakeRoster{}, KV: &memKV{},
+		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), ServiceKeys: []*ecdsa.PublicKey{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrNoService) {
+		t.Fatalf("statistics: %v", err)
 	}
 }

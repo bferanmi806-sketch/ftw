@@ -2423,10 +2423,12 @@ func main() {
 	// The app's window onto this box's own HTTP API. Handed to the uplink
 	// now and filled in below, once the API server exists.
 	appAPI := &lateAPI{}
+	// FTW Cloud as app sessions see it, bound below once the link exists.
+	appCloud := &cloudSession{}
 	appEnroll, appUplink, appLinkEnabled, appLinkErr := startAppLink(
 		ctx, cfg, identityKeyPath, boxID, Version,
 		st, tel, mpcSvc, lpMgr, lpController, priceSvc, ctrl, ctrlMu, plannerPrefs,
-		controlRev, appLinkWatchdog, appAPI, webPush,
+		controlRev, appLinkWatchdog, appAPI, webPush, appCloud,
 	)
 	switch {
 	case appLinkErr != nil:
@@ -2443,6 +2445,7 @@ func main() {
 	cloudNotify := &cloudNotices{}
 	cloudLink := startCloudLink(ctx, statePath, Version, st, appEnroll,
 		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, priceSvc, appAPI, cloudNotify)
+	appCloud.bind(cloudLink)
 
 	// The anonymous fleet ping: how many boxes, which versions, which drivers.
 	// Its separate relay HTTP door keeps daily totals; the encrypted app path

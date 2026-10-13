@@ -14,6 +14,7 @@
 package cloudlink
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
@@ -24,6 +25,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +56,12 @@ var ErrNoService = errors.New("cloudlink: this build has no FTW Cloud service")
 // ErrPurgePending is a grant asked for while the last one is still being
 // deleted at the service.
 var ErrPurgePending = errors.New("cloudlink: FTW Cloud is still deleting the previous copy")
+
+// ErrNotGranted is statistics asked for while FTW Cloud is off.
+var ErrNotGranted = errors.New("cloudlink: turn FTW Cloud on first")
+
+// statsIDBytes is the length of a statsId, which the protocol fixes at 16.
+const statsIDBytes = 16
 
 // Site is the box's state, read. Every method answers from memory and changes
 // nothing. Names in the answers are the box's own driver and loadpoint names;
@@ -397,6 +405,85 @@ func (l *Link) Revoke(by string) error {
 	return nil
 }
 
+// StatsRequest is an owner's request to contribute to statistics.
+type StatsRequest struct {
+	// Policy names the consent text the owner read.
+	Policy string `json:"policy"`
+	// By is the device or door that asked, for the audit line.
+	By string `json:"-"`
+}
+
+// Stats adds the stats purpose to a grant already on. The first time, it
+// draws the statsId that names this box's rows at the service; later calls
+// keep it. It sends no statistics itself.
+func (l *Link) Stats(req StatsRequest) error {
+	if len(l.opts.ServiceKeys) == 0 {
+		return ErrNoService
+	}
+	if strings.TrimSpace(req.Policy) == "" {
+		return fmt.Errorf("%w: name the policy the owner accepted", ErrGrantRequest)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	switch {
+	case l.grant == nil:
+		return ErrNotGranted
+	case l.grant.Revoked:
+		return ErrPurgePending
+	}
+	g := *l.grant
+	if len(g.StatsID) == 0 {
+		id, err := randomBytes(statsIDBytes)
+		if err != nil {
+			return err
+		}
+		g.StatsID = id
+	}
+	g.Purposes = withPurpose(g.Purposes, protocol.CloudPurposeStats, true)
+	g.StatsPolicy, g.By = req.Policy, req.By
+	return l.storeLocked(g, "statistics on")
+}
+
+// StopStats removes the stats purpose and forgets the statsId. Turning it on
+// again draws a new one.
+func (l *Link) StopStats(by string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.grant == nil || l.grant.Revoked ||
+		(len(l.grant.StatsID) == 0 && !slices.Contains(l.grant.Purposes, protocol.CloudPurposeStats)) {
+		return nil
+	}
+	g := *l.grant
+	g.Purposes = withPurpose(g.Purposes, protocol.CloudPurposeStats, false)
+	g.StatsID, g.StatsPolicy, g.By = nil, "", by
+	return l.storeLocked(g, "statistics off")
+}
+
+// storeLocked saves a changed grant, marks the roster due and writes the
+// audit line. The caller holds l.mu.
+func (l *Link) storeLocked(g grantRecord, event string) error {
+	if err := saveJSON(l.opts.KV, grantKey, g); err != nil {
+		return err
+	}
+	l.grant = &g
+	l.rosterDue = true
+	l.audit(event, &g)
+	l.signal()
+	return nil
+}
+
+// withPurpose returns purposes with p present or absent, in registry order.
+// It never changes the slice it was given.
+func withPurpose(purposes []string, p string, on bool) []string {
+	out := []string{}
+	for _, q := range protocol.CloudPurposes {
+		if (q == p && on) || (q != p && slices.Contains(purposes, q)) {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
 // finishPurge deletes the key and the grant once the service has confirmed
 // the deletion.
 func (l *Link) finishPurge(atMs int64) {
@@ -425,7 +512,7 @@ func (l *Link) finishPurge(atMs int64) {
 func (l *Link) audit(event string, g *grantRecord) {
 	l.log.Info("audit: FTW Cloud grant "+event,
 		"grant", hex.EncodeToString(g.ID), "by", g.By, "scopes", g.Scopes,
-		"purposes", g.Purposes, "policy", g.Policy)
+		"purposes", g.Purposes, "policy", g.Policy, "stats_policy", g.StatsPolicy)
 }
 
 func (l *Link) notify(kind string) {
@@ -482,6 +569,56 @@ func (l *Link) Status() Status {
 		s.GrantedAtMs, s.GrantedBy, s.Policy = g.AtMs, g.By, g.Policy
 		if g.Revoked {
 			s.State = "revoking"
+		}
+	}
+	return s
+}
+
+// Available reports whether this build names a service, and so can run the
+// uplink at all. Release builds without service keys cannot.
+func (l *Link) Available() bool { return len(l.opts.ServiceKeys) > 0 }
+
+// SessionInfo is what a phone needs, over its Noise session with the box, to
+// read this home from FTW Cloud: the key that signs it, the home id, the boot
+// that anchors its times and names for the opaque ids. It is nil unless the
+// grant is on.
+//
+// The tables name every driver and loadpoint the box knows now. One that
+// appears later has no name on a phone until its next session.
+func (l *Link) SessionInfo() *protocol.CloudSession {
+	snap := l.current()
+	if snap.g == nil || snap.g.Revoked || len(snap.pk) != cloudwire.PublicKeyBytes {
+		return nil
+	}
+	gk := snap.g.GrantKey
+	s := &protocol.CloudSession{
+		PK: bytes.Clone(snap.pk), Home: snap.home, Boot: bytes.Clone(l.boot),
+		Sources: map[string]string{}, Loadpoints: map[string]string{},
+	}
+	source := func(name string) {
+		if name != "" {
+			s.Sources[cloudwire.SourceID(gk, name)] = name
+		}
+	}
+	live := l.opts.Site.Live()
+	for name := range live.Sources {
+		source(name)
+	}
+	for _, names := range live.FieldSources {
+		for _, name := range names {
+			source(name)
+		}
+	}
+	for _, name := range live.DispatchBlockedBy {
+		source(name)
+	}
+	if lp, ok := l.opts.Site.Loadpoints(); ok {
+		for _, p := range lp.Loadpoints {
+			s.Loadpoints[cloudwire.LoadpointID(gk, p.ID)] = p.ID
+			source(p.Src)
+		}
+		for _, f := range lp.Feedback {
+			source(f.Src)
 		}
 	}
 	return s

@@ -48,6 +48,12 @@ type grantRecord struct {
 	// AtMs is the wall time of the grant, or 0 when the clock was not set.
 	AtMs       int64  `json:"atMs"`
 	Controller string `json:"controller"`
+	// StatsID names this box's statistics rows at the service. Drawn when an
+	// owner first turns statistics on, kept while they stay on, and gone
+	// when they are turned off.
+	StatsID []byte `json:"statsId,omitempty"`
+	// StatsPolicy names the consent text the owner read for statistics.
+	StatsPolicy string `json:"statsPolicy,omitempty"`
 	// Revoked means the owner turned FTW Cloud off and the service has not
 	// yet confirmed the deletion. The key stays until it has.
 	Revoked     bool  `json:"revoked,omitempty"`

@@ -18,7 +18,8 @@ import (
 // over an app session, or on the LAN only from the box itself or with the
 // house password. Turning it off narrows access, so any door may do that. The
 // box cannot verify the app's step-up, so the grant asks for none and the
-// app's consent screen claims no more than an owner's session.
+// app's consent screen claims no more than an owner's session. Statistics are
+// a second consent under the grant, behind the same doors.
 
 // CloudGrant is the box's FTW Cloud link as the routes see it.
 type CloudGrant interface {
@@ -26,6 +27,8 @@ type CloudGrant interface {
 	Preview() cloudlink.Preview
 	Grant(cloudlink.GrantRequest) error
 	Revoke(by string) error
+	Stats(cloudlink.StatsRequest) error
+	StopStats(by string) error
 }
 
 func (s *Server) cloudRoutes() {
@@ -33,6 +36,8 @@ func (s *Server) cloudRoutes() {
 	s.handle("GET  /api/cloud/preview", Read, s.handleCloudPreview)
 	s.handle("POST   /api/cloud/grant", Configure, s.handleCloudGrant, NoStepUp)
 	s.handle("DELETE /api/cloud/grant", Configure, s.handleCloudRevoke, NoStepUp)
+	s.handle("POST   /api/cloud/stats", Configure, s.handleCloudStats, NoStepUp)
+	s.handle("DELETE /api/cloud/stats", Configure, s.handleCloudStopStats, NoStepUp)
 }
 
 // cloudGate admits an owner's session, and on the LAN a local client. With
@@ -152,6 +157,53 @@ func (s *Server) handleCloudRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := link.Revoke(cloudCaller(r)); err != nil {
 		writeAppLinkError(w, http.StatusInternalServerError, "could not turn FTW Cloud off")
+		return
+	}
+	writeJSON(w, http.StatusOK, link.Status())
+}
+
+// POST /api/cloud/stats {policy} — contribute to statistics, a separate
+// consent under a grant already on. Same gate as the grant.
+func (s *Server) handleCloudStats(w http.ResponseWriter, r *http.Request) {
+	if !s.cloudGate(w, r, true) {
+		return
+	}
+	link, ok := s.cloudLink(w)
+	if !ok {
+		return
+	}
+	var req cloudlink.StatsRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeAppLinkError(w, http.StatusBadRequest, "send {policy}")
+		return
+	}
+	req.By = cloudCaller(r)
+	switch err := link.Stats(req); {
+	case err == nil:
+		writeJSON(w, http.StatusOK, link.Status())
+	case errors.Is(err, cloudlink.ErrGrantRequest):
+		writeAppLinkError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, cloudlink.ErrNotGranted), errors.Is(err, cloudlink.ErrPurgePending):
+		writeAppLinkError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, cloudlink.ErrNoService):
+		writeAppLinkError(w, http.StatusServiceUnavailable, err.Error())
+	default:
+		writeAppLinkError(w, http.StatusInternalServerError, "could not turn statistics on")
+	}
+}
+
+// DELETE /api/cloud/stats — stop contributing to statistics. Any door, as for
+// the grant.
+func (s *Server) handleCloudStopStats(w http.ResponseWriter, r *http.Request) {
+	if !s.cloudGate(w, r, false) {
+		return
+	}
+	link, ok := s.cloudLink(w)
+	if !ok {
+		return
+	}
+	if err := link.StopStats(cloudCaller(r)); err != nil {
+		writeAppLinkError(w, http.StatusInternalServerError, "could not turn statistics off")
 		return
 	}
 	writeJSON(w, http.StatusOK, link.Status())

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -335,6 +336,42 @@ func startCloudLink(
 		}
 	}()
 	return link
+}
+
+// cloudSession is FTW Cloud as an app session sees it. The app link starts
+// first, because the cloud link's roster needs its enrolment, so the link is
+// bound here once it exists. A session that opens before then hears no
+// cloud.link and no session information, which is what a box without FTW
+// Cloud says.
+type cloudSession struct {
+	link atomic.Pointer[cloudlink.Link]
+}
+
+func (c *cloudSession) bind(link *cloudlink.Link) { c.link.Store(link) }
+
+func (c *cloudSession) load() *cloudlink.Link {
+	if c == nil {
+		return nil
+	}
+	return c.link.Load()
+}
+
+// caps adds cloud.link to an app session's capabilities when this build can
+// run the uplink. A release build names no service and says nothing.
+func (c *cloudSession) caps(caps []string) []string {
+	if link := c.load(); link != nil && link.Available() {
+		return append(slices.Clip(caps), appproto.CapCloudLink)
+	}
+	return caps
+}
+
+// info is hello_ok's FTW Cloud session information, nil while FTW Cloud is
+// off.
+func (c *cloudSession) info() *appproto.CloudSession {
+	if link := c.load(); link != nil {
+		return link.SessionInfo()
+	}
+	return nil
 }
 
 // cloudForAPI hands the link to the API, or nothing: a typed nil in an

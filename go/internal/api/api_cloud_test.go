@@ -1,17 +1,29 @@
 package api
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/cloudlink"
+	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
 type stubCloud struct {
 	granted []cloudlink.GrantRequest
 	revoked []string
+	stats   []cloudlink.StatsRequest
+	stopped []string
 	err     error
 }
 
@@ -23,6 +35,14 @@ func (c *stubCloud) Grant(req cloudlink.GrantRequest) error {
 }
 func (c *stubCloud) Revoke(by string) error {
 	c.revoked = append(c.revoked, by)
+	return nil
+}
+func (c *stubCloud) Stats(req cloudlink.StatsRequest) error {
+	c.stats = append(c.stats, req)
+	return c.err
+}
+func (c *stubCloud) StopStats(by string) error {
+	c.stopped = append(c.stopped, by)
 	return nil
 }
 
@@ -167,10 +187,197 @@ func TestCloudRoutesAreRegisteredWithTheirTiers(t *testing.T) {
 		{http.MethodGet, "/api/cloud/preview", apiauth.TierRead, false},
 		{http.MethodPost, "/api/cloud/grant", apiauth.TierConfigure, true},
 		{http.MethodDelete, "/api/cloud/grant", apiauth.TierConfigure, true},
+		{http.MethodPost, "/api/cloud/stats", apiauth.TierConfigure, true},
+		{http.MethodDelete, "/api/cloud/stats", apiauth.TierConfigure, true},
 	} {
 		facts := s.Route(httptest.NewRequest(c.method, c.path, nil))
 		if facts.Tier != c.tier || facts.NoStepUp != c.noStepUp {
 			t.Errorf("%s %s: %+v", c.method, c.path, facts)
 		}
 	}
+}
+
+const statsBody = `{"policy":"stats-2026-10"}`
+
+// Statistics are a separate consent behind the grant's own door.
+func TestWhoMayTurnStatisticsOn(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *http.Request
+		want int
+	}{
+		{"owner over a session", sessionRequest(http.MethodPost, "/api/cloud/stats", statsBody), http.StatusOK},
+		{"viewer over a session", viewerRequest(http.MethodPost, "/api/cloud/stats", statsBody), http.StatusForbidden},
+		{"the box itself", loopbackRequest(http.MethodPost, "/api/cloud/stats", statsBody), http.StatusOK},
+		{"a LAN client", localRequest(http.MethodPost, "/api/cloud/stats", statsBody), http.StatusForbidden},
+		{"a LAN client with the house password", func() *http.Request {
+			r := localRequest(http.MethodPost, "/api/cloud/stats", statsBody)
+			return r.WithContext(withLANSecret(r.Context(), true))
+		}(), http.StatusOK},
+		{"through a proxy", func() *http.Request {
+			r := loopbackRequest(http.MethodPost, "/api/cloud/stats", statsBody)
+			r.Header.Set("X-Forwarded-For", "203.0.113.9")
+			return r
+		}(), http.StatusForbidden},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cloud := &stubCloud{}
+			s := New(&Deps{Cloud: cloud})
+			w := httptest.NewRecorder()
+			s.handleCloudStats(w, c.req)
+			if w.Code != c.want {
+				t.Fatalf("got %d, want %d: %s", w.Code, c.want, w.Body.String())
+			}
+			if asked := len(cloud.stats) == 1; asked != (c.want == http.StatusOK) {
+				t.Fatalf("stats asked = %v with status %d", asked, w.Code)
+			}
+		})
+	}
+}
+
+func TestStatisticsRecordWhichDoorAskedAndThePolicy(t *testing.T) {
+	cloud := &stubCloud{}
+	s := New(&Deps{Cloud: cloud})
+	s.handleCloudStats(httptest.NewRecorder(), sessionRequest(http.MethodPost, "/api/cloud/stats",
+		`{"policy":"stats-2026-10","By":"someone else"}`))
+	if len(cloud.stats) != 1 || cloud.stats[0].By != "app:aaaa1111" || cloud.stats[0].Policy != "stats-2026-10" {
+		t.Fatalf("stats %+v", cloud.stats)
+	}
+	w := httptest.NewRecorder()
+	s.handleCloudStats(w, sessionRequest(http.MethodPost, "/api/cloud/stats", "not json"))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a body that is not JSON: %d", w.Code)
+	}
+}
+
+func TestAnyDoorMayTurnStatisticsOff(t *testing.T) {
+	for name, req := range map[string]*http.Request{
+		"owner over a session": sessionRequest(http.MethodDelete, "/api/cloud/stats", ""),
+		"a LAN client":         localRequest(http.MethodDelete, "/api/cloud/stats", ""),
+	} {
+		cloud := &stubCloud{}
+		s := New(&Deps{Cloud: cloud})
+		w := httptest.NewRecorder()
+		s.handleCloudStopStats(w, req)
+		if w.Code != http.StatusOK || len(cloud.stopped) != 1 {
+			t.Fatalf("%s: %d, stopped %v", name, w.Code, cloud.stopped)
+		}
+	}
+}
+
+// A viewer's session sees no FTW Cloud screen and changes nothing in it, even
+// where turning something off would narrow access.
+func TestAViewerReachesNoCloudRoute(t *testing.T) {
+	cloud := &stubCloud{}
+	s := New(&Deps{Cloud: cloud})
+	for _, c := range []struct {
+		method, target, body string
+		handler              http.HandlerFunc
+	}{
+		{http.MethodGet, "/api/cloud", "", s.handleCloudStatus},
+		{http.MethodGet, "/api/cloud/preview", "", s.handleCloudPreview},
+		{http.MethodPost, "/api/cloud/grant", grantBody, s.handleCloudGrant},
+		{http.MethodDelete, "/api/cloud/grant", "", s.handleCloudRevoke},
+		{http.MethodPost, "/api/cloud/stats", statsBody, s.handleCloudStats},
+		{http.MethodDelete, "/api/cloud/stats", "", s.handleCloudStopStats},
+	} {
+		w := httptest.NewRecorder()
+		c.handler(w, viewerRequest(c.method, c.target, c.body))
+		if w.Code != http.StatusForbidden {
+			t.Errorf("viewer %s %s: %d", c.method, c.target, w.Code)
+		}
+	}
+	if len(cloud.granted)+len(cloud.revoked)+len(cloud.stats)+len(cloud.stopped) != 0 {
+		t.Fatalf("a viewer changed FTW Cloud: %+v", cloud)
+	}
+}
+
+func TestStatisticsRefusalsKeepTheirMeaning(t *testing.T) {
+	for err, want := range map[error]int{
+		cloudlink.ErrGrantRequest: http.StatusBadRequest,
+		cloudlink.ErrNotGranted:   http.StatusConflict,
+		cloudlink.ErrPurgePending: http.StatusConflict,
+		cloudlink.ErrNoService:    http.StatusServiceUnavailable,
+	} {
+		s := New(&Deps{Cloud: &stubCloud{err: err}})
+		w := httptest.NewRecorder()
+		s.handleCloudStats(w, sessionRequest(http.MethodPost, "/api/cloud/stats", statsBody))
+		if w.Code != want {
+			t.Errorf("%v: got %d, want %d", err, w.Code, want)
+		}
+	}
+}
+
+// The consent screen's whole round trip on a real link: on, statistics on,
+// GET shows both purposes, statistics off, FTW Cloud off.
+func TestTheConsentRoundTripShowsThePurposes(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := cloudlink.New(cloudlink.Options{
+		Site: cloudSiteStub{}, Roster: cloudRosterStub{}, KV: &cloudKV{m: map[string]string{}},
+		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), ServiceKeys: []*ecdsa.PublicKey{&key.PublicKey},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(&Deps{Cloud: link})
+	call := func(h http.HandlerFunc, method, target, body string, want int) cloudlink.Status {
+		t.Helper()
+		w := httptest.NewRecorder()
+		h(w, sessionRequest(method, target, body))
+		if w.Code != want {
+			t.Fatalf("%s %s: %d, want %d: %s", method, target, w.Code, want, w.Body.String())
+		}
+		var st cloudlink.Status
+		_ = json.Unmarshal(w.Body.Bytes(), &st)
+		return st
+	}
+
+	call(s.handleCloudStats, http.MethodPost, "/api/cloud/stats", statsBody, http.StatusConflict)
+	call(s.handleCloudGrant, http.MethodPost, "/api/cloud/grant", grantBody, http.StatusOK)
+	call(s.handleCloudStats, http.MethodPost, "/api/cloud/stats", statsBody, http.StatusOK)
+	if st := call(s.handleCloudStatus, http.MethodGet, "/api/cloud", "", http.StatusOK); st.State != "on" ||
+		strings.Join(st.Purposes, ",") != "serve,stats" {
+		t.Fatalf("status with statistics on: %+v", st)
+	}
+	if st := call(s.handleCloudStopStats, http.MethodDelete, "/api/cloud/stats", "", http.StatusOK); strings.Join(st.Purposes, ",") != "serve" {
+		t.Fatalf("status with statistics off: %+v", st)
+	}
+	if st := call(s.handleCloudRevoke, http.MethodDelete, "/api/cloud/grant", "", http.StatusOK); st.State != "revoking" {
+		t.Fatalf("status after FTW Cloud off: %+v", st)
+	}
+	call(s.handleCloudStats, http.MethodPost, "/api/cloud/stats", statsBody, http.StatusConflict)
+}
+
+type cloudSiteStub struct{}
+
+func (cloudSiteStub) Live() cloudlink.Live             { return cloudlink.Live{} }
+func (cloudSiteStub) Loadpoints() (cloudwire.LP, bool) { return cloudwire.LP{}, false }
+func (cloudSiteStub) Prices() (cloudwire.Prices, bool) { return cloudwire.Prices{}, false }
+
+type cloudRosterStub struct{}
+
+func (cloudRosterStub) Devices() []cloudlink.RosterDevice { return nil }
+
+type cloudKV struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func (k *cloudKV) LoadConfig(key string) (string, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	v, ok := k.m[key]
+	return v, ok
+}
+
+func (k *cloudKV) SaveConfig(key, value string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.m[key] = value
+	return nil
 }

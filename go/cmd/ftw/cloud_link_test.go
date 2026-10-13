@@ -2,11 +2,20 @@ package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/appproto"
+	"github.com/srcfl/ftw/go/internal/cloudlink"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
+	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
@@ -75,5 +84,77 @@ func TestCloudLoadpointLeavesCapabilitiesAndNamesBehind(t *testing.T) {
 	lp = c.loadpoint(st, time.Now())
 	if lp.SocPermille == nil || *lp.SocPermille != 500 || lp.SocAgeS == nil || *lp.SocAgeS != 90 {
 		t.Fatalf("plugged loadpoint %+v", lp)
+	}
+}
+
+type quietCloudSite struct{}
+
+func (quietCloudSite) Live() cloudlink.Live {
+	return cloudlink.Live{Sources: map[string]cloudlink.Source{"p1": {Kind: "driver"}}}
+}
+func (quietCloudSite) Loadpoints() (cloudwire.LP, bool) { return cloudwire.LP{}, false }
+func (quietCloudSite) Prices() (cloudwire.Prices, bool) { return cloudwire.Prices{}, false }
+
+type noPhones struct{}
+
+func (noPhones) Devices() []cloudlink.RosterDevice { return nil }
+
+func newTestCloudLink(t *testing.T, keys []*ecdsa.PublicKey) *cloudlink.Link {
+	t.Helper()
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	link, err := cloudlink.New(cloudlink.Options{
+		Site: quietCloudSite{}, Roster: noPhones{}, KV: st,
+		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), ServiceKeys: keys,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return link
+}
+
+// An app session hears cloud.link only from a build that can run the uplink,
+// and the session information only while an owner has FTW Cloud on.
+func TestAppSessionsHearOfFTWCloudOnlyWhenItCanRun(t *testing.T) {
+	base := appproto.DefaultCaps()
+	var none *cloudSession
+	unbound := &cloudSession{}
+	release := &cloudSession{}
+	release.bind(newTestCloudLink(t, []*ecdsa.PublicKey{}))
+	for name, c := range map[string]*cloudSession{"no link": none, "not bound yet": unbound, "release build": release} {
+		if slices.Contains(c.caps(base), appproto.CapCloudLink) || c.info() != nil {
+			t.Fatalf("%s: caps %v, info %+v", name, c.caps(base), c.info())
+		}
+	}
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := newTestCloudLink(t, []*ecdsa.PublicKey{&key.PublicKey})
+	withService := &cloudSession{}
+	withService.bind(link)
+	caps := withService.caps(base)
+	if !slices.Contains(caps, appproto.CapCloudLink) || slices.Contains(base, appproto.CapCloudLink) {
+		t.Fatalf("caps %v from %v", caps, base)
+	}
+	if withService.info() != nil {
+		t.Fatal("session information before a grant")
+	}
+	if err := link.Grant(cloudlink.GrantRequest{Scopes: []string{appproto.ScopeLiveRead}, Policy: "2026-10"}); err != nil {
+		t.Fatal(err)
+	}
+	info := withService.info()
+	if info == nil || info.Home != link.Status().Home || len(info.Sources) != 1 {
+		t.Fatalf("session information %+v", info)
+	}
+	for id, name := range info.Sources {
+		if name != "p1" || len(id) != 11 {
+			t.Fatalf("source %q named %q", id, name)
+		}
 	}
 }
