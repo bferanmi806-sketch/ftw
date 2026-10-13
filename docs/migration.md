@@ -295,6 +295,23 @@ verified new writes. The broker and subscriber kept their process start
 times. The test checked saved Compose and container restart policies; it
 did not reboot Docker or the host, run the old updater, or control equipment.
 
+A later ARM64 Docker test passed 62 checks from the published 2.3.2 Core
+and updater to the exact published `v0.141.4-beta.1` Core/helper. The old
+updater answered on its Unix socket. Separate data trees and saved Compose
+and container policies kept old Core and updater off while the beta target
+continued writing after a verified Docker daemon restart and guest OS
+reboot. Shared MQTT recovered with fresh synthetic readings. Both target
+starts and old return retained the exact 25 source chart rows, two Parquet
+values, settings, credentials, goals and identity. Full backups are verified
+off the VM, including the final stopped target data; revert keeps new data.
+
+The test used an own QEMU/HVF HAOS guest as a Docker host. Supervisor marked
+standalone images as `unsupported/software`; its normal check returned to
+supported and healthy after cleanup. This does not qualify a standalone FTW
+Docker installation as a supported HAOS app, every host startup unit,
+old updater jobs, the optional old optimizer, physical equipment or power
+loss. The test VM is shut down and all proof containers are removed.
+
 A separate test moved the published 2.3.2 AMD64 Docker image to the published
 `v0.141.0-beta.1` ARM64 Core and helper. All 29 checks passed, including two
 target starts, new writes and return to old Core with data, settings,
