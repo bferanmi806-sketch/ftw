@@ -379,6 +379,20 @@ This is a data-copy check for that custom build. It is not a published
 32-bit package, an ARMv7/Pi test, a 32-bit OS, an installer change, reboot
 or physical power-loss proof.
 
+A native macOS ARM64 copy test passed 45 checks from an own Mach-O build
+of the unchanged 2.3.2 source to the published `v0.142.1-beta.1` Linux
+ARM64 Core and helper. The macOS process wrote new SQLite rows with all
+network access denied; its source HTTP API was blocked too. A separate,
+stopped Linux export copy kept the original macOS data unchanged. Two Linux
+starts retained 25 exact old chart rows, two Parquet values, stored goals
+and credentials, identity and all old YAML config fields after checked
+path, planner, SoC and PV-unit mappings. New writes, native macOS return
+and revert passed. Backup bytes were checked outside the export container,
+on the same physical Mac. All source and target processes are stopped.
+This covers that custom data-copy layout. It is not a published macOS
+package, source API or installer test, Windows migration, a backup on a
+separate physical host, equipment or power-loss proof.
+
 One external Linux layout from published 2.3.2 also passed 36 checks with
 the published `v0.141.4-beta.1` ARM64 Core and helper. Its database used a
 subdirectory, while the config seed, driver files and Parquet archive used

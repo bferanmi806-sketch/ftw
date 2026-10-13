@@ -51,6 +51,11 @@ disk. Keeping a copy somewhere else is the owner's step: point `--output-dir`
 at another disk, or copy the file off the machine. Keep at least one older
 known-good copy.
 
+In `v0.142.1-beta.1`, Ctrl-C can stop the CLI while Core keeps making the
+live backup. Check `/api/backups` for its phase and wait for completion
+before starting an update. [The cancellation fix](https://github.com/srcfl/ftw/pull/1615)
+is not included in that beta.
+
 The archive leaves out other backups and old rollback points. It carries a
 consistent copy of `cache.db`: savings history is costed from its past
 prices, and a price provider sends only today and tomorrow. Managed-driver
