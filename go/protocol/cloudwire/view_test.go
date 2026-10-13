@@ -312,3 +312,62 @@ func TestHeartbeatIsClamped(t *testing.T) {
 		}
 	}
 }
+
+// 11. The byte budget runs out: the box sends no live and no hb, and the
+// data ages exactly as a dead uplink's does.
+func TestFreshnessBudgetSpentAgesOnTime(t *testing.T) {
+	box := newFakeBox(t, 1)
+	v := box.view()
+	t0 := int64(2_000_000)
+	accept(t, v, box.fullLive(t0, 2_000, protocol.SourceLive, 1), t0+transit)
+	// Nothing more arrives; only events would.
+	wantSource(t, v, t0+8_000, protocol.SourceLive)
+	wantSource(t, v, t0+8_001, protocol.SourceLagging)
+	wantSource(t, v, t0+58_001, protocol.SourceDown)
+}
+
+// A message the phone drops changes nothing, even one from a later boot that
+// would otherwise have replaced the one held.
+func TestADroppedMessageLeavesTheViewAsItWas(t *testing.T) {
+	x := newFakeBox(t, 1)
+	v := x.view()
+	t0 := int64(2_000_000)
+	accept(t, v, x.fullLive(t0, 1_000, protocol.SourceLive, 1), t0+transit)
+	before := v.Grade(t0 + 1_000)
+
+	y := newFakeBox(t, 2)
+	y.start = t0
+	broken := y.seal(MsgLive, map[string]any{"seq": 1, "boot": y.boot, "uptimeMs": 5_000,
+		"wallMs": t0 + 5_000, "fields": "not a map"})
+	if err := v.Accept(broken, t0+5_100); err == nil {
+		t.Fatal("an undecodable live was accepted")
+	}
+	zero := y.seal(MsgHB, HB{Header: Header{Seq: 0, Boot: y.boot, UptimeMs: 5_000, WallMs: &[]int64{t0 + 5_000}[0]}})
+	if err := v.Accept(zero, t0+5_100); !errors.Is(err, ErrNotNewer) {
+		t.Fatalf("seq 0 from a new boot: %v", err)
+	}
+	ahead := x.seal(MsgHB, HB{Header: Header{Seq: 0, Boot: x.boot, UptimeMs: 5_000, WallMs: &[]int64{t0 + 60_000}[0]}})
+	_ = v.Accept(ahead, t0+5_100) // dropped, and must not turn rule N off
+	if got := v.Grade(t0 + 1_000); got.Anchored != before.Anchored || got.Sources["m"] != before.Sources["m"] ||
+		got.Fields["2"] != before.Fields["2"] {
+		t.Fatalf("a dropped message changed the view: %+v, was %+v", got, before)
+	}
+}
+
+// A state this phone does not know ranks as never: neither the source nor
+// a field that follows it can read as live.
+func TestAnUnknownStateIsNeverLive(t *testing.T) {
+	box := newFakeBox(t, 1)
+	v := box.view()
+	t0 := int64(2_000_000)
+	accept(t, v, box.seal(MsgLive, Live{
+		Header: box.header(t0), Fields: map[string]int64{"2": 1000},
+		FieldSources: map[string][]string{"2": {"m"}},
+		Sources:      map[string]Source{"m": {Kind: "driver", State: "dormant", StaleAfterMs: 10_000}},
+		SrcRev:       1, Ages: map[string]int64{},
+	}), t0+transit)
+	g := v.Grade(t0 + 200)
+	if g.Sources["m"] != protocol.SourceNever || g.Fields["2"] != protocol.SourceNever {
+		t.Fatalf("an unknown state graded as %s, field %s", g.Sources["m"], g.Fields["2"])
+	}
+}

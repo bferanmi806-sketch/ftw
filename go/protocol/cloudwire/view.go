@@ -105,54 +105,67 @@ func (v *View) Accept(e Envelope, arrivalMs int64) error {
 		return err
 	}
 
-	if !bytes.Equal(h.Boot, v.boot) {
+	// Decode the class body before anything changes, so a message that is
+	// dropped leaves the view as it was.
+	var (
+		live *Live
+		lp   *LP
+		hb   *HB
+	)
+	switch e.T {
+	case MsgLive:
+		live = new(Live)
+		if err := Unmarshal(e.B, live); err != nil {
+			return err
+		}
+	case MsgLP:
+		lp = new(LP)
+		if err := Unmarshal(e.B, lp); err != nil {
+			return err
+		}
+	case MsgHB:
+		hb = new(HB)
+		if err := Unmarshal(e.B, hb); err != nil {
+			return err
+		}
+	}
+
+	lead := h.WallMs != nil && *h.WallMs > arrivalMs+RuleNLeadMs
+	newBoot := !bytes.Equal(h.Boot, v.boot)
+	if newBoot {
 		// Another boot replaces this one only with an anchored message sent
 		// after the newest one held, so a replay of an older boot cannot
 		// wipe a newer one.
-		lead := h.WallMs != nil && *h.WallMs > arrivalMs+RuleNLeadMs
 		send, ok := v.sendTime(h.Boot, wallSend(h, arrivalMs, lead), h.UptimeMs, arrivalMs)
-		if v.boot != nil && (!ok || send <= v.newest) {
+		if (v.boot != nil && (!ok || send <= v.newest)) || h.Seq == 0 {
 			return ErrNotNewer
 		}
 		v.reset(h.Boot)
-	}
-	if h.Seq <= v.seq[e.T] {
+	} else if h.Seq <= v.seq[e.T] {
 		return ErrNotNewer
 	}
-	if h.WallMs != nil && *h.WallMs > arrivalMs+RuleNLeadMs {
+	if lead {
 		v.noRuleN = true
 	}
 	ws := wallSend(h, arrivalMs, v.noRuleN)
 	send, anchored := v.sendTime(h.Boot, ws, h.UptimeMs, arrivalMs)
 
-	switch e.T {
-	case MsgLive:
-		var l Live
-		if err := Unmarshal(e.B, &l); err != nil {
-			return err
-		}
-		v.live = &l
-		if l.Sources != nil {
-			v.table, v.tableRev, v.fieldSrc = l.Sources, l.SrcRev, l.FieldSources
+	switch {
+	case live != nil:
+		v.live = live
+		if live.Sources != nil {
+			v.table, v.tableRev, v.fieldSrc = live.Sources, live.SrcRev, live.FieldSources
 		}
 		if anchored {
 			v.setM(&anchor{seq: h.Seq, boot: h.Boot, wallSend: ws, uptimeMs: h.UptimeMs,
-				srcRev: l.SrcRev, liveSeq: h.Seq, ages: l.Ages})
+				srcRev: live.SrcRev, liveSeq: h.Seq, ages: live.Ages})
 		}
-	case MsgLP:
-		var p LP
-		if err := Unmarshal(e.B, &p); err != nil {
-			return err
-		}
-		v.lp = &p
-	case MsgHB:
-		var b HB
-		if err := Unmarshal(e.B, &b); err != nil {
-			return err
-		}
+	case lp != nil:
+		v.lp = lp
+	case hb != nil:
 		if anchored {
 			v.setM(&anchor{seq: h.Seq, hb: true, boot: h.Boot, wallSend: ws, uptimeMs: h.UptimeMs,
-				srcRev: b.SrcRev, liveSeq: b.LiveSeq, lpSeq: b.LpSeq, ages: b.Ages})
+				srcRev: hb.SrcRev, liveSeq: hb.LiveSeq, lpSeq: hb.LpSeq, ages: hb.Ages})
 		}
 	}
 	v.seq[e.T] = h.Seq
@@ -242,7 +255,7 @@ func (v *View) Grade(nowMs int64) Grades {
 
 	tableBehind := g.Anchored && v.m.srcRev > v.tableRev
 	for id, s := range v.table {
-		state := s.State
+		state := worse(s.State, protocol.SourceLive)
 		switch {
 		case !g.Anchored || tableBehind:
 			state = worse(state, protocol.SourceStale)
@@ -335,12 +348,16 @@ var stateRank = map[protocol.SourceState]int{
 	protocol.SourceDown: 3, protocol.SourceNever: 4,
 }
 
+// worse is the worse of two states. A state this phone does not know ranks
+// as never, whichever side it is on, so it can never read as live.
 func worse(a, b protocol.SourceState) protocol.SourceState {
-	ra, ok := stateRank[a]
-	if !ok {
-		return protocol.SourceNever
+	if _, ok := stateRank[a]; !ok {
+		a = protocol.SourceNever
 	}
-	if stateRank[b] > ra {
+	if _, ok := stateRank[b]; !ok {
+		b = protocol.SourceNever
+	}
+	if stateRank[b] > stateRank[a] {
 		return b
 	}
 	return a
