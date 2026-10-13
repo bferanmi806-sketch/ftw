@@ -159,6 +159,21 @@ func vectorBodies(grantKey []byte, boxPK []byte) []struct {
 		{"bye", "box", MsgBye, Bye{Header: h(8, 70_000), Why: ByeRevoked, Purge: true}},
 		{"purged", "service", MsgPurged, Purged{AtMs: 1_791_821_000_000, What: PurgedHome,
 			GrantID: bytes.Repeat([]byte{0x44}, GrantIDBytes)}},
+		{"event connected", "box", MsgEvent, Event{
+			Header: h(9, 71_000), EventID: "Q2ZrMjR0dzVh", Ts: i64(wall + 71_000 - 60_000 - 400),
+			Kind: protocol.PushChargingConnected, Severity: SeverityInfo, Args: map[string]string{},
+			Src: charger, LP: garage,
+		}},
+		{"event interrupted", "box", MsgEvent, Event{
+			Header: h(10, 72_000), EventID: "aW50cnB0ZDAx", Ts: i64(wall + 72_000 - 60_000 - 300),
+			Kind: protocol.PushChargingInterrupted, Severity: SeverityWarning, Args: map[string]string{},
+			Src: charger, LP: garage,
+		}},
+		{"event session complete", "box", MsgEvent, Event{
+			Header: h(11, 73_000), EventID: "ZG9uZTAwMDAx", Ts: i64(wall + 73_000 - 60_000 - 200),
+			Kind: protocol.PushChargingSessionComplete, Severity: SeverityInfo,
+			Args: map[string]string{"kwh": "18.4"}, Src: charger, LP: garage,
+		}},
 	}
 }
 

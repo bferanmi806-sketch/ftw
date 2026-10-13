@@ -31,6 +31,8 @@ var Fields = map[string][]string{
 
 	MsgHB: {"clock", "srcRev", "liveSeq", "lpSeq", "ages"},
 
+	MsgEvent: {"eventId", "ts", "kind", "severity", "args", "src", "lp"},
+
 	MsgRoster: {"rosterSeq", "ttlS", "devices", "grant"},
 	"Device":  {"id", "key", "role", "scopes", "epoch"},
 	"Grant":   {"id", "scopes", "purposes", "controller"},
@@ -39,14 +41,15 @@ var Fields = map[string][]string{
 }
 
 // Bodies maps each class the box sends to its body type. Classes the box does
-// not send yet (plan, health, event, tiles) have no entry; the service treats
-// their bytes as opaque either way.
+// not send yet (plan, health, tiles) have no entry; the service treats their
+// bytes as opaque either way.
 var Bodies = map[string]any{
 	MsgHello:  Hello{},
 	MsgLive:   Live{},
 	MsgLP:     LP{},
 	MsgPrices: Prices{},
 	MsgHB:     HB{},
+	MsgEvent:  Event{},
 	MsgRoster: Roster{},
 	MsgBye:    Bye{},
 }
