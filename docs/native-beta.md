@@ -1,6 +1,6 @@
 # Install and update FTW
 
-**This draft targets `v0.142.0`; stable has not been published yet.** FTW
+**This draft targets `v0.142.1`; stable has not been published yet.** FTW
 2.x and 3.x get no more updates. [Svenska](setup-guide/update-sv.md).
 
 ## Quick answer
@@ -8,7 +8,7 @@
 | You run | Do this |
 |---|---|
 | New FTW 0.x, native | Open **More → Version → Update FTW** in the web UI, or run `ftw update` on the box. Nothing else. |
-| New FTW 0.x in Docker | Set `FTW_VERSION=v0.142.0` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
+| New FTW 0.x in Docker | Set `FTW_VERSION=v0.142.1` in `.env` and run `docker compose up -d --build`. [Details](#update-new-docker) |
 | No FTW yet, on 64-bit Linux or a new Pi card | [Install](#install) with the stable tag. |
 | Old FTW 2.x, 3.x or the old Pi image | Move data and config through a full backup to a second SD card or host. [Steps](#coming-from-an-older-ftw) |
 | Home Assistant app | Keep the app backup and move to another Linux host; keep Home Assistant on MQTT. [Steps](#coming-from-an-older-ftw) |
@@ -203,7 +203,7 @@ return to [the second-card steps](#raspberry-pi-use-a-second-sd-card) first.
 This section does not update or migrate an old installation.
 
 Use the newest stable tag from [Releases](https://github.com/srcfl/ftw/releases),
-`v0.142.0` or later with no `-beta` in it. Choose a beta only if you test new
+`v0.142.1` or later with no `-beta` in it. Choose a beta only if you test new
 builds. Check that the release includes the Linux package for your
 architecture and its SHA-256 file. Do not use `releases/latest`: it still
 points to the retired 2.x line. Copy the tag from the release title; do not

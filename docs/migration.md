@@ -5,8 +5,8 @@ moving to the new line. Use a full backup and a separate target copy. Keep
 the source install and an off-host backup until the target and the return
 path have passed their checks. [Svenska](#svenska).
 
-This draft targets `v0.142.0`, which has not shipped as stable. The published
-beta is `v0.142.0-beta.1`. Data-copy tests do not establish that every old
+This draft targets `v0.142.1`, which has not shipped as stable. The published
+beta is `v0.142.1-beta.1`. Data-copy tests do not establish that every old
 installation can switch safely. The remaining paths below need work before
 the guide can ship with stable.
 
@@ -153,14 +153,15 @@ the target; returning does not merge those readings into old Core.
 
 ## What the copy tests cover
 
-The published `v0.142.0-beta.1` Core passed healthy, offline and invalid
+The published `v0.142.1-beta.1` Core passed healthy, offline and invalid
 balance cases over two starts each on separate synthetic Linux copies.
 Known meter values remain in history while missing flows and totals stay
-unknown. It also records the time spent in forecast connection, query, scan
+unknown. Energy today shows measured subtotals with a gap mark; the full
+range remains unknown when measurements are incomplete. It also records the time spent in forecast connection, query, scan
 and decode phases when a read fails. The timeout cause remains unproven.
 These checks alone do not qualify the older migration routes against this beta.
 
-The published `v0.142.0-beta.1` helper also passed full backup, verification,
+The published `v0.142.1-beta.1` helper also passed full backup, verification,
 portable restore and revert on separate copies of published HA 3.8 split
 SQLite and current partial/quality history. Historical rows, settings and
 identity remained after explicit data-root and restore-generation mappings.
@@ -174,7 +175,7 @@ Cloud off. A new explicit grant used a different home ID. Source keys and
 modes, pairing identity and WebPush identity remained. This tests local
 restore behavior, not a connection to the Cloud service.
 
-The published `v0.142.0-beta.1` Core, helper and converter also passed 30
+The published `v0.142.1-beta.1` Core, helper and converter also passed 30
 checks from published `v3.2.0-beta.1` with retained Parquet and 500,000 extra
 synthetic DuckDB rows. A process kill interrupted the copy before publication;
 resume checked the source, and a changed source stopped it. Two target
@@ -295,7 +296,7 @@ active and preserve its previous-version path. These checks use synthetic
 records and valid file hashes; they do not prove a signed-channel install.
 
 A later two-host test passed 39 checks from the published 3.8 Core and
-helper to the published `v0.142.0-beta.1` native package. The unchanged
+helper to the published `v0.142.1-beta.1` native package. The unchanged
 installer refused the source's existing `ftw` account and installed on a
 fresh Debian 13 ARM64 target. Full backup transfer, two target starts and
 matching old return retained 24 exact chart rows, two stored hours, settings,
