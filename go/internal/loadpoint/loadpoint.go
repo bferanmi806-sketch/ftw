@@ -363,6 +363,13 @@ type loadpointRuntime struct {
 	sessionID                string
 	socRetention             string
 	completionNotified       bool
+	// goalRiskNotified latches charging.goal_at_risk once per plug-in.
+	// vehicleAnchored is true once the car itself reported a level this
+	// session; chargedSinceStart once it drew power in this process, so a
+	// restart beside a car that is already done says nothing.
+	goalRiskNotified  bool
+	vehicleAnchored   bool
+	chargedSinceStart bool
 	Config
 
 	pluggedIn            bool
@@ -771,6 +778,9 @@ func (m *Manager) observe(id string, pluggedIn bool, powerW, deliveredWh float64
 		lp.sessionPluginSoC = anchor
 		lp.socConfirmed = false
 		lp.completionNotified = false
+		lp.goalRiskNotified = false
+		lp.vehicleAnchored = false
+		lp.chargedSinceStart = false
 		lp.deliveredHistory = nil
 		lp.notRequestingSince = time.Time{}
 		lp.chargingDeclined = false
@@ -878,6 +888,17 @@ func (m *Manager) observe(id string, pluggedIn bool, powerW, deliveredWh float64
 	if pluggedIn {
 		lp.currentSoC = estimateSoC(lp.sessionPluginSoC,
 			deliveredWh, lp.VehicleCapacityWh)
+		if powerW >= DeliveringW {
+			lp.chargedSinceStart = true
+		}
+		// A car that reports nothing itself is done when the box's own
+		// estimate, from a level someone set, reaches the target. Said in
+		// kWh, which the box measured; the level is an estimate.
+		if !lp.completionNotified && !lp.vehicleAnchored && lp.socConfirmed && lp.chargedSinceStart &&
+			lp.targetSoC > 0 && lp.currentSoC >= lp.targetSoC && deliveredWh >= minCompletionWh {
+			lp.completionNotified = true
+			fired = append(fired, events.ChargingSessionComplete{LoadpointID: id, KWh: deliveredWh / 1000, At: now})
+		}
 	} else {
 		lp.currentSoC = 0
 	}
@@ -1140,6 +1161,7 @@ func (m *Manager) AnchorVehicleSoCAt(id string, socPct float64, observedAt time.
 		}
 	}
 	reanchorSoCAtLocked(lp, socPct, deliveredAt, m.now())
+	lp.vehicleAnchored = true
 	if lp.targetSoC > 0 && lp.currentSoC >= lp.targetSoC && !lp.completionNotified {
 		lp.completionNotified = true
 		completion = &events.ChargingSessionComplete{LoadpointID: id, KWh: lp.deliveredWhSession / 1000, At: m.now()}
@@ -1396,9 +1418,12 @@ func (m *Manager) SetScheduleChecked(id string, s Schedule) (bool, error) {
 		return false, nil
 	}
 	s.Normalize()
-	// The owner picked a time on today's clock. Keep that clock time, and
-	// answer clients with its UTC minute today. A cleared goal has none.
-	if !s.Empty() {
+	// Keep the household clock the owner picked: time_of_day_min when the
+	// request has it, else the UTC minute read on today's date. Clients
+	// still read its UTC minute today. A cleared goal has no ready time.
+	if s.Empty() {
+		s = s.withoutClock()
+	} else {
 		s.readClock(now, loc)
 		s.TimeOfDayMinUTC = utcMinuteToday(now, s.clock, loc)
 	}
@@ -1493,9 +1518,10 @@ func (m *Manager) ClearScheduleChecked(id string) (bool, error) {
 // A row saved before Core kept the household clock holds only a UTC
 // minute, which does not say what offset it was saved with. It is read
 // on today's date — the time the owner sees now — and saved back once so
-// the next DST change cannot move it. The first failed save is returned;
-// the goal is used either way and read again at the next boot. Does NOT
-// call RollSchedules; the controller's first tick will handle that.
+// the next DST change cannot move it. A clock out of range is read the
+// same way. The first failed save is returned; the goal is used either
+// way and read again at the next boot. Does NOT call RollSchedules; the
+// controller's first tick will handle that.
 func (m *Manager) HydrateSchedules(loader func(id string) (Schedule, bool)) error {
 	m.intentMu.Lock()
 	defer m.intentMu.Unlock()
@@ -1511,12 +1537,9 @@ func (m *Manager) HydrateSchedules(loader func(id string) (Schedule, bool)) erro
 			continue
 		}
 		s.Normalize()
-		if !s.clockSet {
-			s.readClock(now, loc)
-			if saver != nil {
-				if err := saver(id, s); err != nil && failed == nil {
-					failed = err
-				}
+		if s.readClock(now, loc) && saver != nil {
+			if err := saver(id, s); err != nil && failed == nil {
+				failed = err
 			}
 		}
 		m.mu.Lock()
