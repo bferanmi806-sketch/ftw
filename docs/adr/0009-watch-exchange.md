@@ -1,10 +1,11 @@
 # ADR 0009: An Apple Watch works without the phone
 
-- Status: accepted. Core has milestones 1, 2, 3 and 5: the command log on
-  the box, the registry names, the watch role with its enrolment, and the
-  exchange socket with its sessions, so the box says `cmd.exchange`. The
-  relay's half is milestone 4, in srcfl/ftw-webapp. Nothing else described
-  here has shipped.
+- Status: accepted. This repository has milestones 1, 2, 3, 5 and 6: the
+  command log on the box, the registry names, the watch role with its
+  enrolment, the exchange socket with its sessions, so the box says
+  `cmd.exchange`, and the wire for FTW Cloud's one-shot read. The relay's
+  half is milestone 4, in srcfl/ftw-webapp. Nothing else described here has
+  shipped.
 - Date: 2026-10-14
 - Decided by: Fredrik on 14 October 2026. Before the design: a watch controls
   the box directly as well as through the phone; an unlocked watch on the
