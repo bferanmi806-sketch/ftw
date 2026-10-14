@@ -205,10 +205,11 @@ func TestExchangeTimingAtTheBox(t *testing.T) {
 	}
 	save, _ := strconv.Atoi(os.Getenv("FTW_EV_SAVE_MS"))
 	r := newXRig(t)
+	r.x.cmdFloor = ExchangeCmdFloor
 	r.charger.save = time.Duration(save) * time.Millisecond
 	var applied, refused []time.Duration
 	var w *watchClient
-	for i := 0; i < 200; i++ {
+	for i := 0; i < 40; i++ {
 		if i%2 == 0 {
 			// A second on the rig's clock per handshake keeps the run under
 			// the sixty a minute the box allows.

@@ -820,3 +820,69 @@ func TestLosingTheExchangeLeavesTheUplink(t *testing.T) {
 		t.Fatalf("after the exchange dropped, the phone's session answered %q", got.Envelope.T)
 	}
 }
+
+// --------------------------------------------------------------------------
+// The floor (decision F)
+// --------------------------------------------------------------------------
+
+// timed sends one request and returns how long the box took to answer it.
+func (r *xrig) timed(t *testing.T, w *watchClient, msgType string, body any) ([]appwire.Frame, time.Duration) {
+	t.Helper()
+	request, err := w.request(msgType, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	reply := r.x.answer(context.Background(), request)
+	took := time.Since(started)
+	frames, err := w.answer(reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frames, took
+}
+
+// A command answers no sooner than the floor, applied or refused, so the
+// time to answer does not say which. One that takes longer answers when it
+// is done and waits no more. A read is not a command and is not held.
+func TestACommandAnswersNoSoonerThanTheFloor(t *testing.T) {
+	r := newXRig(t)
+	r.x.cmdFloor = ExchangeCmdFloor
+	slack := 300 * time.Millisecond
+
+	w, _ := r.addWatch(t)
+	frames, applied := r.timed(t, w, appproto.MsgCmd, chargeNow("floor-applied"))
+	if decodeAs[appproto.CmdResult](t, frames[1]).State != appproto.CmdApplied {
+		t.Fatalf("the charge answered %v", types(frames))
+	}
+	_, refused := r.timed(t, w, appproto.MsgCmd, appproto.Cmd{CmdID: "floor-refused", Op: appproto.OpSetMode,
+		Args: map[string]any{"mode": "charge"}, NotValidAfterMs: 600_000, Expect: appproto.Expect{Rev: 1}})
+	_, read := r.timed(t, w, appproto.MsgNow, struct{}{})
+
+	for name, took := range map[string]time.Duration{"applied": applied, "refused": refused} {
+		if took < ExchangeCmdFloor || took > ExchangeCmdFloor+slack {
+			t.Fatalf("an %s command answered after %s, want %s", name, took, ExchangeCmdFloor)
+		}
+	}
+	if read >= ExchangeCmdFloor {
+		t.Fatalf("a read was held %s", read)
+	}
+
+	// An EV save longer than the floor sets the time alone.
+	r.charger.mu.Lock()
+	r.charger.save = 600 * time.Millisecond
+	r.charger.mu.Unlock()
+	w, _ = r.addWatch(t)
+	_, slow := r.timed(t, w, appproto.MsgCmd, chargeNow("floor-slow"))
+	if slow < 600*time.Millisecond || slow > 600*time.Millisecond+slack {
+		t.Fatalf("a charge with a 600 ms save answered after %s; the floor must not add to it", slow)
+	}
+}
+
+// The box wires the floor; only a table built by hand in a test goes without.
+func TestTheUplinkHoldsCommandsForTheFloor(t *testing.T) {
+	r := newExchangeRig(t, &fakeCharger{})
+	if r.uplink.exchanges.cmdFloor != ExchangeCmdFloor {
+		t.Fatalf("the uplink holds commands for %s, want %s", r.uplink.exchanges.cmdFloor, ExchangeCmdFloor)
+	}
+}

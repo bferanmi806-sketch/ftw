@@ -281,11 +281,12 @@ func New(opts Options) (*Uplink, error) {
 	}
 	if opts.ExchangeHandler != nil {
 		u.exchanges = &exchanges{
-			build:  opts.ExchangeHandler,
-			enroll: opts.Enroll,
-			static: opts.Enroll.StaticKey(),
-			log:    u.log,
-			now:    time.Now,
+			build:    opts.ExchangeHandler,
+			enroll:   opts.Enroll,
+			static:   opts.Enroll.StaticKey(),
+			log:      u.log,
+			now:      time.Now,
+			cmdFloor: ExchangeCmdFloor,
 		}
 	}
 	return u, nil

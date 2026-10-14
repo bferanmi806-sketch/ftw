@@ -422,7 +422,9 @@ it one Noise message per request behind an id of its own. The box holds those
 sessions in a table of eight, apart from the phones' four, so a watch never
 pushes a phone out; each ends after four exchanges, a minute idle or three
 minutes. Every frame on it is lane 0 apart from `hello_ok`, and every answer is
-two frames, so a read, a command and a refusal have one length. Reads go to
+two frames, so a read, a command and a refusal have one length. A command
+answers no sooner than 400 ms after it arrives, so an applied one and a refused
+one take the same time unless the EV save runs longer. Reads go to
 FTW Cloud in one request, which has not shipped. The watch is a device of its
 own and never holds more than the phone that added it.
 

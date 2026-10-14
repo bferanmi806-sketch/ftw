@@ -68,6 +68,14 @@ const (
 	// asks again with the same cmdId.
 	exchangeSettle = 3 * time.Second
 
+	// ExchangeCmdFloor is the soonest the box answers a watch's cmd, counted
+	// from when the request arrived (ADR 0009, decision F; Fredrik, 14
+	// October 2026). A refusal is ready in a millisecond and an applied
+	// charge waits for the EV save, so without a floor the time to answer
+	// would tell the relay which happened. A command that takes longer, an
+	// EV save of up to 2 s, answers when it is done and waits no more.
+	ExchangeCmdFloor = 400 * time.Millisecond
+
 	// exchangeInFlight bounds requests handled at once. The relay allows two
 	// open exchanges per room; this is the box's own ceiling.
 	exchangeInFlight = 8
@@ -177,6 +185,9 @@ type exchanges struct {
 	now func() time.Time
 	// settle is exchangeSettle; a test shortens it.
 	settle time.Duration
+	// cmdFloor is ExchangeCmdFloor as New wires it. Zero holds nothing,
+	// which only a test that builds the table by hand gets.
+	cmdFloor time.Duration
 
 	mu    sync.Mutex
 	live  []*exchangeSession
@@ -187,6 +198,7 @@ type exchanges struct {
 // nil for silence. A stranger, a removed key, a spent session, a malformed
 // body and a handshake over the rate all get silence.
 func (x *exchanges) answer(ctx context.Context, body []byte) []byte {
+	arrived := time.Now()
 	x.prune()
 	switch len(body) {
 	case exchangeOpenBytes:
@@ -197,7 +209,7 @@ func (x *exchanges) answer(ctx context.Context, body []byte) []byte {
 		}
 		return reply
 	case exchangeRequestBytes:
-		return x.route(ctx, body)
+		return x.route(ctx, body, arrived)
 	default:
 		return nil
 	}
@@ -278,7 +290,7 @@ func (x *exchanges) open(ctx context.Context, message1 []byte) ([]byte, error) {
 
 // route finds the session a transport message belongs to by letting each
 // one's AEAD try, and runs the exchange in it.
-func (x *exchanges) route(ctx context.Context, message []byte) []byte {
+func (x *exchanges) route(ctx context.Context, message []byte, arrived time.Time) []byte {
 	x.mu.Lock()
 	live := slices.Clone(x.live)
 	x.mu.Unlock()
@@ -289,12 +301,35 @@ func (x *exchanges) route(ctx context.Context, message []byte) []byte {
 			continue
 		}
 		reply := x.exchange(ctx, sess, frame)
+		if reply != nil && x.cmdFloor > 0 && isCmd(frame) {
+			holdUntil(ctx, arrived.Add(x.cmdFloor))
+		}
 		if sess.spent(x.now()) {
 			x.drop(sess)
 		}
 		return reply
 	}
 	return nil
+}
+
+// isCmd reports whether a request frame is a command.
+func isCmd(frame []byte) bool {
+	f, err := appwire.DecodeFrame(frame)
+	return err == nil && f.Envelope.T == appproto.MsgCmd
+}
+
+// holdUntil waits for a moment on the real clock, or for the socket to go.
+func holdUntil(ctx context.Context, at time.Time) {
+	wait := time.Until(at)
+	if wait <= 0 {
+		return
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
 }
 
 // exchange runs one request through the session's handler and seals the

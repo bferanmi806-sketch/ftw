@@ -12,7 +12,9 @@
   remove alone. On the design: yes to A–F below ("ja på alla"), and the watch
   must work fully on its own, for example on LTE with the phone away.
   Decisions 7–9 follow from that last answer and from his rule that FTW Cloud
-  speeds things up and holds state while control never goes through it.
+  speeds things up and holds state while control never goes through it. The
+  same day, after the timing test showed the gap, he set decision F's floor
+  at 400 ms ("ja kör på ditt förslag ovan med tider").
 - Pair: the exchange's wire, the relay route and the client changes are in
   [ftw-webapp `docs/watch-exchange.md`](https://github.com/srcfl/ftw-webapp/blob/main/docs/watch-exchange.md).
   Neither side works without the other.
@@ -77,7 +79,8 @@ to remove it.**
      other frame is lane 0, 512 B.
    - The answer to `cmd` is two transport messages: `cmd.ack`, then
      `cmd.result`, or `tick` in its place if the result has not settled
-     within 3 s. The same `cmd` again returns the stored outcome.
+     within 3 s. The same `cmd` again returns the stored outcome. The box
+     answers a `cmd` no sooner than 400 ms after it arrived (decision F).
    - The answer to `now` is `now`, then `tick`: frozen fields 1–10, source
      states and ages, and each loadpoint's plug state, level, power and
      `controlRev`, flagged `TRUNC` if they do not fit. A read and a command
@@ -212,6 +215,12 @@ Fredrik answered yes to all six on 14 October 2026.
 - **F. Timing floor.** A refusal answers in milliseconds; an applied command
   waits up to 2 s for the EV save. The box answers no sooner than a fixed
   floor only if the timing test shows that gap through the relay.
+  - Settled on 14 October 2026. The test showed the gap: with a 250 ms EV
+    save, an applied charge answered in 252 ms and a refusal in under 2 ms
+    through the relay. Fredrik chose a 400 ms floor. The box answers an
+    exchange `cmd` no sooner than 400 ms after it arrived, applied or
+    refused. A command that takes longer, an EV save of up to 2 s, answers
+    when it is done and waits no more. Reads are not held.
 
 ## Milestones
 
