@@ -413,6 +413,12 @@ second outbound connection for homes whose owner turns it on. It carries to
 never carries control. Commands and long history stay on the relay path above.
 [protocol-cloud.md](protocol-cloud.md) specifies its wire format.
 
+Proposed, not shipped: [ADR 0009](adr/0009-watch-exchange.md) lets an Apple
+Watch send commands without the phone. The box opens a second relay socket for
+one-shot exchanges, which the watch reaches with one HTTPS request per step,
+because watchOS allows no WebSocket. The watch is a device of its own and never
+holds more than the phone that added it.
+
 ### Who is let in, and as what
 
 An enrolment carries a role from `contract/registry.yaml`: `owner`, which may
