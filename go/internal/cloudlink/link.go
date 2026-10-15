@@ -200,7 +200,7 @@ type Link struct {
 	// first on each network.
 	transport string
 	quicOn    bool
-	winners   map[string]string
+	winners   map[string]winner
 	// tickets holds the service's TLS tickets, so a reconnect resumes and,
 	// over QUIC, sends its target as early data.
 	tickets tls.ClientSessionCache

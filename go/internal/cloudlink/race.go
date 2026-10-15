@@ -14,7 +14,16 @@ import (
 // first; after cloudwire.RaceDelay without a QUIC handshake the WebSocket
 // starts too, and the first to open carries the uplink. The link remembers
 // the winner for each network, named by the box's local address towards the
-// service, and starts the next time with it.
+// service, and starts the next time with it, for a day: a network that
+// blocked UDP once gets QUIC first again after that.
+
+// winnerHolds is how long a network's winner goes first.
+const winnerHolds = 24 * time.Hour
+
+type winner struct {
+	transport string
+	at        time.Time
+}
 
 type dialed struct {
 	transport string
@@ -141,8 +150,8 @@ func localNetwork(addr string) string {
 func (l *Link) preferred(network string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if t, ok := l.winners[network]; ok {
-		return t
+	if w, ok := l.winners[network]; ok && time.Since(w.at) < winnerHolds {
+		return w.transport
 	}
 	return cloudwire.TransportQUIC
 }
@@ -151,8 +160,8 @@ func (l *Link) remember(network, transport string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.winners == nil {
-		l.winners = map[string]string{}
+		l.winners = map[string]winner{}
 	}
-	l.winners[network] = transport
+	l.winners[network] = winner{transport: transport, at: time.Now()}
 	l.transport = transport
 }

@@ -165,9 +165,11 @@ service also serves over HTTP/3 (RFC 9114); they need nothing here.
 
 A client starts QUIC first. If the QUIC handshake has not finished after
 250 ms, it also dials the WebSocket, takes the first that opens and closes
-the other. It remembers which won on each network and starts the next time
-with that one, giving the other the same 250 ms. A box names its network by
-its local address; a phone by the interface and the path it has. A client
+the other. It remembers which won on each network for a day and starts the
+next time with that one, giving the other the same 250 ms; after a day QUIC
+goes first again, so a network that blocked UDP once is tried again. A box
+names its network by its local address; a phone by its path's interfaces
+and gateways, kept as a hash. A client
 says which carries it, by the registry's `cloud_transports`: `quic` or
 `websocket`. Core shows it in `GET /api/cloud`; the app shows it beside the
 carrier. The carrier stays `tunnel` or `cloud` over both.
