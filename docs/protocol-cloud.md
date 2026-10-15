@@ -723,25 +723,31 @@ lane 0 goes as readings land, not on the relay's one-second pulse.
 
 ### Lane 0 through the tunnel
 
-- When a driver finishes a poll that changed a field or a source's state,
-  the box sends a `delta`. It waits 5 ms for polls that finish with it, so
-  they go in one frame, and sends such frames at most five a second on
-  average, three at once.
+- When a driver finishes a poll, the box sends each visible session one
+  frame: a `delta` of what changed, or a `tick` when nothing did. It waits
+  5 ms for polls that finish with it, so they go in one frame, and sends at
+  most five such frames a second on average, three at once.
 - When nothing has gone for the subscribed period, 1 s while the phone shows
   the stream and 5 s while it is hidden, the box sends a `tick`, or a `delta`
   if something changed. A hidden session gets only these.
-- Every frame keeps its bucket. Over the relay nothing changes: one frame per
-  pulse, every 1 s or 5 s.
+- A source table too large for the bucket goes in a snapshot on bulk, sent
+  in line with lane 0 so no reading sent after it reaches the phone first.
+  Every lane 0 frame keeps its bucket.
+- Past 60 % of the tunnel's 24-hour budget a session gets the beat alone,
+  and past 90 % no readings, so handshakes, command answers and ends still
+  go.
+- Over the relay nothing changes: one frame per pulse, every 1 s or 5 s.
 
-**What the service learns.** It cannot read a frame, and every frame is the
-same size. But while a phone watches, the time between frames shows when the
-house's readings change: how often the box reads its devices, and the
-stretches when nothing moved and only the beat went. It does not learn which
-reading changed, by how much, or which way. With the readable copy on, the
-service already reads the values in `live`, so this tells it nothing new.
-With the copy off it is new: the rhythm of the readings, for the minutes
-someone watches. While no phone has a session, nothing goes, and a hidden
-session sends every 5 s whatever happens.
+**What the service learns.** It cannot read a frame, and every lane 0 frame
+is the same size. While a phone watches, a frame goes on every finished
+poll, changed or not, so their timing shows when the box reads its devices
+and never which reading moved, by how much or which way. A snapshot is
+larger, and goes when the control revision or the source table changes.
+With the copy off, the poll rhythm is new to the service, for the minutes
+someone watches. With the copy on, the service reads in `live` the values of
+the fields the grant lists, and the rhythm adds when the box read them.
+While no phone has a session nothing goes, and a hidden session sends every
+5 s whatever happens.
 
 ### `tun`
 
@@ -1187,7 +1193,7 @@ the registry's roles would remove that copy.
 | Largest message from a phone | 4 KiB; a `tun` message 16,664 bytes and Noise's 24 |
 | `tun` per home and direction | 240 messages, then 60 a second; 4 MiB, then 512 KiB a second |
 | `tun` queues and budget on the box | 64 lane 0, 256 bulk paced to 90 % of the limits; 250 MB per 24 hours of uptime |
-| Lane 0 through the tunnel | On each poll that changed something, after 5 ms; at most 5 frames a second, 3 at once; a beat after 1 s quiet, 5 s while hidden |
+| Lane 0 through the tunnel | On each finished poll, after 5 ms; at most 5 frames a second, 3 at once; a beat after 1 s quiet, 5 s while hidden; pushes stop at 60 % of the tunnel budget, beats at 90 % |
 | `live` while watched | On each poll that changed it, at most once per period |
 | Box handshakes through the tunnel | 12 a minute per device, 240 in all |
 | Pending pairing entry | One QR code, for its own ten minutes; admits one handshake |

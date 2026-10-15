@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/appenroll"
 	"github.com/srcfl/ftw/go/internal/appproto"
+	"github.com/srcfl/ftw/go/internal/cloudlink"
 	"github.com/srcfl/ftw/go/protocol/appwire"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
@@ -91,7 +93,8 @@ func (r *arrivalRig) laneZero(t *testing.T, within time.Duration) (appwire.Frame
 // Through FTW Cloud a reading leaves the box as it lands, not on the next
 // pulse of a one-second clock, and still in its fixed-size bucket. Five
 // readings at different phases of the second all go within 200 ms; with
-// the pulse, all five doing so would be a one-in-ten-thousand fluke.
+// the pulse, all five doing so would be a one-in-3,125 fluke (0.2 to the
+// fifth).
 func TestAReadingLeavesThroughTheTunnelAsItArrives(t *testing.T) {
 	r := newArrivalRig(t)
 	for i := range 5 {
@@ -163,5 +166,250 @@ func TestThePaceTakesThreeAtOnceAndFiveASecond(t *testing.T) {
 	}
 	if sent < 49 || sent > 52 {
 		t.Fatalf("%d frames in ten seconds of polls every 100 ms, want about 50", sent)
+	}
+}
+
+// gather collects for d what the box sends the phone app under dev, lane 0
+// frame types only, in order.
+func (r *arrivalRig) gather(t *testing.T, app *appClient, dev string, d time.Duration) []string {
+	t.Helper()
+	var got []string
+	deadline := time.After(d)
+	for {
+		select {
+		case m := <-r.out.ch:
+			if m.Dev != dev || m.Ended() {
+				continue
+			}
+			plain, err := app.decrypt(m.D)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := appwire.DecodeFrame(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.Envelope.T == appproto.MsgDelta || f.Envelope.T == appproto.MsgTick {
+				got = append(got, f.Envelope.T)
+			}
+		case <-deadline:
+			return got
+		}
+	}
+}
+
+// arrive signals a poll every gap for d.
+func (r *arrivalRig) arrive(gap, d time.Duration) {
+	for end := time.Now().Add(d); time.Now().Before(end); time.Sleep(gap) {
+		select {
+		case r.arrivals <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// A driver reading fifty times a second costs the phone five frames a
+// second and the three of a burst, no more.
+func TestFastPollsArePacedToFiveFramesASecond(t *testing.T) {
+	r := newArrivalRig(t)
+	dev := deviceIDOf(r.app.staticPublic())
+	r.gather(t, r.app, dev, 300*time.Millisecond)
+	go r.arrive(20*time.Millisecond, 2*time.Second)
+	if n := len(r.gather(t, r.app, dev, 2*time.Second)); n < 10 || n > 16 {
+		t.Fatalf("%d frames in two seconds of polls every 20 ms, want about 13", n)
+	}
+}
+
+// Every phone that streams hears each poll.
+func TestEveryLiveSessionHearsAPoll(t *testing.T) {
+	r := newArrivalRig(t)
+	other := r.pair(t)
+	dev2 := deviceIDOf(other.staticPublic())
+	r.open(t, other, dev2, 8, nil)
+	r.send(t, other, dev2, 8, appproto.MsgHello, appproto.Hello{
+		Proto: appproto.ProtoRange{Min: 0, Max: appproto.ProtoMax},
+		App:   appproto.AppInfo{Build: "test", UA: "ios"},
+	})
+	r.send(t, other, dev2, 8, appproto.MsgSub, appproto.Sub{Bucket: 512, Hz: 1})
+	time.Sleep(300 * time.Millisecond)
+
+	r.site.gridW.Store(3333)
+	r.arrivals <- struct{}{}
+	seen := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case m := <-r.out.ch:
+			app := r.app
+			if m.Dev == dev2 {
+				app = other
+			}
+			plain, err := app.decrypt(m.D)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, _ := appwire.DecodeFrame(plain)
+			var d appproto.Delta
+			if f.Envelope.T == appproto.MsgDelta && appproto.Unmarshal(f.Envelope.B, &d) == nil && d.Fields["2"] == 3333 {
+				seen[m.Dev] = true
+			}
+		case <-deadline:
+			t.Fatalf("the poll reached %d of 2 phones", len(seen))
+		}
+	}
+}
+
+// dropLaneZero loses lane 0 tun while drop is set, as a full queue would,
+// and says how much of the tunnel's budget is spent.
+type dropLaneZero struct {
+	inner *capturedTun
+	drop  atomic.Bool
+	used  atomic.Int64 // thousandths
+}
+
+func (d *dropLaneZero) SendTun(m cloudwire.Tun, bulk bool) error {
+	if d.drop.Load() && !bulk {
+		return countedDrop{}
+	}
+	return d.inner.SendTun(m, bulk)
+}
+
+func (d *dropLaneZero) TunBudgetUsed() float64 { return float64(d.used.Load()) / 1000 }
+
+// A reading the link dropped is not one the phone has: the next frame
+// carries it, and the session goes on.
+func TestAReadingTheLinkDroppedGoesWithTheNextFrame(t *testing.T) {
+	r := newArrivalRig(t)
+	dev := deviceIDOf(r.app.staticPublic())
+	link := &dropLaneZero{inner: r.out}
+	r.tunnel.Attach(link)
+	r.gather(t, r.app, dev, 300*time.Millisecond)
+
+	link.drop.Store(true)
+	r.site.gridW.Store(4444)
+	r.arrivals <- struct{}{}
+	time.Sleep(300 * time.Millisecond)
+	link.drop.Store(false)
+	r.arrivals <- struct{}{}
+	for {
+		f, _, _ := r.laneZero(t, 2*time.Second)
+		var d appproto.Delta
+		if f.Envelope.T == appproto.MsgDelta && appproto.Unmarshal(f.Envelope.B, &d) == nil {
+			if d.Fields["2"] != 4444 {
+				t.Fatalf("the next delta carries %v, want grid_w 4444 again", d.Fields)
+			}
+			return
+		}
+	}
+}
+
+// Past 60 % of the tunnel's daily budget a session gets the beat alone;
+// past 90 % no readings at all, so handshakes, answers and ends still go.
+func TestTheBudgetStopsPushesThenBeats(t *testing.T) {
+	r := newArrivalRig(t)
+	dev := deviceIDOf(r.app.staticPublic())
+	link := &dropLaneZero{inner: r.out}
+	r.tunnel.Attach(link)
+	r.gather(t, r.app, dev, 300*time.Millisecond)
+
+	link.used.Store(700)
+	go r.arrive(50*time.Millisecond, 2500*time.Millisecond)
+	if n := len(r.gather(t, r.app, dev, 2500*time.Millisecond)); n < 1 || n > 3 {
+		t.Fatalf("at 70 %% of the budget %d frames in 2.5 s of polls, want the beat's 2", n)
+	}
+
+	link.used.Store(950)
+	go r.arrive(50*time.Millisecond, 2500*time.Millisecond)
+	if got := r.gather(t, r.app, dev, 2500*time.Millisecond); len(got) != 0 {
+		t.Fatalf("at 95 %% of the budget the box still sent %v", got)
+	}
+}
+
+// Hidden, a poll sends nothing; back in front, the stream picks up within
+// a beat and each poll goes again.
+func TestHiddenThenVisible(t *testing.T) {
+	r := newArrivalRig(t)
+	dev := deviceIDOf(r.app.staticPublic())
+	r.send(t, r.app, dev, 7, appproto.MsgSub, appproto.Sub{Bucket: 512, Hz: 0.2})
+	r.gather(t, r.app, dev, 300*time.Millisecond)
+
+	go r.arrive(100*time.Millisecond, time.Second)
+	if got := r.gather(t, r.app, dev, time.Second); len(got) > 1 {
+		t.Fatalf("hidden, a second of polls sent %v", got)
+	}
+
+	r.send(t, r.app, dev, 7, appproto.MsgSub, appproto.Sub{Bucket: 512, Hz: 1})
+	r.laneZero(t, 1500*time.Millisecond)
+	r.site.gridW.Store(5555)
+	at := time.Now()
+	r.arrivals <- struct{}{}
+	for {
+		f, got, _ := r.laneZero(t, 2*time.Second)
+		var d appproto.Delta
+		if f.Envelope.T == appproto.MsgDelta && appproto.Unmarshal(f.Envelope.B, &d) == nil && d.Fields["2"] == 5555 {
+			if took := got.Sub(at); took > 200*time.Millisecond {
+				t.Fatalf("back in front, a poll took %s", took)
+			}
+			return
+		}
+	}
+}
+
+// The relay keeps its pulse: polls arriving fast change nothing about when
+// a relay session's frames go.
+func TestARelaySessionKeepsItsPulseWhileArrivalsCome(t *testing.T) {
+	arrivals := make(chan struct{}, 1)
+	r := newRigOpts(t, 481234, func(o *Options) { o.Handler = newHandler; o.Arrivals = arrivals })
+	app, err := newAppClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := r.enroll.MintPairingCode(apiauth.RoleOwner, appenroll.PairingTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn := openSession(t, r, app, code)
+	send(t, conn, app, appproto.MsgSub, 512, appproto.Sub{Bucket: 512, Hz: 1})
+	if f := receive(t, conn, app); f.Envelope.T != appproto.MsgSnap {
+		t.Fatalf("got %s, want the snapshot", f.Envelope.T)
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case arrivals <- struct{}{}:
+			default:
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	frames := 0
+	for start := time.Now(); time.Since(start) < 3*time.Second; {
+		_ = conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+		kind, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+		if kind == websocket.BinaryMessage {
+			frames++
+		}
+	}
+	if frames < 2 || frames > 4 {
+		t.Fatalf("a relay session sent %d frames in 3 s of fast polls, want its pulse's 3", frames)
+	}
+}
+
+// A bulk message the link paces must not fall out of the phone's Noise
+// replay window behind the lane 0 frames that overtake it.
+func TestLaneZeroCannotPushABulkFrameOutOfTheReplayWindow(t *testing.T) {
+	wait := cloudlink.MaxBulkWait()
+	// Commands and their answers ride lane 0 too; a person sends a few.
+	const commands = 8
+	if n := tunBurst + tunRate*wait.Seconds() + commands; n >= appwire.ReplayWindow {
+		t.Fatalf("%.0f lane 0 frames can pass a bulk frame held %s; the window is %d", n, wait, appwire.ReplayWindow)
 	}
 }

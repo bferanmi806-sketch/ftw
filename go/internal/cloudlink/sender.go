@@ -146,13 +146,19 @@ func (w *writer) run(ctx context.Context, events <-chan cloudwire.Envelope) erro
 			}
 		}
 
+		// Polls are heard only while a phone watches; otherwise the copy
+		// keeps its period and a poll needs no wakeup.
+		var arrivals <-chan struct{}
+		if time.Now().Before(st.watchUntil) {
+			arrivals = l.opts.Arrivals
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-tick.C:
 		case <-l.wake:
-		case <-l.opts.Arrivals:
-			st.arrived = time.Now().Before(st.watchUntil)
+		case <-arrivals:
+			st.arrived = true
 		case <-slot:
 			slot = nil
 		case env := <-events:
