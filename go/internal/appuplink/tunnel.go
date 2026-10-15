@@ -32,7 +32,12 @@ import (
 // box answers it, but the replay never proves itself, so it takes no
 // device's place, stamps nothing and spends no code. Each new session runs
 // its handshake on a goroutine of its own, so a slow disk under the
-// enrolment write never holds up routing or the one-second tick.
+// enrolment write never holds up routing or the stream.
+//
+// Lane 0 goes as readings arrive, not on the relay's one-second pulse, and
+// a beat goes when nothing has moved for the subscribed period. Frames keep
+// their fixed size. What the service learns from their timing is written in
+// docs/protocol-cloud.md, "Tunnel".
 
 // TunSender sends one tun up the box's link to FTW Cloud. cloudlink.Link is
 // one. bulk says the message carries a lane 1 frame, which the link paces;
@@ -66,6 +71,19 @@ const (
 	// tunPendingPerDevice is how many unproved sessions a device may hold,
 	// and pendingWait (session.go) how long one waits to prove itself.
 	tunPendingPerDevice = 4
+
+	// tunGather is how long an arrival waits for the polls that finish with
+	// it, so drivers that read together go in one frame.
+	tunGather = 20 * time.Millisecond
+	// tunSpacing is the least time between two frames an arrival pushes. A
+	// driver that reads ten times a second costs each phone five frames a
+	// second, and four phones stay well under the service's 60 tun a
+	// second per home.
+	tunSpacing = 200 * time.Millisecond
+	// tunBeat is how often each session is asked whether it has been quiet
+	// for its subscribed period. Silence on the phone is at most the period
+	// plus this.
+	tunBeat = 250 * time.Millisecond
 )
 
 // Tunnel is the box's table of sessions that FTW Cloud carries: one live per
@@ -80,6 +98,8 @@ type Tunnel struct {
 	now    func() time.Time
 
 	inbox chan tunIn
+	// arrivals hears each finished driver poll; nil sends on Beat alone.
+	arrivals <-chan struct{}
 
 	mu     sync.Mutex
 	sender TunSender
@@ -119,11 +139,11 @@ type tunSession struct {
 // to deliver to. Its sessions take the same slots as the relay's.
 func (u *Uplink) Tunnel() *Tunnel { return u.tunnel }
 
-func newTunnel(build HandlerBuilder, enroll *appenroll.Identity, slots *slots, log *slog.Logger) *Tunnel {
+func newTunnel(build HandlerBuilder, enroll *appenroll.Identity, slots *slots, arrivals <-chan struct{}, log *slog.Logger) *Tunnel {
 	return &Tunnel{
 		build: build, enroll: enroll, static: enroll.StaticKey(), slots: slots, log: log, now: time.Now,
-		inbox: make(chan tunIn, tunInbox), live: map[string]*tunSession{}, pending: map[tunKey]*tunSession{},
-		opens: map[string][]time.Time{},
+		inbox: make(chan tunIn, tunInbox), arrivals: arrivals,
+		live: map[string]*tunSession{}, pending: map[tunKey]*tunSession{}, opens: map[string][]time.Time{},
 	}
 }
 
@@ -166,19 +186,30 @@ func (t *Tunnel) Drop() {
 }
 
 // Run serves the table until ctx ends: the messages the service delivers,
-// and the one-second pulse lane 0 needs.
+// each arrival's frame, and the beat that keeps a quiet session heard.
 func (t *Tunnel) Run(ctx context.Context) {
-	tick := time.NewTicker(tickInterval)
-	defer tick.Stop()
+	beat := time.NewTicker(tunBeat)
+	defer beat.Stop()
 	defer t.Drop()
+	// flush is armed by an arrival and fires once its round is in and the
+	// last push is tunSpacing old. Nil while nothing waits.
+	var flush <-chan time.Time
+	var pushed time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case m := <-t.inbox:
 			t.route(ctx, m)
-		case <-tick.C:
-			t.tick()
+		case <-t.arrivals:
+			if flush == nil {
+				flush = time.After(max(tunGather, tunSpacing-time.Since(pushed)))
+			}
+		case <-flush:
+			flush, pushed = nil, time.Now()
+			t.each("push", (*appproto.Handler).Push)
+		case <-beat.C:
+			t.each("beat", (*appproto.Handler).Beat)
 		}
 	}
 }
@@ -420,7 +451,7 @@ func (t *Tunnel) promote(s *tunSession, transport *appwire.Transport, commit fun
 
 // tunSender encrypts one session's frames for the tunnel and says which are
 // bulk, so the link paces those and sends lane 0 (commands, their answers
-// and the ticks) first. A message the link dropped and counted is gone like
+// and the readings) first. A message the link dropped and counted is gone like
 // any lost frame, and the session goes on; only a lost uplink fails it.
 type tunSender struct {
 	transport *appwire.Transport
@@ -513,8 +544,8 @@ func (t *Tunnel) allowOpenLocked(dev string) bool {
 	return true
 }
 
-// tick sends the one-second pulse to every live session.
-func (t *Tunnel) tick() {
+// each runs one lane 0 step on every live session: Push or Beat.
+func (t *Tunnel) each(what string, step func(*appproto.Handler) error) {
 	t.mu.Lock()
 	live := make([]*tunSession, 0, len(t.live))
 	for _, s := range t.live {
@@ -522,8 +553,8 @@ func (t *Tunnel) tick() {
 	}
 	t.mu.Unlock()
 	for _, s := range live {
-		if err := s.session.handler.Tick(); err != nil {
-			t.log.Warn("app session failed on a tick", "err", err)
+		if err := step(s.session.handler); err != nil {
+			t.log.Warn("app session failed on a "+what, "err", err)
 			t.remove(s, true)
 		}
 	}

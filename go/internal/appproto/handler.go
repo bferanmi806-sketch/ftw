@@ -149,7 +149,10 @@ type Handler struct {
 	// one hertz while visible, 0.2 hertz while hidden.
 	cadenceEvery uint8
 	cadenceLeft  uint8
-	seq          uint64
+	// lastFrameMs is the box uptime when this session's last reading
+	// left: a snapshot, a delta or a tick. Beat measures silence from it.
+	lastFrameMs int64
+	seq         uint64
 	// lastSent is the value the client was last told for each field. Only
 	// fields actually put on the wire are recorded, so anything dropped to
 	// fit a bucket is simply still different next tick and goes then.
@@ -584,6 +587,7 @@ func (h *Handler) sendSnapshot() error {
 	h.lastSources = sources
 	h.lastBlocked = blocked
 	h.lastRev = snap.ControlRev
+	h.lastFrameMs = uptimeMs
 	h.mu.Unlock()
 
 	return h.sendBulk(MsgSnap, nil, Snap{
@@ -600,6 +604,9 @@ func (h *Handler) sendSnapshot() error {
 // this subscription's 1 Hz or 0.2 Hz cadence. On each due pulse it emits a
 // frame even when nothing changed, so the relay cannot distinguish an idle
 // house from an active one within the chosen cadence.
+//
+// Only a session over the relay ticks. A session that FTW Cloud carries is
+// streamed with Push and Beat instead (docs/protocol-cloud.md, "Tunnel").
 func (h *Handler) Tick() error {
 	h.mu.Lock()
 	if !h.subscribed {
@@ -612,6 +619,46 @@ func (h *Handler) Tick() error {
 		return nil
 	}
 	h.cadenceLeft = h.cadenceEvery
+	h.mu.Unlock()
+	return h.stream(true)
+}
+
+// Push sends what changed, now: a driver has just finished a poll. It sends
+// nothing when nothing changed, and nothing while hidden, where the session
+// asked for one frame in five seconds and Beat sends it.
+func (h *Handler) Push() error {
+	h.mu.Lock()
+	visible := h.subscribed && h.cadenceEvery == 1
+	h.mu.Unlock()
+	if !visible {
+		return nil
+	}
+	return h.stream(false)
+}
+
+// Beat sends a frame when none has left for the subscribed period, so the
+// phone hears the session is alive while nothing in the house moves, and
+// the hidden session gets its one frame in five seconds. Call it more often
+// than the period; it decides.
+func (h *Handler) Beat() error {
+	h.mu.Lock()
+	if !h.subscribed {
+		h.mu.Unlock()
+		return nil
+	}
+	period := int64(h.cadenceEvery) * 1000
+	quiet := h.cfg.Clock.UptimeMs() - h.lastFrameMs
+	h.mu.Unlock()
+	if quiet < period {
+		return nil
+	}
+	return h.stream(true)
+}
+
+// stream sends a delta of what changed since the client was last told. With
+// nothing changed it sends a tick when always is set, and otherwise nothing.
+func (h *Handler) stream(always bool) error {
+	h.mu.Lock()
 	bucket := h.bucket
 	h.mu.Unlock()
 
@@ -655,12 +702,22 @@ func (h *Handler) Tick() error {
 		}
 	}
 	sourcesMoved := !sourcesEqual(sources, h.lastSources) || !stringsEqual(blocked, h.lastBlocked)
+	if len(changed) == 0 && !sourcesMoved && !always {
+		h.mu.Unlock()
+		return nil
+	}
 	h.seq++
 	seq := h.seq
 	h.mu.Unlock()
 
 	if len(changed) == 0 && !sourcesMoved {
-		return h.sendControl(MsgTick, nil, Tick{Seq: seq, UptimeMs: uptimeMs}, 0, bucket)
+		if err := h.sendControl(MsgTick, nil, Tick{Seq: seq, UptimeMs: uptimeMs}, 0, bucket); err != nil {
+			return err
+		}
+		h.mu.Lock()
+		h.lastFrameMs = uptimeMs
+		h.mu.Unlock()
+		return nil
 	}
 
 	body := Delta{Seq: seq, UptimeMs: uptimeMs, Fields: changed}
@@ -690,6 +747,7 @@ func (h *Handler) Tick() error {
 		h.lastSources = sources
 		h.lastBlocked = blocked
 	}
+	h.lastFrameMs = uptimeMs
 	h.mu.Unlock()
 	return nil
 }
