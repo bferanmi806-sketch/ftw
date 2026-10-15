@@ -367,11 +367,13 @@ The registry's `reads` table names each read and the scope it needs.
 | `diag.run` | `{check, src}`; `check` is `clock`, `link`, `meter`, `planner` or `driver` | `diag {check, ok, facts}` |
 
 - **Agent ids.** Every id in an answer to an agent, for a source, a charger
-  or a car, is the box's agent id: HMAC-SHA-256 under a key the box derives
-  from a secret of its own, cut to 8 base64url characters after one letter
-  for the kind. It is stable on one box, says nothing on another, and is not
-  the readable copy's id, which depends on a grant that may be off. The box
-  resolves an agent id in a `cmd` or an `agent.request` with the same key.
+  or a car, is cut the way the readable copy cuts its ids
+  (`cloudwire.SourceID`, `cloudwire.LoadpointID`, and the car contract's car
+  id), under the box's agent key instead of `grantKey`: HMAC-SHA-256 under a
+  key the box derives from its own static secret. It is stable on one box,
+  says nothing on another, and does not depend on a readable copy that may
+  be off. A log line's `src` is the same id. The box resolves an agent id in
+  a `cmd` or an `agent.request` with the same key.
 - **Cursors.** `beforeMs` asks for lines or events older than that wall time,
   `afterMs` for newer ones; the answer is oldest first, and `more` says more
   remain on the asked side.
