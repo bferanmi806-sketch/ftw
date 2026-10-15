@@ -414,6 +414,13 @@ second outbound connection for homes whose owner turns it on. It carries to
 never carries control. Commands and long history stay on the relay path above.
 [protocol-cloud.md](protocol-cloud.md) specifies its wire format.
 
+[ADR 0010](adr/0010-cloud-entry.md), also proposed, makes that Stockholm
+connection the only remote one. The box sends the readable copy and the
+command frames on the same outbound socket, and the Frankfurt relay is
+retired after the move. The iOS app, the webapp and an MCP connector use
+that entry. Command frames stay end-to-end Noise. The cloud forwards them
+and cannot read them.
+
 [ADR 0009](adr/0009-watch-exchange.md) lets an Apple Watch work without the
 phone. watchOS allows no WebSocket, so each step is one HTTPS request. Commands
 go to the box through the relay's exchange: the box keeps a second socket,
