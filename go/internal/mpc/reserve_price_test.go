@@ -149,3 +149,34 @@ func TestReservePriceChoiceRetainsDepartureAndPhysicalLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestReservePriceChoiceDoesNotCreateDemandPeak(t *testing.T) {
+	slots, p := recoveryFixture()
+	slots = slots[:2]
+	for i := range slots {
+		slots[i].StartMs = slots[0].StartMs + int64(i)*3600000
+		slots[i].LenMin = 60
+		slots[i].Limits = PowerLimits{MaxImportW: 10000, MaxExportW: 10000}
+	}
+	slots[0].LoadW, slots[0].PriceOre, slots[0].SpotOre = 3000, 450, 450
+	slots[1].LoadW, slots[1].PriceOre, slots[1].SpotOre = 5000, 400, 400
+	p.MaxChargeW, p.MaxDischargeW = 0, 0
+	p.Loadpoint.CapacityWh, p.Loadpoint.ChargeEfficiency = 10000, 1
+	p.Loadpoint.InitialSoC, p.Loadpoint.TargetSoC, p.Loadpoint.SoCMax = .2, .4, 1
+	p.Loadpoint.TargetSlotIdx = 1
+	p.Loadpoint.MinChargeW, p.Loadpoint.MaxChargeW = 2000, 2000
+	p.Loadpoint.AllowedStepsW = []float64{0, 2000}
+	p.DemandCharges = []DemandCharge{{ID: "monthly", PricePerKW: 10000, TopN: 1, AlreadyKW: []float64{5}, Hours: []DemandHour{
+		{StartMs: slots[0].StartMs, EndMs: slots[1].StartMs},
+		{StartMs: slots[1].StartMs, EndMs: slots[1].StartMs + 3600000},
+	}}}
+	plan := mustCoreReservePlan(t, slots, p)
+	if err := ValidatePlan(slots, p, &plan); err != nil {
+		t.Fatal(err)
+	}
+	// Moving 2 kWh saves 1 SEK in energy but raises the monthly peak from
+	// 5 to 7 kW, adding 200 SEK. The energy-only pass must retain the reserve.
+	if plan.Actions[0].LoadpointW != 2000 || plan.Actions[1].LoadpointW != 0 || plan.Actions[1].GridW > 5000 {
+		t.Fatalf("energy repricing created an avoidable demand peak: %+v", plan.Actions)
+	}
+}

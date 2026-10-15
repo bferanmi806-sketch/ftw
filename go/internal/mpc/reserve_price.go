@@ -12,7 +12,9 @@ import (
 // This is a bounded improvement to a feasible reserve, not a global optimum.
 func priceReserveCharging(ctx context.Context, slots []Slot, p Params, reserve Plan) (Plan, error) {
 	loads := p.activeLoadpoints()
-	if len(loads) != 1 {
+	// This pass prices energy only; retain the reserve when a demand tariff
+	// couples costs across slots. The native planner owns those tariff costs.
+	if len(loads) != 1 || len(p.DemandCharges) > 0 {
 		return reserve, nil
 	}
 	lp := loads[0]
