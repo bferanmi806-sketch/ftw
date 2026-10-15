@@ -171,6 +171,10 @@ func loadKey(path string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
+// createKey makes cloud.key, and never replaces one: a key on disk is a
+// home id phones may already dial, and a silent new one would strand them.
+// os.Link fails when the file exists, so a race with another writer cannot
+// replace it either.
 func createKey(path string) (*ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -184,9 +188,9 @@ func createKey(path string) (*ecdsa.PrivateKey, error) {
 	if err := os.WriteFile(tmp, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		return nil, fmt.Errorf("cloudlink: writing %s: %w", tmp, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return nil, fmt.Errorf("cloudlink: replacing %s: %w", path, err)
+	defer os.Remove(tmp)
+	if err := os.Link(tmp, path); err != nil {
+		return nil, fmt.Errorf("cloudlink: %s: %w", path, err)
 	}
 	return key, nil
 }

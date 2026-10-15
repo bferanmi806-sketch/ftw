@@ -169,6 +169,15 @@ func (c *miniCloud) fromApp(key []byte, sid uint32, d []byte) bool {
 	return false
 }
 
+// forward sends a tun to the box as it is, with no roster check: a service
+// that forwards what it should not.
+func (c *miniCloud) forward(dev string, sid uint32, d []byte) {
+	c.mu.Lock()
+	conn, home := c.conn, c.home
+	c.mu.Unlock()
+	_ = c.write(conn, nil, home, cloudwire.MsgTun, cloudwire.Tun{Dev: dev, Sid: sid, D: d})
+}
+
 func (c *miniCloud) toAppNext(t *testing.T) cloudwire.Tun {
 	t.Helper()
 	select {
@@ -179,20 +188,6 @@ func (c *miniCloud) toAppNext(t *testing.T) cloudwire.Tun {
 		return cloudwire.Tun{}
 	}
 }
-
-// enrollRoster is cmd/ftw's roster adapter, as cloudlink sees it.
-type enrollRoster struct{ enroll *appenroll.Identity }
-
-func (r enrollRoster) Devices() []cloudlink.RosterDevice {
-	var out []cloudlink.RosterDevice
-	for _, e := range r.enroll.Roster() {
-		out = append(out, cloudlink.RosterDevice{ID: e.ID, Key: e.Key, Role: e.Role, Epoch: e.Epoch,
-			Scopes: appproto.GrantScopes(e.Role, e.ParentRole), Tun: e.Role != apiauth.RoleWatch})
-	}
-	return out
-}
-
-func (r enrollRoster) Pending() ([]byte, time.Time, bool) { return r.enroll.PendingCode() }
 
 type quietSite struct{}
 
@@ -266,7 +261,7 @@ func TestACommandThroughFTWCloudWithTheRelayGone(t *testing.T) {
 	}
 	cloud := newMiniCloud(t)
 	link, err := cloudlink.New(cloudlink.Options{
-		Site: quietSite{}, Roster: enrollRoster{enroll: enroll}, KV: &memState{m: map[string]string{}},
+		Site: quietSite{}, Roster: CloudRoster{Enroll: enroll, Tunnel: true}, KV: &memState{m: map[string]string{}},
 		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), Build: "test", Tunnel: uplink.Tunnel(),
 		Endpoint: cloud.endpoint(), ServiceKeys: []*ecdsa.PublicKey{&cloud.key.PublicKey}, RootCAs: cloud.roots(),
 		Tick: 20 * time.Millisecond, Logger: slog.New(slog.DiscardHandler),
@@ -369,11 +364,27 @@ func TestACommandThroughFTWCloudWithTheRelayGone(t *testing.T) {
 		t.Fatalf("result %q after %d mode changes", res.State, modes.count())
 	}
 
-	// A key the roster does not list gets nothing forwarded at all.
+	// A stranger's handshake, forwarded anyway, as a broken or hostile
+	// service might: the box itself answers nothing and opens nothing.
 	stranger, _ := newAppClient()
 	sm1, _ := stranger.message1(enroll.StaticKey().Public(), nil)
-	if cloud.fromApp(stranger.staticPublic(), 1, sm1) {
-		t.Fatal("the service forwarded a key the roster does not list")
+	strangerDev := cloudwire.DeviceID(stranger.staticPublic())
+	cloud.forward(strangerDev, 1, sm1)
+	quiet := time.After(500 * time.Millisecond)
+wait:
+	for {
+		select {
+		case m := <-cloud.toApp:
+			// The phone's own session goes on beside it.
+			if m.Dev == strangerDev {
+				t.Fatalf("the box answered a stranger: sid %d, %d bytes", m.Sid, len(m.D))
+			}
+		case <-quiet:
+			break wait
+		}
+	}
+	if uplink.Tunnel().count() != 1 {
+		t.Fatal("a stranger's handshake changed the box's sessions")
 	}
 
 	// The readable copy is off: the box sent the roster and the tunnel,

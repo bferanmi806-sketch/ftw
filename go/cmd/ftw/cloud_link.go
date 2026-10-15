@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/api"
-	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/appenroll"
 	"github.com/srcfl/ftw/go/internal/appproto"
 	"github.com/srcfl/ftw/go/internal/appuplink"
@@ -277,33 +276,6 @@ func roundW(v float64) int64 {
 
 func ptr[T any](v T) *T { return &v }
 
-// cloudRoster lists paired devices with the scopes the box derives for each:
-// a phone's role, or for a watch what its role and its phone's role share.
-// A phone may open a session through the tunnel when the box takes it; a
-// watch has no stream and reaches the box through its exchange.
-type cloudRoster struct {
-	enroll *appenroll.Identity
-	tunnel bool
-}
-
-func (r cloudRoster) Devices() []cloudlink.RosterDevice {
-	var out []cloudlink.RosterDevice
-	for _, e := range r.enroll.Roster() {
-		out = append(out, cloudlink.RosterDevice{ID: e.ID, Key: e.Key, Role: e.Role, Epoch: e.Epoch,
-			Scopes: appproto.GrantScopes(e.Role, e.ParentRole), Tun: r.tunnel && e.Role != apiauth.RoleWatch})
-	}
-	return out
-}
-
-// Pending is the QR code on the screen, while the box takes the tunnel: a
-// new phone can then pair through FTW Cloud.
-func (r cloudRoster) Pending() ([]byte, time.Time, bool) {
-	if !r.tunnel {
-		return nil, time.Time{}, false
-	}
-	return r.enroll.PendingCode()
-}
-
 // cloudNotices reaches the notifications service once it exists; it is built
 // after the link starts.
 type cloudNotices struct {
@@ -341,7 +313,7 @@ func startCloudLink(
 	}
 	opts := cloudlink.Options{
 		Site:        site,
-		Roster:      cloudRoster{enroll: enroll, tunnel: tunnel != nil},
+		Roster:      appuplink.CloudRoster{Enroll: enroll, Tunnel: tunnel != nil},
 		KV:          st,
 		KeyPath:     filepath.Join(filepath.Dir(statePath), "cloud.key"),
 		Build:       build,

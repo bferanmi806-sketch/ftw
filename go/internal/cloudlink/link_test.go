@@ -139,7 +139,8 @@ func (r fakeRoster) Pending() ([]byte, time.Time, bool) {
 	}
 	r.state.mu.Lock()
 	defer r.state.mu.Unlock()
-	return r.state.code, r.state.expires, r.state.code != nil
+	// As enrolment does, a code that ran out is none.
+	return r.state.code, r.state.expires, r.state.code != nil && time.Now().Before(r.state.expires)
 }
 
 // fakeTunnel is the box's session table, as the link sees it.

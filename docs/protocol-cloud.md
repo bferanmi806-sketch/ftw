@@ -195,9 +195,9 @@ with two different values, so neither side's check passes through it.
    | `boxNonce` | bstr, 32 B | Random, for the service to sign |
    | `build` | text | Core version |
    | `clock` | text | `ntp` or `none` |
-   | `caps` | [text] | The classes this box sends under the grant, `roster` included, and `tun` when the box takes the [tunnel](#tunnel) |
+   | `caps` | [text] | The classes this box sends under the grant at connect, `roster` included, and `tun` when the box takes the [tunnel](#tunnel) |
    | `rosterSeq` | uint | The box's current roster number |
-   | `grantId` | bstr, 16 B or empty | The grant this connection serves. Empty while the readable copy is off or a revoke waits for its receipt |
+   | `grantId` | bstr, 16 B or empty | The grant at connect. Empty while the readable copy is off or a revoke waits for its receipt |
 
 3. **Service → box: `hello_ok`**, signed by the service key over the box's
    home id.
@@ -208,6 +208,12 @@ with two different values, so neither side's check passes through it.
    | `ekm` | bstr, 32 B | The service's exporter value for this TLS session |
    | `have` | map text→text | Tile id to etag, for the tiles the service holds |
    | `rosterSeq` | uint | The roster number the service holds |
+
+   `caps` and `grantId` describe the connection as it starts. The readable
+   copy can turn on or off while the link stays up, so the service takes
+   what it may hold from the newest roster's grant, never from `hello`, and
+   enforces neither per connection; only `tun` in `caps` decides whether it
+   sends the box `tun`.
 
    The box checks the signature against a service key it carries, that
    `boxNonce` is its own and that `ekm` equals its own exporter value. If any
@@ -722,16 +728,25 @@ On the app session the phone and the service send `tun {sid, d}`, with no
   own handshake with the phone matched, and ignores a `dev` a phone adds. It
   never forwards a phone's `tun` to another home or under another device.
 - **The box checks it again.** A session starts with handshake message 1 of
-  the box session under a new `sid`. The box runs the handshake and admits
-  the phone exactly as it admits one over the relay: a known key, or a live
+  the box session under a new `sid`. The box runs the handshake and checks
+  the phone exactly as it checks one over the relay: a known key, or a live
   pairing code in the payload. If the key the handshake proved is not the
   device `dev` names, the box drops the message and answers nothing. A `d`
   for a `(dev, sid)` the box does not hold that is not message 1 gets an empty
   `d` back, so the phone starts again.
-- **One session per device.** A new session from a device, through the
-  service or the relay, ends its older one.
-- **Ends.** An empty `d` ends `(dev, sid)`. The box sends one when it drops a
-  session; the service sends one to the box when the phone's app session
+- **A session proves itself first.** The service sees every message 1 and
+  could replay one under a new `sid`. So the box answers a message 1 but
+  holds the session as pending: it takes no device's place, stamps nothing
+  and spends no pairing code until its first transport message decrypts. A
+  replay never gets that far. The same holds over the relay.
+- **One session per device.** A session that proves itself, through the
+  service or the relay, ends the device's older one.
+- **Ends.** An empty `d` ends `(dev, sid)`. An end for a session a newer
+  one replaced looks the same as any other, so a phone ignores an end for
+  any `sid` but its current one and never restarts on it; if it did, it
+  would fight its own newer session. An end for its current `sid` means the
+  box dropped it, and the phone starts again with backoff. The box sends an
+  end when it drops a session; the service sends one to the box when the phone's app session
   ends, and one to the phone when the box's uplink ends or is replaced by a
   newer one, when the box does not take `tun`, or when the phone names a
   session the box does not hold.

@@ -401,9 +401,10 @@ func (l *Link) wantsLink() bool {
 	return false
 }
 
-// linkLocked makes cloud.key and the link record when there is none. A link
-// waiting for its end to be confirmed stays as it is: the next one comes
-// after the receipt, under a new home id. The caller holds l.mu.
+// linkLocked makes the link record when there is none, around the
+// cloud.key on disk if there is one, so its home id stays, or a new key. A
+// link waiting for its end to be confirmed stays as it is: the next one
+// comes after the receipt, under a new home id. The caller holds l.mu.
 func (l *Link) linkLocked() error {
 	if l.link != nil {
 		return nil
@@ -411,8 +412,16 @@ func (l *Link) linkLocked() error {
 	if len(l.opts.ServiceKeys) == 0 {
 		return ErrNoService
 	}
-	key, err := createKey(l.opts.KeyPath)
-	if err != nil {
+	key, err := loadKey(l.opts.KeyPath)
+	switch {
+	case err == nil:
+		l.log.Info("FTW Cloud links with the cloud.key already on this box")
+	case errors.Is(err, os.ErrNotExist):
+		if key, err = createKey(l.opts.KeyPath); err != nil {
+			return err
+		}
+	default:
+		// A file that is not a key is not ours to replace.
 		return err
 	}
 	fp, pk, err := fingerprint(key)
@@ -421,11 +430,11 @@ func (l *Link) linkLocked() error {
 	}
 	rec := &linkRecord{KeyFp: fp}
 	if err := saveJSON(l.opts.KV, linkKey, rec); err != nil {
-		_ = os.Remove(l.opts.KeyPath)
 		return err
 	}
-	// A grant on disk was made with an older key and stays off.
-	l.link, l.key, l.pk, l.home, l.grant, l.notice = rec, key, pk, cloudwire.HomeID(pk), nil, ""
+	// A grant on disk made with another key stays off; the grant load
+	// left it nil.
+	l.link, l.key, l.pk, l.home, l.notice = rec, key, pk, cloudwire.HomeID(pk), ""
 	l.table, l.tableKey, l.sent, l.rosterDue = nil, "", map[string]sentFrame{}, true
 	l.log.Info("audit: FTW Cloud linked", "home", l.home)
 	l.signal()

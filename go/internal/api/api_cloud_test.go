@@ -165,6 +165,7 @@ func TestCloudGrantRefusalsKeepTheirMeaning(t *testing.T) {
 	for err, want := range map[error]int{
 		cloudlink.ErrGrantRequest: http.StatusBadRequest,
 		cloudlink.ErrPurgePending: http.StatusConflict,
+		cloudlink.ErrLinkEnding:   http.StatusConflict,
 		cloudlink.ErrNoService:    http.StatusServiceUnavailable,
 	} {
 		s := New(&Deps{Cloud: &stubCloud{err: err}})

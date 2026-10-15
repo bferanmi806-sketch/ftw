@@ -21,12 +21,12 @@ type capturedTun struct {
 	ch chan cloudwire.Tun
 }
 
-func (c *capturedTun) SendTun(t cloudwire.Tun, _ bool) bool {
+func (c *capturedTun) SendTun(t cloudwire.Tun, _ bool) error {
 	select {
 	case c.ch <- t:
-		return true
+		return nil
 	default:
-		return false
+		return errTunGone
 	}
 }
 
@@ -260,7 +260,9 @@ func TestOneSessionPerDevice(t *testing.T) {
 	other := r.pair(t)
 	dev, otherDev := deviceIDOf(app.staticPublic()), deviceIDOf(other.staticPublic())
 	r.open(t, other, otherDev, 1, nil)
+	r.hello(t, other, otherDev, 1)
 	r.open(t, app, dev, 1, nil)
+	r.hello(t, app, dev, 1)
 
 	again := &appClient{static: app.static}
 	m1, err := again.message1(r.enroll.StaticKey().Public(), nil)
@@ -268,18 +270,21 @@ func TestOneSessionPerDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.tunnel.Deliver(cloudwire.Tun{Dev: dev, Sid: 2, D: m1})
-	var sawEnd, sawReply bool
-	for !(sawEnd && sawReply) {
+	reply := r.next(t, 3*time.Second)
+	if reply.Sid != 2 || reply.Ended() {
+		t.Fatalf("got %+v", reply)
+	}
+	if err := again.readMessage2(reply.D); err != nil {
+		t.Fatal(err)
+	}
+	// The new session proves itself with its first message, and only then
+	// takes the device's place.
+	r.send(t, again, dev, 2, appproto.MsgHello, appproto.Hello{Proto: appproto.ProtoRange{Max: appproto.ProtoMax},
+		App: appproto.AppInfo{Build: "test", UA: "ios"}})
+	sawEnd := false
+	for !sawEnd {
 		m := r.next(t, 3*time.Second)
-		switch {
-		case m.Dev == dev && m.Sid == 1 && m.Ended():
-			sawEnd = true
-		case m.Dev == dev && m.Sid == 2 && !m.Ended():
-			if err := again.readMessage2(m.D); err != nil {
-				t.Fatal(err)
-			}
-			sawReply = true
-		}
+		sawEnd = m.Dev == dev && m.Sid == 1 && m.Ended()
 	}
 	if r.tunnel.count() != 2 {
 		t.Fatalf("%d sessions, want the new one and the other device's", r.tunnel.count())
@@ -292,28 +297,15 @@ func TestTheRelayAndTheTunnelShareADevicesSlot(t *testing.T) {
 	r := newTunRig(t)
 	app := r.pair(t)
 	dev := deviceIDOf(app.staticPublic())
-	streams := &sessions{
-		slots: r.slots, build: newHandler, enroll: r.enroll, static: r.enroll.StaticKey(),
-		write: func([]byte) error { return nil }, log: slog.New(slog.DiscardHandler),
-	}
-	viaRelay := &appClient{static: app.static}
-	m1, err := viaRelay.message1(r.enroll.StaticKey().Public(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := streams.open(m1); err != nil {
-		t.Fatal(err)
-	}
+	streams := relayTable(r.slots, r.enroll)
+	relayOpen(t, streams, r.enroll, &appClient{static: app.static}, nil)
 	r.open(t, app, dev, 9, nil)
+	r.hello(t, app, dev, 9)
 	if streams.count() != 0 {
 		t.Fatal("the relay session outlived the device's tunnel session")
 	}
 
-	viaRelay = &appClient{static: app.static}
-	m1, _ = viaRelay.message1(r.enroll.StaticKey().Public(), nil)
-	if err := streams.open(m1); err != nil {
-		t.Fatal(err)
-	}
+	relayOpen(t, streams, r.enroll, &appClient{static: app.static}, nil)
 	if end := r.next(t, 3*time.Second); end.Dev != dev || end.Sid != 9 || !end.Ended() {
 		t.Fatalf("the tunnel session ended with %+v", end)
 	}
@@ -371,6 +363,7 @@ func TestARevokeEndsATunnelSession(t *testing.T) {
 	app := r.pair(t)
 	dev := deviceIDOf(app.staticPublic())
 	r.open(t, app, dev, 1, nil)
+	r.hello(t, app, dev, 1)
 	removed, err := r.enroll.Revoke(dev, appenroll.AtTheBox)
 	if err != nil {
 		t.Fatal(err)
@@ -410,4 +403,188 @@ drain:
 	}
 	other := r.pair(t)
 	r.open(t, other, deviceIDOf(other.staticPublic()), 1, nil)
+}
+
+// relayTable is a relay connection's session table whose writes a test can
+// read back, one message at a time.
+func relayTable(sl *slots, enroll *appenroll.Identity) *sessions {
+	out := make(chan []byte, 16)
+	return &sessions{
+		slots: sl, build: newHandler, enroll: enroll, static: enroll.StaticKey(), log: slog.New(slog.DiscardHandler),
+		write: func(m []byte) error {
+			select {
+			case out <- append([]byte(nil), m...):
+			default:
+			}
+			return nil
+		},
+		testOut: out,
+	}
+}
+
+// relayOpen runs a phone's handshake on a relay table and proves it with a
+// hello, so the session is live.
+func relayOpen(t *testing.T, streams *sessions, enroll *appenroll.Identity, app *appClient, code []byte) {
+	t.Helper()
+	m1, err := app.message1(enroll.StaticKey().Public(), code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.open(m1); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.readMessage2(<-streams.testOut); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := appproto.Marshal(appproto.Hello{Proto: appproto.ProtoRange{Max: appproto.ProtoMax}, App: appproto.AppInfo{Build: "t", UA: "pwa"}})
+	frame, _ := appwire.EncodeFrame(appwire.Frame{Lane: appwire.LaneControl, Bucket: 512, Envelope: appwire.Envelope{T: appproto.MsgHello, B: raw}})
+	msg, _ := app.encrypt(frame)
+	streams.deliver(context.Background(), msg)
+	// The hello_ok.
+	<-streams.testOut
+}
+
+// A message 1 replayed under a new sid, as the service could, gets an
+// answer and nothing else: the live session goes on, and no stamp or code
+// moves.
+func TestAReplayedMessage1LeavesTheLiveSession(t *testing.T) {
+	r := newTunRig(t)
+	app := r.pair(t)
+	dev := deviceIDOf(app.staticPublic())
+	m1, err := app.message1(r.enroll.StaticKey().Public(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tunnel.Deliver(cloudwire.Tun{Dev: dev, Sid: 1, D: m1})
+	reply := r.next(t, 3*time.Second)
+	if err := app.readMessage2(reply.D); err != nil {
+		t.Fatal(err)
+	}
+	r.hello(t, app, dev, 1)
+	seen := r.enroll.Devices()[0].LastSeenMs
+
+	// The replay, under a sid of the replayer's choosing.
+	r.tunnel.Deliver(cloudwire.Tun{Dev: dev, Sid: 99, D: m1})
+	if m := r.next(t, 3*time.Second); m.Sid != 99 || m.Ended() {
+		t.Fatalf("the replay got %+v", m)
+	}
+	r.silent(t, 300*time.Millisecond)
+	if r.tunnel.count() != 1 || r.enroll.Devices()[0].LastSeenMs != seen {
+		t.Fatal("a replayed message 1 changed the live session or the stamp")
+	}
+	r.send(t, app, dev, 1, appproto.MsgCmd, setModeCmd("0192f2a0-7c1e-7000-8000-00000000d001"))
+	r.receive(t, app, appproto.MsgCmdAck)
+}
+
+// The same on the relay: a replayed message 1 takes no device's place.
+func TestAReplayedMessage1LeavesTheLiveRelaySession(t *testing.T) {
+	r := newTunRig(t)
+	app := r.pair(t)
+	streams := relayTable(r.slots, r.enroll)
+	m1, err := app.message1(r.enroll.StaticKey().Public(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := streams.open(m1); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.readMessage2(<-streams.testOut); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := appproto.Marshal(appproto.Hello{Proto: appproto.ProtoRange{Max: appproto.ProtoMax}, App: appproto.AppInfo{Build: "t", UA: "pwa"}})
+	frame, _ := appwire.EncodeFrame(appwire.Frame{Lane: appwire.LaneControl, Bucket: 512, Envelope: appwire.Envelope{T: appproto.MsgHello, B: raw}})
+	msg, _ := app.encrypt(frame)
+	streams.deliver(context.Background(), msg)
+	<-streams.testOut
+	if streams.count() != 1 {
+		t.Fatal("the phone's session is not live")
+	}
+	// Replayed, twice.
+	for range 2 {
+		if err := streams.open(m1); err != nil {
+			t.Fatal(err)
+		}
+		<-streams.testOut
+	}
+	if streams.count() != 1 {
+		t.Fatalf("%d live sessions after replays", streams.count())
+	}
+	frame, _ = appwire.EncodeFrame(appwire.Frame{Lane: appwire.LaneControl, Bucket: 512, Envelope: appwire.Envelope{T: appproto.MsgHello, B: raw}})
+	msg, _ = app.encrypt(frame)
+	streams.deliver(context.Background(), msg)
+	select {
+	case <-streams.testOut:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the live relay session stopped answering after a replay")
+	}
+}
+
+// A dropped tun does not end the session: the next command still gets its
+// ack and its result.
+func TestADroppedTunDoesNotEndTheSession(t *testing.T) {
+	r := newTunRig(t)
+	app := r.pair(t)
+	dev := deviceIDOf(app.staticPublic())
+	r.open(t, app, dev, 1, nil)
+	r.hello(t, app, dev, 1)
+	drops := &dropOnce{inner: r.out}
+	r.tunnel.Attach(drops)
+	r.send(t, app, dev, 1, appproto.MsgCmd, setModeCmd("0192f2a0-7c1e-7000-8000-00000000d101"))
+	// The ack was dropped; the result comes.
+	r.receive(t, app, appproto.MsgCmdResult)
+	if r.tunnel.count() != 1 {
+		t.Fatal("a dropped frame ended the session")
+	}
+	r.send(t, app, dev, 1, appproto.MsgCmd, setModeCmd("0192f2a0-7c1e-7000-8000-00000000d102"))
+	r.receive(t, app, appproto.MsgCmdAck)
+	r.receive(t, app, appproto.MsgCmdResult)
+}
+
+// dropOnce loses the first message, as a full queue would, and counts it.
+type dropOnce struct {
+	inner *capturedTun
+	done  bool
+}
+
+type countedDrop struct{}
+
+func (countedDrop) Error() string { return "dropped" }
+func (countedDrop) Dropped() bool { return true }
+
+func (d *dropOnce) SendTun(t cloudwire.Tun, bulk bool) error {
+	if !d.done {
+		d.done = true
+		return countedDrop{}
+	}
+	return d.inner.SendTun(t, bulk)
+}
+
+// Revoking a phone through the uplink reaches its tunnel session.
+func TestDropSessionsByAppKeyReachesTheTunnel(t *testing.T) {
+	enroll, err := appenroll.LoadOrCreate(filepath.Join(t.TempDir(), "nova.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := New(Options{Endpoint: "ws://127.0.0.1:1", Enroll: enroll, Handler: newHandler, Logger: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := &capturedTun{ch: make(chan cloudwire.Tun, 16)}
+	u.Tunnel().Attach(out)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go u.Tunnel().Run(ctx)
+	enrolOwner(t, enroll)
+	r := &tunRig{enroll: enroll, tunnel: u.Tunnel(), out: out}
+	app := r.pair(t)
+	dev := deviceIDOf(app.staticPublic())
+	r.open(t, app, dev, 1, nil)
+	r.hello(t, app, dev, 1)
+	removed, err := enroll.Revoke(dev, appenroll.AtTheBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := u.DropSessionsByAppKey(removed[0].Key); n != 1 {
+		t.Fatalf("dropped %d", n)
+	}
 }

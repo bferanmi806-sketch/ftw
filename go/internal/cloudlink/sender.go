@@ -84,6 +84,9 @@ type cadence struct {
 	anyAt      time.Time // last live or hb
 	rosterAt   time.Time
 	watchUntil time.Time
+	// pendingUntil is when the pairing code the last roster listed runs
+	// out, zero when it listed none.
+	pendingUntil time.Time
 
 	// When each class was last composed, and whether a change it found is
 	// still waiting for its period. Composing reads the box, and on a Pi
@@ -208,25 +211,33 @@ func (l *Link) acceptPurged(snap grantSnapshot, env cloudwire.Envelope) bool {
 func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 	l := w.link
 
+	// A pairing code that ran out unused changes the roster too, and may
+	// leave nothing that needs the link.
+	if !st.pendingUntil.IsZero() && !now.Before(st.pendingUntil) {
+		st.pendingUntil = time.Time{}
+		l.mu.Lock()
+		l.rosterDue = true
+		l.mu.Unlock()
+	}
 	l.mu.Lock()
-	due := l.rosterDue
-	l.rosterDue = false
 	h := time.Duration(cloudwire.Heartbeat(l.table)) * time.Millisecond
 	l.mu.Unlock()
-	if due {
-		// A roster change may leave nothing that needs the link. The end
-		// goes on the next pass, as bye.
-		l.endIfIdle()
-		if cur := l.current(); cur.link != nil && cur.link.Ending {
+	force := st.rosterAt.IsZero() || now.Sub(st.rosterAt) >= rosterRenew
+	if roster, ok := l.takeRoster(force); ok {
+		if cur := l.current(); cur.link == nil || cur.link.Ending {
+			// The end goes on the next pass, as bye.
 			return nil
 		}
-	}
-	if due || st.rosterAt.IsZero() || now.Sub(st.rosterAt) >= rosterRenew {
-		_, roster := l.rosterNumber(snap)
+		// What follows reads the state the roster was built from, so a
+		// revoke that just landed sends no reading after it.
+		snap = l.current()
 		if _, err := w.sendBody(snap, cloudwire.MsgRoster, &roster, true); err != nil {
 			return err
 		}
 		st.rosterAt = now
+		if _, expires, ok := l.opts.Roster.Pending(); ok {
+			st.pendingUntil = expires
+		}
 	}
 
 	period := periodIdle
@@ -315,6 +326,24 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 		}
 	}
 	return nil
+}
+
+// takeRoster says whether a roster is due, and builds it from the link as it
+// is now, after reading that it is due: never from a snapshot taken before,
+// or a revoke that lands in between would wait six hours for the next
+// renewal while the service kept the copy. A roster about to go may leave
+// nothing that needs the link, which then starts to end.
+func (l *Link) takeRoster(force bool) (cloudwire.Roster, bool) {
+	l.mu.Lock()
+	due := l.rosterDue
+	l.rosterDue = false
+	l.mu.Unlock()
+	if !due && !force {
+		return cloudwire.Roster{}, false
+	}
+	l.endIfIdle()
+	_, roster := l.rosterNumber(l.current())
+	return roster, true
 }
 
 // sendBody stamps the header, sends, and records the seq of a live or lp so

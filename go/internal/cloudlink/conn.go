@@ -361,43 +361,64 @@ func (w *writer) send(snap grantSnapshot, t string, body any) error {
 	return nil
 }
 
+// Why a tun did not leave. ErrNoUplink means none will until the box
+// reconnects; ErrTunDropped means this one was lost, to a full queue or the
+// tunnel's own budget, and was counted. Noise transport survives a lost
+// message, so a session goes on after ErrTunDropped.
+var (
+	ErrNoUplink   = errors.New("cloudlink: no uplink to FTW Cloud")
+	ErrTunDropped error = tunDropped{}
+)
+
+// tunDropped says, through Dropped, that one message was lost and counted,
+// so a caller that may not import this package can tell it from a lost
+// uplink.
+type tunDropped struct{}
+
+func (tunDropped) Error() string { return "cloudlink: a tun was dropped" }
+func (tunDropped) Dropped() bool { return true }
+
 // SendTun queues one tun for the uplink. bulk says it carries a lane 1 frame,
-// which is paced; anything else goes first. It never blocks, and false means
-// the message will not leave: no uplink, a full queue, or the tunnel's own
-// budget reached.
-func (l *Link) SendTun(t cloudwire.Tun, bulk bool) bool {
-	if len(t.D) > cloudwire.TunDataMax {
-		return false
-	}
-	body, err := cloudwire.Marshal(t)
-	if err != nil {
-		return false
-	}
-	raw, err := cloudwire.Envelope{T: cloudwire.MsgTun, B: body}.Encode()
-	if err != nil {
-		return false
-	}
-	frame, err := cloudwire.EncodeFrame(raw)
-	if err != nil {
-		return false
-	}
+// which is paced; anything else goes first. It never blocks. nil means the
+// message is queued.
+func (l *Link) SendTun(t cloudwire.Tun, bulk bool) error {
+	frame, err := tunFrame(t)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	q := l.tunOut
 	if bulk {
 		q = l.tunBulk
 	}
-	if q == nil || l.tunBudget.total(l.uptimeMs()) >= tunBudgetBytes {
+	switch {
+	case q == nil:
 		l.tunDropped++
-		return false
+		return ErrNoUplink
+	case err != nil || l.tunBudget.total(l.uptimeMs()) >= tunBudgetBytes:
+		l.tunDropped++
+		return ErrTunDropped
 	}
 	select {
 	case q <- frame:
-		return true
+		return nil
 	default:
 		l.tunDropped++
-		return false
+		return ErrTunDropped
 	}
+}
+
+func tunFrame(t cloudwire.Tun) ([]byte, error) {
+	if len(t.D) > cloudwire.TunDataMax {
+		return nil, ErrTunDropped
+	}
+	body, err := cloudwire.Marshal(t)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := cloudwire.Envelope{T: cloudwire.MsgTun, B: body}.Encode()
+	if err != nil {
+		return nil, err
+	}
+	return cloudwire.EncodeFrame(raw)
 }
 
 // pacer keeps bulk under the service's tun limits: a message bucket and a
