@@ -440,7 +440,7 @@ type loadpointRuntime struct {
 
 	// socConfirmed is true only after a level from the user or a matched car.
 	// A configured/default plug-in level remains a planning assumption.
-	// socConfirmedAt is when that confirmation happened. Zero means the
+	// socConfirmedAt is when the user set it or the car measured it. Zero means the
 	// time was not kept (for example a level restored after restart);
 	// a car reading may then replace it. A newer confirmation wins over
 	// an older car measurement.
@@ -1161,6 +1161,10 @@ func (m *Manager) AnchorVehicleSoCAt(id string, socPct float64, observedAt time.
 		}
 	}
 	reanchorSoCAtLocked(lp, socPct, deliveredAt, m.now())
+	if !observedAt.IsZero() {
+		// Compare car measurements by source time, not cloud delivery time.
+		lp.socConfirmedAt = observedAt
+	}
 	lp.vehicleAnchored = true
 	if lp.targetSoC > 0 && lp.currentSoC >= lp.targetSoC && !lp.completionNotified {
 		lp.completionNotified = true
