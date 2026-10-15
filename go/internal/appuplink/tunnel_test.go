@@ -379,4 +379,3 @@ func TestARevokeEndsATunnelSession(t *testing.T) {
 		t.Fatalf("dropped %d, %d left", n, r.tunnel.count())
 	}
 }
-

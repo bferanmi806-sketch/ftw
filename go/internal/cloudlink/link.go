@@ -198,16 +198,16 @@ type Link struct {
 	tunOut     chan []byte
 	tunBudget  budget
 	tunDropped int64
-	sent      map[string]sentFrame
-	srcRev    uint64
-	table     map[string]cloudwire.Source
-	tableKey  string
-	liveSeq   uint64
-	lpSeq     uint64
-	resyncAt  time.Time
-	attempt   int
-	purgedAt  int64
-	rosterDue bool
+	sent       map[string]sentFrame
+	srcRev     uint64
+	table      map[string]cloudwire.Source
+	tableKey   string
+	liveSeq    uint64
+	lpSeq      uint64
+	resyncAt   time.Time
+	attempt    int
+	purgedAt   int64
+	rosterDue  bool
 
 	// events wait for the writer; eventsDropped counts those that never
 	// left. closing is set by Bye, after which the link does not dial
