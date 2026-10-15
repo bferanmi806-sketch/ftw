@@ -197,7 +197,13 @@ type externalAction struct {
 	ThermalState     map[string]float64 `json:"thermal_state"`
 }
 
-func (o *ExternalOptimizer) Optimize(ctx context.Context, slots []Slot, p Params) (Plan, error) {
+func (o *ExternalOptimizer) Optimize(ctx context.Context, slots []Slot, p Params) (plan Plan, err error) {
+	var payload, line []byte
+	defer func() {
+		if err != nil {
+			err = &optimizerFailureError{cause: err, request: captureFailurePayload(payload), response: captureFailurePayload(line)}
+		}
+	}()
 	if err := validatePartialSlots(slots); err != nil {
 		return Plan{}, err
 	}
@@ -207,13 +213,13 @@ func (o *ExternalOptimizer) Optimize(ctx context.Context, slots []Slot, p Params
 			return Plan{}, fmt.Errorf("prepare optimizer request: %w", err)
 		}
 	}
-	payload, err := json.Marshal(request)
+	payload, err = json.Marshal(request)
 	if err != nil {
 		return Plan{}, fmt.Errorf("encode optimizer request: %w", err)
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, o.cfg.Timeout)
 	defer cancel()
-	line, err := o.transport.RoundTrip(timeoutCtx, payload)
+	line, err = o.transport.RoundTrip(timeoutCtx, payload)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 			return Plan{}, fmt.Errorf("optimizer timeout after %s: %w", o.cfg.Timeout, err)
@@ -239,7 +245,7 @@ func (o *ExternalOptimizer) Optimize(ctx context.Context, slots []Slot, p Params
 	if err := validateExternalAssets(request, response.Plan); err != nil {
 		return Plan{}, fmt.Errorf("optimizer contract rejected: %w", err)
 	}
-	plan := response.toPlan(slots, p)
+	plan = response.toPlan(slots, p)
 	plan.OptimizerInput = append(json.RawMessage(nil), payload...)
 	if err := ValidatePlan(slots, p, &plan); err != nil {
 		return Plan{}, fmt.Errorf("optimizer plan rejected: %w", err)
@@ -415,6 +421,10 @@ func (o *ExternalOptimizer) Close() error {
 // mathematical optimizer. The Go planner still observes the exact slot limits,
 // and dispatch keeps its separate fuse guard.
 const solverGridLimitToleranceW = 0.1
+
+// solverZeroPowerToleranceW matches the worker replay precision for an idle
+// action. At 1e-5 W the most energy it can admit is 0.00024 Wh per day.
+const solverZeroPowerToleranceW = 1e-5
 
 // ValidatePlan independently replays a candidate plan against the canonical
 // site sign convention and current constraints. Solver output is untrusted at
@@ -613,8 +623,9 @@ func ValidatePlan(slots []Slot, p Params, plan *Plan) error {
 			if lp.SurplusOnly && surplusOnlyExceedsHousePV(powerW, slot.LoadW, effectivePVW) {
 				return fmt.Errorf("slot %d surplus-only loadpoint %s exceeds PV leftover after house load", i, lp.ID)
 			}
-			if powerW > 0 && a.BatteryW < 0 && a.GridW < -50 {
-				return fmt.Errorf("slot %d loadpoint %s charges during battery-driven export", i, lp.ID)
+			if powerW > solverZeroPowerToleranceW && a.BatteryW < -solverZeroPowerToleranceW && a.GridW < -50 {
+				return fmt.Errorf("slot %d loadpoint %s charges during battery-driven export: ev_w=%.9f battery_w=%.9f grid_w=%.9f",
+					i, lp.ID, powerW, a.BatteryW, a.GridW)
 			}
 			if lp.blocksBatteryToEV() && loadpoint.BatteryDischargeFeedsEV(a.BatteryW, powerW, slot.LoadW, effectivePVW) {
 				return fmt.Errorf("slot %d battery discharge feeds loadpoint %s", i, lp.ID)
