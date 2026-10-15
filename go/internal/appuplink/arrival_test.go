@@ -413,3 +413,77 @@ func TestLaneZeroCannotPushABulkFrameOutOfTheReplayWindow(t *testing.T) {
 		t.Fatalf("%.0f lane 0 frames can pass a bulk frame held %s; the window is %d", n, wait, appwire.ReplayWindow)
 	}
 }
+
+// What one push costs the box for one session: the site read, the delta,
+// its padding, Noise and the tun frame, as Run does it. Multiply by frames a
+// second and sessions for the share of a core.
+func BenchmarkAPushThroughTheTunnel(b *testing.B) {
+	enroll, err := appenroll.LoadOrCreate(filepath.Join(b.TempDir(), "nova.key"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	app, _ := newAppClient()
+	m1, _ := app.message1(enroll.StaticKey().Public(), nil)
+	hs, _ := appwire.NewResponder(appwire.HandshakeOptions{StaticKey: enroll.StaticKey(), Prologue: prologue(enroll.StaticKey().Public())})
+	if _, err := hs.ReadMessage(m1); err != nil {
+		b.Fatal(err)
+	}
+	reply, _ := hs.WriteMessage(nil)
+	noise, _ := hs.Split()
+	if err := app.readMessage2(reply); err != nil {
+		b.Fatal(err)
+	}
+	site := &movingSite{}
+	var out []byte
+	send := func(msg []byte, _ bool) error {
+		body, err := cloudwire.Marshal(cloudwire.Tun{Dev: "AbCdEfGh", Sid: 7, D: msg})
+		if err != nil {
+			return err
+		}
+		raw, err := cloudwire.Envelope{T: cloudwire.MsgTun, B: body}.Encode()
+		if err != nil {
+			return err
+		}
+		out, err = cloudwire.EncodeFrame(raw)
+		return err
+	}
+	h, err := appproto.New(appproto.Config{
+		Clock: appproto.SystemClock{StartedAt: time.Now(), Source: "ntp"},
+		Site:  site, Info: stubInfo{}, Modes: stubModes{}, Plans: stubPlans{}, Codec: codec{},
+		Sender: tunSender{transport: appwire.NewTransport(noise), send: send},
+		Caller: apiauth.Caller{Subject: "app:AbCdEfGh", Kind: apiauth.KindApp, Role: apiauth.RoleOwner,
+			Scopes: appproto.ScopesForRole(apiauth.RoleOwner), Epoch: 1},
+		Grants: ownerGrant{}, Commands: appproto.NewCmdLog(),
+		SrcGrid: "meter", SrcPV: "meter", SrcBattery: "meter", Logger: slog.New(slog.DiscardHandler),
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, m := range []struct {
+		t    string
+		body any
+	}{
+		{appproto.MsgHello, appproto.Hello{Proto: appproto.ProtoRange{Min: 0, Max: appproto.ProtoMax}}},
+		{appproto.MsgSub, appproto.Sub{Bucket: 512, Hz: 1}},
+	} {
+		raw, _ := appproto.Marshal(m.body)
+		frame, _ := appwire.EncodeFrame(appwire.Frame{Lane: appwire.LaneControl, Bucket: 512, Envelope: appwire.Envelope{T: m.t, B: raw}})
+		if err := h.Handle(context.Background(), frame); err != nil {
+			b.Fatal(err)
+		}
+	}
+	for b.Loop() {
+		site.gridW.Add(1)
+		if err := h.Push(); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(len(out)), "B/frame")
+}
+
+// ownerGrant is a paired owner phone whose grant never moves.
+type ownerGrant struct{}
+
+func (ownerGrant) Grant() (appproto.Enrolment, bool) {
+	return appproto.Enrolment{Role: apiauth.RoleOwner, Epoch: 1}, true
+}

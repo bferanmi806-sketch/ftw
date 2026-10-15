@@ -35,10 +35,10 @@ import (
 // its handshake on a goroutine of its own, so a slow disk under the
 // enrolment write never holds up routing or the stream.
 //
-// Lane 0 goes as readings arrive, not on the relay's one-second pulse, and
-// a beat goes when nothing has moved for the subscribed period. Frames keep
-// their fixed size. What the service learns from their timing is written in
-// docs/protocol-cloud.md, "Tunnel".
+// Lane 0 goes on each finished driver poll, not on the relay's one-second
+// pulse, and a beat goes when no frame has gone for the subscribed period.
+// Frames keep their fixed size. What the service learns from their timing
+// is written in docs/protocol-cloud.md, "Lane 0 through the tunnel".
 
 // TunSender sends one tun up the box's link to FTW Cloud. cloudlink.Link is
 // one. bulk says the message carries a lane 1 frame, which the link paces;
@@ -78,10 +78,10 @@ const (
 	// one arrival already.
 	tunGather = 5 * time.Millisecond
 	// tunRate and tunBurst bound the frames arrivals push: five a second on
-	// average, three at once. Drivers that each read once a second never
-	// wait; one that reads ten times a second costs each phone five frames
-	// a second, and four phones stay well under the service's 60 tun a
-	// second per home.
+	// average, three at once. A few drivers that each read once a second
+	// seldom wait; one that reads ten times a second costs each phone five
+	// frames a second, and four phones stay well under the service's 60 tun
+	// a second per home.
 	tunRate  = 5
 	tunBurst = 3
 	// tunPushUntil and tunBeatUntil are the shares of the tunnel's 24-hour

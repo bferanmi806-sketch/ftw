@@ -35,9 +35,10 @@ import (
 //	                     pair.url, arrivals.log and tun.log
 //	FTW_LIVE_BOX_URL     the service's /v1/box, wss://127.0.0.1:18843/v1/box
 //	FTW_LIVE_BOX_DRIVERS how many pretend drivers read, 1 by default
+//	FTW_LIVE_BOX_PERIOD_MS how often each reads, 1000 by default
 //
-// Each pretend driver reads at a random 0.8 to 1.2 s, so its readings land
-// at every phase of any clock the box keeps. The grid reading is the
+// Each pretend driver reads at a random 0.8 to 1.2 times its period, so its
+// readings land at every phase of any clock the box keeps. The grid reading is the
 // wall-clock millisecond the newest arrived, so the phone can time it. arrivals.log has each
 // arrival and tun.log each tun the box sent, in wall-clock microseconds.
 // The box serves until <dir>/stop appears.
@@ -133,11 +134,15 @@ func TestLiveBoxForTheiPhone(t *testing.T) {
 	arrivalLog, closeArrivals := logs("arrivals.log")
 	defer closeArrivals()
 	drivers, _ := strconv.Atoi(os.Getenv("FTW_LIVE_BOX_DRIVERS"))
+	period, _ := strconv.Atoi(os.Getenv("FTW_LIVE_BOX_PERIOD_MS"))
+	if period <= 0 {
+		period = 1000
+	}
 	var arriving sync.Mutex
 	for range max(drivers, 1) {
 		go func() {
 			for ctx.Err() == nil {
-				time.Sleep(time.Duration(800+rand.IntN(400)) * time.Millisecond)
+				time.Sleep(time.Duration(period*4/5+rand.IntN(period*2/5+1)) * time.Millisecond)
 				arriving.Lock()
 				now := time.Now()
 				site.ms.Store(now.UnixMilli())
