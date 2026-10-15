@@ -49,7 +49,9 @@ for both live in `go/protocol`, under Apache-2.0
 - No proxy may end TLS in front of the service, because that breaks the
   handshake binding. A plain TCP load balancer is fine.
 - Reconnects back off with full jitter from 0.5 s to 60 s. The attempt
-  counter resets after 60 s connected.
+  counter resets after 60 s connected. Two closes are not failures: 4421
+  names the instance that holds the home, and 4503 asks the box to come back
+  within a spread (see [Shards and restarts](#shards-and-restarts)).
 - The service sends a WebSocket ping every 15 s. The box's read deadline is
   45 s and its write deadline 10 s.
 - WebSocket compression is off.
@@ -661,6 +663,8 @@ nothing about which check failed.
 | 4409 | The roster changed what this device may read | Reconnects at once, once; then retries with backoff |
 | 4429 | The home has as many sessions as the service allows, as at the relay | Retries with backoff |
 | 1013 | The phone fell too far behind | Retries with backoff and gets a fresh snapshot |
+| 4421 | Another instance holds the home. The reason is its host | Follows once and keeps the host for the home (see [Shards and restarts](#shards-and-restarts)) |
+| 4503 | The service is about to stop. The reason is the spread in milliseconds | Redials at a random moment within the spread, without backoff |
 
 - **Backoff** is full jitter from 0.5 s to 60 s, as on the uplink. It also
   covers a lost socket.
@@ -865,7 +869,10 @@ through the relay instead, and prices and the plan wait for the phone.
 
 ## Extension token
 
-- 32 random bytes, base64url. The service stores its SHA-256, never the token.
+- The home id, a dot, and 32 random bytes in base64url. The service stores
+  the SHA-256 of the random bytes, never the token, and refuses a token whose
+  home is not the one its row is bound to. The home id lets any instance tell
+  which shard holds the token. To the extension the token is opaque.
 - Bound to one roster entry and valid for 7 days. The app renews it at each
   foreground and background refresh.
 - It dies when the roster drops the device, the device's epoch changes, an
@@ -1090,6 +1097,59 @@ app's, so the grant screen claims no more than an owner's session.
   After 90 days without a valid roster it deletes the home as in a purge.
 - **A new home** that sends no roster within 24 hours is deleted.
 
+## Shards and restarts
+
+Every home lives on exactly one instance of the service, its shard. Its box,
+phones, watch and extensions all meet there, so nothing about a home crosses
+between instances: no shared pub/sub and no shared storage, and readings stay
+off disk. `cloud.ftw.energy` is the default host. With one shard it is the
+only host and nothing below happens.
+
+**Wrong shard.** An instance that gets a connection or a request for a home
+it does not hold names the host that does:
+
+| Where | When the service knows the home | Answer |
+|---|---|---|
+| `/v1/box` | After `hello`, from the key that signed it, before the registry is touched | Close 4421, reason the host |
+| `/v1/app` | From `?home=`, before message 1 is read | Close 4421, reason the host |
+| `/v1/app/once` | From `?home=`, before the body is read | 421, the host in `Ftw-Shard`, empty body |
+| `/v1/now` | From the home id in the token | 421, the host in `Ftw-Shard`, empty body |
+
+A client follows a wrong-shard answer only to `cloud.ftw.energy` itself or
+one DNS label of lowercase letters, digits and hyphens directly under it,
+such as `s2.cloud.ftw.energy` (`cloudwire.ShardHostOK`). The redirect carries
+no trust: the box still checks the TLS certificate for that host and
+`hello_ok` against the service keys it was built with, and the phone still
+runs Noise IK to the service Noise key it carries.
+
+- The client keeps the host for that home. The box stores it with its link,
+  so a restart dials the shard first.
+- It follows once. A second wrong-shard answer before it is connected again
+  sends it back to `cloud.ftw.energy` after backoff, where it may follow once
+  more.
+- After 3 dials in a row that fail at a kept host, the client forgets it and
+  starts again at `cloud.ftw.energy`.
+- A box lists `shard` in `hello.caps` when it follows 4421 and spreads its
+  redial after 4503. A second shard holds homes only once their boxes list
+  it.
+
+**Directory.** Each instance holds the same directory: the shards' hosts, a
+shard for each of 256 buckets of homes, and single homes moved on their own.
+A home's bucket is the first byte of SHA-256 of `ftw.cloud.shard\0` and the
+home id. Moving homes means copying their registry rows to the new shard,
+then updating the directory on every instance. Their clients follow the
+redirect at their next connection, and extension tokens keep working,
+because the rows hold their hashes.
+
+**Restart.** An instance that is about to stop, for a deploy or a move, stops
+accepting connections and closes every socket with 4503. The reason is a
+spread in milliseconds, in decimal, which the service sets from how many
+sockets it holds and how fast the next instance can take them. The client
+redials at a uniformly random moment within the spread, at most 60 s, and
+does not count the close as a failed attempt. A missing or unreadable reason
+means 5 s. The service sends no `box.unreachable` for boxes it closed this
+way.
+
 ## Service state
 
 Per home, the service keeps in memory the newest envelope of each class, the
@@ -1143,6 +1203,9 @@ the registry's roles would remove that copy.
 | What | Value |
 |---|---|
 | Reconnect backoff, box and phone | 0.5 s to 60 s, full jitter |
+| Redial after 4503 | Uniform within the reason's spread; 5 s without one; at most 60 s |
+| Wrong-shard redirects followed | One per connection; a kept host is forgotten after 3 failed dials |
+| Shard buckets | 256 |
 | Phone retry after 4403 | Half to all of min(15 s × 2ⁿ, 5 min) |
 | Ping, read deadline, write deadline | 15 s, 45 s, 10 s, on both sockets |
 | Period per class | 5 s; 1 s while watched; `lp` at least 2 s |

@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -169,6 +170,7 @@ type Options struct {
 	ServiceKeys []*ecdsa.PublicKey
 	RootCAs     *x509.CertPool
 	Tick        time.Duration
+	NetDial     func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // Link is the box's one uplink to FTW Cloud.
@@ -207,8 +209,13 @@ type Link struct {
 	lpSeq      uint64
 	resyncAt   time.Time
 	attempt    int
-	purgedAt   int64
-	rosterDue  bool
+	// shardHops counts wrong-shard closes since the box was last
+	// connected, and hostFails dials in a row that failed at the kept
+	// host (linkRecord.Host).
+	shardHops int
+	hostFails int
+	purgedAt  int64
+	rosterDue bool
 
 	// events wait for the writer; eventsDropped counts those that never
 	// left. closing is set by Bye, after which the link does not dial
@@ -966,7 +973,7 @@ func (l *Link) caps(snap grantSnapshot) []string {
 	if l.opts.Tunnel != nil {
 		out = append(out, cloudwire.CapTun)
 	}
-	return out
+	return append(out, cloudwire.CapShard)
 }
 
 // tlsConfig is TLS 1.3 only, with the system roots unless a test or a dev
