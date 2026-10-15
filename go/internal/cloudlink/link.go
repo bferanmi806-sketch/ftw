@@ -201,6 +201,9 @@ type Link struct {
 	transport string
 	quicOn    bool
 	winners   map[string]string
+	// tickets holds the service's TLS tickets, so a reconnect resumes and,
+	// over QUIC, sends its target as early data.
+	tickets tls.ClientSessionCache
 	lastSend  time.Time
 	budget    budget
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
@@ -278,6 +281,7 @@ func New(opts Options) (*Link, error) {
 	l := &Link{
 		opts: opts, log: opts.Logger.With("component", "cloudlink"), boot: boot,
 		wake: make(chan struct{}, 1), sent: map[string]sentFrame{}, quicOn: quicOn,
+		tickets: tls.NewLRUClientSessionCache(4),
 	}
 	if err := l.load(); err != nil {
 		return nil, err
@@ -987,5 +991,5 @@ func (l *Link) caps(snap grantSnapshot) []string {
 // tlsConfig is TLS 1.3 only, with the system roots unless a test or a dev
 // build adds its own.
 func (l *Link) tlsConfig() *tls.Config {
-	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: l.opts.RootCAs}
+	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: l.opts.RootCAs, ClientSessionCache: l.tickets}
 }

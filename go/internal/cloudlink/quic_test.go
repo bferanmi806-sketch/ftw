@@ -26,7 +26,11 @@ import (
 // serveQUIC makes the fake service answer QUIC on the UDP port that matches
 // its TCP one, with the same handshake and loop as its WebSocket. A dropping
 // service reads every packet and answers none, as a network that blocks UDP.
-func (s *fakeService) serveQUIC(dropping bool) string {
+func (s *fakeService) serveQUIC(dropping bool) string { return s.serveQUICWith(dropping, false) }
+
+// serveQUICWith is serveQUIC with early data on when early, and each
+// connection's use of it kept in usedEarly.
+func (s *fakeService) serveQUICWith(dropping, early bool) string {
 	s.t.Helper()
 	addr := s.srv.Listener.Addr().String()
 	pc, err := net.ListenPacket("udp", addr)
@@ -49,7 +53,8 @@ func (s *fakeService) serveQUIC(dropping bool) string {
 	s.t.Cleanup(func() { _ = tr.Close() })
 	tc := s.srv.TLS.Clone()
 	tc.NextProtos = []string{cloudwire.ALPNBox}
-	ln, err := tr.Listen(tc, &quic.Config{MaxIdleTimeout: cloudwire.QUICIdleTimeout, EnableDatagrams: true})
+	conf := &quic.Config{MaxIdleTimeout: cloudwire.QUICIdleTimeout, EnableDatagrams: true, Allow0RTT: early}
+	ln, err := tr.ListenEarly(tc, conf)
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -72,12 +77,39 @@ func (s *fakeService) serveQUIC(dropping bool) string {
 				}
 				c := &quicConn{qc: qc, ctrl: ctrl, r: r, in: make(chan inbound), kick: make(chan struct{}, 1),
 					limit: cloudwire.MaxTunFrame}
+				// The exporter exists once the server's flight is out, and
+				// hello can only come after the handshake.
+				<-qc.HandshakeComplete()
+				s.mu.Lock()
+				s.usedEarly = append(s.usedEarly, qc.ConnectionState().Used0RTT)
+				s.mu.Unlock()
 				ekm, _ := c.exporter()
 				s.serve(c, ekm)
 			}()
 		}
 	}()
 	return addr
+}
+
+// A box that dials again sends its target as early data, with the ticket
+// from the first connection; hello still binds to the TLS session it rides.
+func TestAReconnectSendsItsTargetEarly(t *testing.T) {
+	svc := newFakeService(t)
+	svc.serveQUICWith(false, true)
+	svc.kick = 1
+	h := newQUICHarness(t, svc)
+	h.grant(t, protocol.ScopeLiveRead)
+	waitWithin(t, 10*time.Second, "a second connection", func() bool { return svc.count(cloudwire.TransportQUIC) >= 2 })
+	waitUntil(t, "the uplink up", func() bool { return h.link.Status().Connected })
+	svc.mu.Lock()
+	early := slices.Clone(svc.usedEarly)
+	svc.mu.Unlock()
+	if len(early) < 2 || early[0] || !early[1] {
+		t.Fatalf("early data per connection: %v, want the second only", early)
+	}
+	if got := h.link.Status().Transport; got != cloudwire.TransportQUIC {
+		t.Fatalf("transport %q", got)
+	}
 }
 
 func (s *fakeService) kindsOf(t string) []int {

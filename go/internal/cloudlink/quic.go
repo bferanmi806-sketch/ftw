@@ -69,7 +69,10 @@ func quicConfig() *quic.Config {
 }
 
 // dialQUIC opens the uplink over QUIC to addr, a host and port, on a UDP
-// socket of its own (pc, or a new one when nil), and sends the target.
+// socket of its own (pc, or a new one when nil), and sends the target. With
+// a ticket in tlsConf's session cache the target goes as early data, so the
+// service's challenge comes back in its first flight; the box sends nothing
+// else early. A service that rejects the early data gets the target again.
 func dialQUIC(ctx context.Context, addr string, tlsConf *tls.Config, pc net.PacketConn) (*quicConn, error) {
 	udp, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
@@ -83,19 +86,53 @@ func dialQUIC(ctx context.Context, addr string, tlsConf *tls.Config, pc net.Pack
 	tc := tlsConf.Clone()
 	tc.NextProtos = []string{cloudwire.ALPNBox}
 	tr := &quic.Transport{Conn: pc}
-	qc, err := tr.Dial(ctx, udp, tc, quicConfig())
+	dial := tr.Dial
+	if tc.ClientSessionCache != nil {
+		dial = tr.DialEarly
+	}
+	qc, err := dial(ctx, udp, tc, quicConfig())
 	if err != nil {
 		_ = tr.Close()
 		return nil, err
 	}
-	ctrl, err := qc.OpenStreamSync(ctx)
-	if err == nil {
-		_, err = ctrl.Write(cloudwire.AppendMessage(nil, []byte(cloudwire.TargetBox)))
-	}
-	if err != nil {
+	fail := func(err error) (*quicConn, error) {
 		_ = qc.CloseWithError(0, "")
 		_ = tr.Close()
 		return nil, err
+	}
+	// DialEarly comes back before the handshake only when it can send early
+	// data, with a ticket that allows it.
+	early := false
+	select {
+	case <-qc.HandshakeComplete():
+	default:
+		early = true
+	}
+	target := cloudwire.AppendMessage(nil, []byte(cloudwire.TargetBox))
+	ctrl, err := qc.OpenStreamSync(ctx)
+	if err == nil {
+		_, err = ctrl.Write(target)
+	}
+	if err != nil {
+		return fail(err)
+	}
+	select {
+	case <-qc.HandshakeComplete():
+	case <-ctx.Done():
+		return fail(ctx.Err())
+	}
+	if early && !qc.ConnectionState().Used0RTT {
+		// The early data, if any went, was rejected: the connection quic-go
+		// hands over takes the target again.
+		if qc, err = qc.NextConnection(ctx); err != nil {
+			return fail(err)
+		}
+		if ctrl, err = qc.OpenStreamSync(ctx); err == nil {
+			_, err = ctrl.Write(target)
+		}
+		if err != nil {
+			return fail(err)
+		}
 	}
 	c := &quicConn{qc: qc, tr: tr, ctrl: ctrl, r: bufio.NewReader(ctrl), in: make(chan inbound),
 		kick: make(chan struct{}, 1), limit: cloudwire.MaxTunFrame}

@@ -175,32 +175,28 @@ may put there only the target and, on the app session, Noise message 1, with
 `now` and the box session's message 1 in `now.tun`. Nothing else can go
 there: every later message is a Noise transport message, which the client
 can encrypt only once message 2 has come back. So no `cmd` or `api.req` ever
-rides in early data.
+rides in early data. A box puts only its target there, and the service's
+`challenge` comes back in its first flight.
 
 The network can replay early data. These rules make a replay change nothing:
 
-- **Each message 1 once.** The service accepts message 1 in early data only
-  once for each initiator ephemeral key (its first 32 bytes) for as long as
-  a ticket allows early data, at most 24 hours. It never answers a second
-  copy. A replay then gets no `now.tun` forwarded, no message 2 and no
-  session; the connection waits for a handshake the replayer cannot finish,
-  and times out.
-- **Nothing before the handshake.** For a first copy, the service checks
-  admission, forwards `now.tun` to the box and sends message 2 with the
-  snapshot at once, so the session is up one round trip sooner. It opens the
-  device's session, ends an older one with 4408, spends a pairing hash and
-  starts `watch` only once the QUIC handshake has completed, which proves
-  the client holds the ticket's keys. Envelopes that changed in between follow
-  message 2 as ordinary frames.
+- **Each message 1 once.** The service answers a message 1 that came in
+  early data only for the first copy with its initiator ephemeral key (the
+  first 32 bytes). A second copy waits for the QUIC handshake, which its
+  sender cannot finish, and the connection times out. Nothing of it is
+  forwarded, opened or answered.
+- **For a day.** A ticket allows early data for 24 hours after the service
+  issued it, and resumption without early data after that. The service
+  remembers each ephemeral key for as long. A restart draws new ticket keys,
+  so every client makes a full handshake once.
 - **The box holds a tunnel session as pending** until its first transport
-  message decrypts (see [Tunnel](#tunnel)), so a `now.tun` that reached it
-  takes no slot and spends no code.
-- A box sends only its target in early data. The service's `challenge` then
-  goes in the first flight back, and `hello` waits for it as before.
+  message decrypts (see [Tunnel](#tunnel)), so a `now.tun` takes no slot
+  and spends no code, whoever sent it.
+- **HTTP/3 requests wait for the handshake**, since no plain route has said
+  which of its requests survive a replay.
 
-The service gives tickets that allow early data for 24 hours, and resumption
-without early data after that. A restart draws new ticket keys, so every
-client makes a full handshake once.
+A client whose early data the service rejects sends it again once the
+handshake is done.
 
 ## Envelope and signature
 

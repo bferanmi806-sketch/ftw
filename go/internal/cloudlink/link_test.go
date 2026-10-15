@@ -196,6 +196,11 @@ type fakeService struct {
 	kinds map[string][]int
 	// transports counts the connections each transport carried.
 	transports map[string]int
+	// kick drops this many connections right after hello_ok, so the box
+	// dials again.
+	kick int
+	// usedEarly says, per QUIC connection, whether it took early data.
+	usedEarly []bool
 }
 
 func newFakeService(t *testing.T) *fakeService {
@@ -288,6 +293,15 @@ func (s *fakeService) serve(conn uplinkConn, ekm []byte) {
 		BoxNonce: hello.BoxNonce, EKM: okEKM, Have: map[string]string{}, RosterSeq: s.rosterSeqOK})
 	if s.afterHello != nil {
 		go s.afterHello(conn, home)
+	}
+	s.mu.Lock()
+	kick := s.kick > 0
+	if kick {
+		s.kick--
+	}
+	s.mu.Unlock()
+	if kick {
+		return
 	}
 
 	for {
