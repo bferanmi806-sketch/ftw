@@ -708,7 +708,7 @@ is.
 | Field | Type | Meaning |
 |---|---|---|
 | `dev` | text | The roster device id whose session this is |
-| `sid` | uint | The phone's number for one session with the box, below 2³² |
+| `sid` | uint | The phone's number for one session with the box, below 2³², drawn at random for each new session so that the late end of an older one never ends it |
 | `d` | bstr | One message of that session, byte for byte, or empty to end it |
 
 On the app session the phone and the service send `tun {sid, d}`, with no

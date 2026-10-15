@@ -45,8 +45,10 @@ type Tun struct {
 	// Dev is the roster device id whose session this is. The service sets
 	// it from the key its own handshake with the phone proved.
 	Dev string `cbor:"dev"`
-	// Sid is the phone's number for one session with the box. A new sid
-	// from the same device starts a new session and ends the older one.
+	// Sid is the phone's number for one session with the box, drawn at
+	// random for each new session, so that the late end of an older one
+	// can never end it. A new sid from the same device starts a new
+	// session and ends the older one.
 	Sid uint32 `cbor:"sid"`
 	// D is one message of that session, or empty to end it.
 	D []byte `cbor:"d"`
