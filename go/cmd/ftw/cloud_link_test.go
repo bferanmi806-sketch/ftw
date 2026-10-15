@@ -104,6 +104,8 @@ type noPhones struct{}
 
 func (noPhones) Devices() []cloudlink.RosterDevice { return nil }
 
+func (noPhones) Pending() ([]byte, time.Time, bool) { return nil, time.Time{}, false }
+
 func newTestCloudLink(t *testing.T, keys []*ecdsa.PublicKey) *cloudlink.Link {
 	t.Helper()
 	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))

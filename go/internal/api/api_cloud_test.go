@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/cloudlink"
@@ -362,6 +363,8 @@ func (cloudSiteStub) Prices() (cloudwire.Prices, bool) { return cloudwire.Prices
 type cloudRosterStub struct{}
 
 func (cloudRosterStub) Devices() []cloudlink.RosterDevice { return nil }
+
+func (cloudRosterStub) Pending() ([]byte, time.Time, bool) { return nil, time.Time{}, false }
 
 type cloudKV struct {
 	mu sync.Mutex

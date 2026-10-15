@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/api"
+	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/appenroll"
 	"github.com/srcfl/ftw/go/internal/appproto"
+	"github.com/srcfl/ftw/go/internal/appuplink"
 	"github.com/srcfl/ftw/go/internal/cloudlink"
 	"github.com/srcfl/ftw/go/internal/control"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
@@ -29,11 +31,13 @@ import (
 
 // FTW Cloud's uplink, wired to the box.
 //
-// Everything here reads. cloudlink may import nothing from the box, so these
-// adapters answer its questions from the same sources the app session and the
-// HTTP API use: the live snapshot, the loadpoint view GET /api/loadpoints
-// composes, and the price store. None of them is handed anything that can
-// change state.
+// Everything here reads, but for the tunnel. cloudlink may import nothing
+// from the box, so these adapters answer its questions from the same sources
+// the app session and the HTTP API use: the live snapshot, the loadpoint view
+// GET /api/loadpoints composes, and the price store. None of them is handed
+// anything that can change state. The tunnel is the app uplink's session
+// table, which cloudlink reaches through its Tunnel port and hands the
+// phones' Noise sessions unread.
 
 // cloudSite is the box's state as the uplink wants it.
 type cloudSite struct {
@@ -275,17 +279,29 @@ func ptr[T any](v T) *T { return &v }
 
 // cloudRoster lists paired devices with the scopes the box derives for each:
 // a phone's role, or for a watch what its role and its phone's role share.
+// A phone may open a session through the tunnel when the box takes it; a
+// watch has no stream and reaches the box through its exchange.
 type cloudRoster struct {
 	enroll *appenroll.Identity
+	tunnel bool
 }
 
 func (r cloudRoster) Devices() []cloudlink.RosterDevice {
 	var out []cloudlink.RosterDevice
 	for _, e := range r.enroll.Roster() {
 		out = append(out, cloudlink.RosterDevice{ID: e.ID, Key: e.Key, Role: e.Role, Epoch: e.Epoch,
-			Scopes: appproto.GrantScopes(e.Role, e.ParentRole)})
+			Scopes: appproto.GrantScopes(e.Role, e.ParentRole), Tun: r.tunnel && e.Role != apiauth.RoleWatch})
 	}
 	return out
+}
+
+// Pending is the QR code on the screen, while the box takes the tunnel: a
+// new phone can then pair through FTW Cloud.
+func (r cloudRoster) Pending() ([]byte, time.Time, bool) {
+	if !r.tunnel {
+		return nil, time.Time{}, false
+	}
+	return r.enroll.PendingCode()
 }
 
 // cloudNotices reaches the notifications service once it exists; it is built
@@ -300,14 +316,18 @@ func (n *cloudNotices) notify(kind string) {
 	}
 }
 
-// startCloudLink loads the FTW Cloud grant and keeps the uplink up while an
-// owner has it on. It needs the state store, which holds the grant, and
+// startCloudLink loads the FTW Cloud link and grant and keeps the uplink up
+// while the box is linked: from its first pairing code, or an owner's grant.
+// It needs the state store, which holds the link and the grant, and
 // enrolment, which holds the phones the roster lists; without either it
-// returns nil and the routes say FTW Cloud is unavailable.
+// returns nil and the routes say FTW Cloud is unavailable. tunnel is the app
+// uplink's session table, nil when the app link is off, and then the box
+// takes no tun and links only for a grant.
 func startCloudLink(
 	ctx context.Context, statePath, build string, st *state.Store, enroll *appenroll.Identity,
 	tel *telemetry.Store, ctrl *control.State, ctrlMu *sync.Mutex, revision *control.Revision,
 	siteMeterStale time.Duration, priceSvc *prices.Service, gateway *lateAPI, notices *cloudNotices,
+	tunnel *appuplink.Tunnel,
 ) *cloudlink.Link {
 	if st == nil || enroll == nil {
 		return nil
@@ -319,21 +339,30 @@ func startCloudLink(
 	if priceSvc != nil && priceSvc.Zone != "" && priceSvc.Store != nil {
 		site.prices = &appPrices{svc: priceSvc}
 	}
-	link, err := cloudlink.New(cloudlink.Options{
+	opts := cloudlink.Options{
 		Site:        site,
-		Roster:      cloudRoster{enroll: enroll},
+		Roster:      cloudRoster{enroll: enroll, tunnel: tunnel != nil},
 		KV:          st,
 		KeyPath:     filepath.Join(filepath.Dir(statePath), "cloud.key"),
 		Build:       build,
 		Started:     processStarted,
 		ClockSynced: cloudlink.ClockSynced,
 		Notify:      notices.notify,
-	})
+	}
+	// Set only with a table: a typed nil would read as a tunnel.
+	if tunnel != nil {
+		opts.Tunnel = tunnel
+	}
+	link, err := cloudlink.New(opts)
 	if err != nil {
 		slog.Warn("FTW Cloud unavailable", "err", err)
 		return nil
 	}
+	if tunnel != nil {
+		tunnel.Attach(link)
+	}
 	enroll.OnChange(link.RosterChanged)
+	enroll.OnPairingCode(link.RosterChanged)
 	go func() {
 		if err := link.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("FTW Cloud uplink stopped", "err", err)

@@ -212,6 +212,9 @@ type Identity struct {
 	// onChange hears about every change to who is paired and what they
 	// may do, after it is saved. Not about lastSeen stamps.
 	onChange []func()
+	// onPairingCode hears about a phone's code minted, which puts a new
+	// code on the screen or takes one off it.
+	onPairingCode []func()
 }
 
 // appMeta is what the box remembers about one paired phone.
@@ -496,6 +499,7 @@ func (i *Identity) MintPairingCode(role string, ttl time.Duration) ([]byte, time
 	i.mu.Lock()
 	i.pairing = &pairingCode{code: code, expiresAt: expires, role: role, kind: PairingKindQR}
 	i.mu.Unlock()
+	i.minted()
 
 	return append([]byte(nil), code...), expires, nil
 }
@@ -522,8 +526,42 @@ func (i *Identity) MintSpokenCode(role string) (string, time.Time, error) {
 	i.mu.Lock()
 	i.pairing = &pairingCode{code: code, expiresAt: expires, role: role, kind: PairingKindSpoken}
 	i.mu.Unlock()
+	i.minted()
 
 	return GroupSpokenCode(encodeSpoken(code)), expires, nil
+}
+
+// PendingCode is the QR code a phone may pair with now, for FTW Cloud's
+// roster to list by its hash, so the service admits that phone's first
+// session. A spoken code is never one: forty bits behind a hash are forty
+// bits the service could find. Nor is a watch code, an expired code or a
+// spent one.
+func (i *Identity) PendingCode() ([]byte, time.Time, bool) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	p := i.pairing
+	if p == nil || p.kind != PairingKindQR || !i.now().Before(p.expiresAt) {
+		return nil, time.Time{}, false
+	}
+	return append([]byte(nil), p.code...), p.expiresAt, true
+}
+
+// OnPairingCode registers fn to run after a phone's code is minted, which
+// shows a new one and takes any older one off the screen. A code spent is
+// a pairing, and OnChange hears about it.
+func (i *Identity) OnPairingCode(fn func()) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.onPairingCode = append(i.onPairingCode, fn)
+}
+
+func (i *Identity) minted() {
+	i.mu.Lock()
+	fns := append([]func(){}, i.onPairingCode...)
+	i.mu.Unlock()
+	for _, fn := range fns {
+		fn()
+	}
 }
 
 // knownRole refuses a role the registry does not define.
@@ -572,7 +610,7 @@ func (i *Identity) Authorise(appStatic, payload []byte) (Grant, error) {
 	if meta := i.authorised[key]; meta != nil {
 		if meta.role == apiauth.RoleWatch {
 			// A watch has no stream. It reaches the box through the
-			// exchange, which never takes one of a phone's four places, and
+			// exchange, which never takes a phone's place, and
 			// it answers here as a stranger would.
 			i.mu.Unlock()
 			return Grant{}, ErrNoPairing

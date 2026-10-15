@@ -18,13 +18,27 @@ import (
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
-// The grant lives in the box's state store, not in the config document, so a
-// whole-document config write cannot reset it. A missing record reads as off.
+// The link and the grant live in the box's state store, not in the config
+// document, so a whole-document config write cannot reset them. A missing
+// record reads as off.
 const (
+	linkKey   = "cloud/link_v1"
 	grantKey  = "cloud/grant_v1"
 	rosterKey = "cloud/roster_v1"
 	purgedKey = "cloud/purged_v1"
 )
+
+// linkRecord is the box's link to FTW Cloud: which cloud.key it holds. The
+// link carries the roster and the phones' tunnels, and a grant adds the
+// readable copy on top.
+type linkRecord struct {
+	// KeyFp is SHA-256 of cloud.key's public point. A record whose
+	// fingerprint does not match the key on disk reads as off.
+	KeyFp string `json:"keyFp"`
+	// Ending means the box asked the service to delete the home and waits
+	// for the receipt. The key stays until it arrives.
+	Ending bool `json:"ending,omitempty"`
+}
 
 // KV is the part of the state store the grant needs.
 type KV interface {
@@ -54,8 +68,9 @@ type grantRecord struct {
 	StatsID []byte `json:"statsId,omitempty"`
 	// StatsPolicy names the consent text the owner read for statistics.
 	StatsPolicy string `json:"statsPolicy,omitempty"`
-	// Revoked means the owner turned FTW Cloud off and the service has not
-	// yet confirmed the deletion. The key stays until it has.
+	// Revoked means the owner turned the readable copy off and the service
+	// has not yet confirmed that the copy is gone. The record stays until it
+	// has; the link and its key stay after.
 	Revoked     bool  `json:"revoked,omitempty"`
 	RevokedAtMs int64 `json:"revokedAtMs,omitempty"`
 }
@@ -67,6 +82,8 @@ func (g *grantRecord) has(scope string) bool {
 // receipt is the service's purge receipt, kept so the box can say when the
 // copy was erased.
 type receipt struct {
+	// What is the receipt's: copy for a grant, home for the link.
+	What    string `json:"what,omitempty"`
 	AtMs    int64  `json:"atMs"`
 	GrantID []byte `json:"grantId"`
 }
@@ -132,8 +149,8 @@ func checkScopes(scopes []string) ([]string, error) {
 // --------------------------------------------------------------------------
 
 // The key file is PEM SEC 1, 0600, beside state.db. Backups skip it: a box
-// restored onto other hardware has FTW Cloud off until an owner turns it on
-// again, under a new home id.
+// restored onto other hardware links again under a new home id, and has the
+// readable copy off until an owner turns it on again.
 
 func loadKey(path string) (*ecdsa.PrivateKey, error) {
 	raw, err := os.ReadFile(path)

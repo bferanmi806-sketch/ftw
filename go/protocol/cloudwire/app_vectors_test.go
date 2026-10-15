@@ -35,7 +35,18 @@ type appVectorFile struct {
 	HandshakeHash    string            `json:"handshakeHash"`
 	Snapshot         []string          `json:"snapshot"`
 	Transport        []appVectorFrame  `json:"transport"`
+	Pairing          appVectorPairing  `json:"pairing"`
 	Notes            map[string]string `json:"notes"`
+}
+
+// appVectorPairing is a new phone's proof: the code it scanned, the hash the
+// roster lists and now.pair carries, and the device id the service names it
+// by until the roster lists it.
+type appVectorPairing struct {
+	Code     string `json:"code"`
+	Hash     string `json:"hash"`
+	Msg1Now  string `json:"msg1Now"`
+	DeviceID string `json:"deviceId"`
 }
 
 type appVectorFrame struct {
@@ -203,6 +214,20 @@ func TestAppSessionVectors(t *testing.T) {
 	addFrame("phone", "watch away", frameOf(away))
 	suspend, _ := Unsigned(MsgSuspend, Suspend{DeviceID: "Zf09xQ2a"})
 	addFrame("phone", "suspend", frameOf(suspend))
+	// The phone's own session with its box rides as tun: d is opaque here.
+	tunUp, _ := Unsigned(MsgTun, AppTun{Sid: 7, D: bytes.Repeat([]byte{0x9a}, 48)})
+	addFrame("phone", "tun", frameOf(tunUp))
+	tunDown, _ := Unsigned(MsgTun, AppTun{Sid: 7, D: bytes.Repeat([]byte{0x99}, 112)})
+	addFrame("service", "tun", frameOf(tunDown))
+	tunEnd, _ := Unsigned(MsgTun, AppTun{Sid: 7, D: []byte{}})
+	addFrame("service", "tun end", frameOf(tunEnd))
+
+	code := bytes.Repeat([]byte{0x88}, 16)
+	pairNow, _ := Unsigned(MsgNow, Now{Hz: HzLooking, Pair: PairingHash(home, code)})
+	out.Pairing = appVectorPairing{
+		Code: hex.EncodeToString(code), Hash: hex.EncodeToString(PairingHash(home, code)),
+		Msg1Now: hex.EncodeToString(pairNow), DeviceID: DeviceID(phoneStatic.Public()),
+	}
 
 	got, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {

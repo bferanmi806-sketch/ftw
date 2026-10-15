@@ -13,13 +13,6 @@ import (
 	"github.com/srcfl/ftw/go/protocol/appwire"
 )
 
-// MaxSessions is how many phones may watch one house at once.
-//
-// It matches the relay's own per-handle stream limit; a fifth stream never
-// reaches the box, so a larger number here would only describe sessions that
-// cannot exist.
-const MaxSessions = 4
-
 // session is one app's encrypted conversation with this box.
 //
 // A session belongs to one relay connection and never outlives it. The app
@@ -32,6 +25,9 @@ type session struct {
 	// appStatic is the app's static key as the handshake authenticated it,
 	// never as it was claimed. Logged as a prefix and nothing more.
 	appStatic []byte
+	// release frees the device's slot (see slots), if the session still
+	// holds it. Nil for a session that took none.
+	release func()
 }
 
 // close ends one session for good.
@@ -44,6 +40,9 @@ type session struct {
 func (s *session) close() {
 	s.handler.Close()
 	s.transport.Close()
+	if s.release != nil {
+		s.release()
+	}
 }
 
 // sender encrypts one session's frames onto the shared socket.
@@ -72,6 +71,9 @@ type sessions struct {
 	mu    sync.Mutex
 	live  []*session
 	build HandlerBuilder
+	// slots is the box's one slot per device, shared with the tunnel. Nil
+	// in a test that builds a table alone.
+	slots *slots
 
 	enroll *appenroll.Identity
 	static appwire.KeyPair
@@ -190,6 +192,9 @@ func (s *sessions) open(message []byte) error {
 
 	sess := &session{transport: transport, handler: handler, appStatic: noise.RemoteStatic}
 	s.admit(sess)
+	// The device's one slot: a session it held before, here or through FTW
+	// Cloud, ends now.
+	sess.release = s.slots.claim(grant.DeviceID, func() { s.drop(sess) })
 
 	// Written after the session is registered, so a fast app whose first
 	// frame arrives immediately meets a session that exists.
@@ -202,20 +207,13 @@ func (s *sessions) open(message []byte) error {
 	return nil
 }
 
-// admit adds a session, evicting the oldest when the room is full.
-//
-// Evicting rather than refusing: the newcomer is the phone somebody is holding
-// right now, and the session it displaces is one whose socket the relay has
-// probably already reaped.
+// admit adds a session. There is no count to evict by: each device holds one
+// slot (see slots), so a phone that reconnects replaces its own session and
+// never another device's. The relay lets four streams into a room.
 func (s *sessions) admit(sess *session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	s.live = append(s.live, sess)
-	for len(s.live) > MaxSessions {
-		s.live[0].close()
-		s.live = s.live[1:]
-	}
 }
 
 // dropByAppKey terminates and forgets every session a revoked key is
