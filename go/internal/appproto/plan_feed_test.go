@@ -1,6 +1,7 @@
 package appproto
 
 import (
+	"encoding/hex"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -238,5 +239,29 @@ func TestALongPlanWithTwoCarsStillFitsABulkFrame(t *testing.T) {
 	}
 	if len(p.Slots) < 96 {
 		t.Fatalf("only %d slots left", len(p.Slots))
+	}
+}
+
+// planCarsVector is a plan with two cars as the box encodes it. The same hex
+// is decoded in srcfl/ftw-app's PlanPushTests, so a change here is a change
+// to the apps' wire.
+const planCarsVector = "a66372657607646361727382a76269646565617365656770656e64696e67f467746f74616c5768191ce86777696e646f777381a3627768191ce865656e644d731b000001a1325825806773746172744d731b000001a131ea4880686f75746461746564f469706c7567676564496ef56b73686f727466616c6c57681904b0a6626964666761726167656770656e64696e67f567746f74616c5768006777696e646f777380686f75746461746564f569706c7567676564496ef465736c6f747381a765677269645719012c66726561736f6e70657870656e736976655f696d706f72746773746172744d731b000001a131ea48806862617474657279573904af6a6475726174696f6e4d731a000dbba06a70726963654d696e6f7218576b736f635065726d696c6c65190280657374616c65f4686365696c696e6757f668757074696d654d731a0036ee80"
+
+func TestThePlanWithCarsVector(t *testing.T) {
+	short, price, soc := int64(1200), int64(87), int64(640)
+	p := Plan{
+		Rev: 7, UptimeMs: 3_600_000,
+		Slots: []PlanSlot{{StartMs: 1_791_838_800_000, DurationMs: 900_000, BatteryW: -1200, GridW: 300, PriceMinor: &price, Reason: ReasonExpensiveImport, SocPermille: &soc}},
+		Cars: []PlanCar{
+			{ID: "easee", PluggedIn: true, Windows: []PlanCarWindow{{StartMs: 1_791_838_800_000, EndMs: 1_791_846_000_000, Wh: 7400}}, TotalWh: 7400, ShortfallWh: &short},
+			{ID: "garage", Pending: true, Outdated: true, Windows: []PlanCarWindow{}},
+		},
+	}
+	b, err := Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(b); got != planCarsVector {
+		t.Fatalf("plan bytes moved:\n got %s\nwant %s", got, planCarsVector)
 	}
 }
