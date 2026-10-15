@@ -28,9 +28,10 @@ import (
 // not the device dev names is dropped.
 
 // TunSender sends one tun up the box's link to FTW Cloud. cloudlink.Link is
-// one. False means the message will not leave.
+// one. bulk says the message carries a lane 1 frame, which the link paces;
+// everything else goes first. False means the message will not leave.
 type TunSender interface {
-	SendTun(t cloudwire.Tun) bool
+	SendTun(t cloudwire.Tun, bulk bool) bool
 }
 
 const (
@@ -41,9 +42,12 @@ const (
 	// tunSessionInbox is the same, per session, so one phone's slow
 	// command never holds up another phone.
 	tunSessionInbox = 64
-	// tunOpensPerMinute bounds handshakes through the service, each of
-	// which costs the box up to four X25519 operations.
-	tunOpensPerMinute = 60
+	// tunOpensPerDevice bounds one device's handshakes through the service
+	// a minute, so one phone or one pairing cannot starve the others.
+	// tunOpensPerMinute bounds them all, each of which costs the box up to
+	// four X25519 operations.
+	tunOpensPerDevice = 12
+	tunOpensPerMinute = 240
 )
 
 // Tunnel is the box's table of sessions that FTW Cloud carries: one per
@@ -64,7 +68,7 @@ type Tunnel struct {
 	// ended opens nothing on the next.
 	gen   uint64
 	live  map[string]*tunSession
-	opens []time.Time
+	opens map[string][]time.Time
 }
 
 type tunIn struct {
@@ -90,7 +94,7 @@ func (u *Uplink) Tunnel() *Tunnel { return u.tunnel }
 func newTunnel(build HandlerBuilder, enroll *appenroll.Identity, slots *slots, log *slog.Logger) *Tunnel {
 	return &Tunnel{
 		build: build, enroll: enroll, static: enroll.StaticKey(), slots: slots, log: log, now: time.Now,
-		inbox: make(chan tunIn, tunInbox), live: map[string]*tunSession{},
+		inbox: make(chan tunIn, tunInbox), live: map[string]*tunSession{}, opens: map[string][]time.Time{},
 	}
 }
 
@@ -195,7 +199,7 @@ func (t *Tunnel) open(ctx context.Context, m tunIn) error {
 		t.send(end)
 		return errTunShort
 	}
-	if !t.allowOpen() {
+	if !t.allowOpen(m.t.Dev) {
 		return errTunRate
 	}
 	handshake, err := appwire.NewResponder(appwire.HandshakeOptions{
@@ -237,11 +241,8 @@ func (t *Tunnel) open(ctx context.Context, m tunIn) error {
 
 	ts := &tunSession{dev: m.t.Dev, sid: m.t.Sid, gen: m.gen,
 		in: make(chan []byte, tunSessionInbox), stop: make(chan struct{})}
-	write := func(msg []byte) error {
-		if !t.send(cloudwire.Tun{Dev: ts.dev, Sid: ts.sid, D: msg}) {
-			return errTunGone
-		}
-		return nil
+	send := func(msg []byte, bulk bool) bool {
+		return t.sendAs(cloudwire.Tun{Dev: ts.dev, Sid: ts.sid, D: msg}, bulk)
 	}
 	caller := apiauth.Caller{
 		Subject: subjectOf(grant.DeviceID),
@@ -250,7 +251,7 @@ func (t *Tunnel) open(ctx context.Context, m tunIn) error {
 		Scopes:  appproto.ScopesForGrant(grant.Role, grant.ParentRole),
 		Epoch:   grant.Epoch,
 	}
-	handler, err := t.build(sender{transport: transport, write: write}, caller,
+	handler, err := t.build(tunSender{transport: transport, send: send}, caller,
 		liveGrant{enroll: t.enroll, deviceID: grant.DeviceID})
 	if err != nil {
 		transport.Close()
@@ -294,6 +295,25 @@ func (t *Tunnel) open(ctx context.Context, m tunIn) error {
 }
 
 var errTunGone = errors.New("appuplink: the tunnel's uplink is gone")
+
+// tunSender encrypts one session's frames for the tunnel and says which are
+// bulk, so the link paces those and sends lane 0 (commands, their answers
+// and the ticks) first.
+type tunSender struct {
+	transport *appwire.Transport
+	send      func(msg []byte, bulk bool) bool
+}
+
+func (s tunSender) Send(frame []byte) error {
+	msg, err := s.transport.Encrypt(frame)
+	if err != nil {
+		return err
+	}
+	if !s.send(msg, len(frame) > 1 && frame[1] == appwire.LaneBulk) {
+		return errTunGone
+	}
+	return nil
+}
 
 // serve runs one session's frames in order, on its own goroutine.
 func (s *tunSession) serve(ctx context.Context, t *Tunnel) {
@@ -345,30 +365,42 @@ func (t *Tunnel) remove(s *tunSession) {
 	}
 }
 
-// send hands one tun to the link.
-func (t *Tunnel) send(m cloudwire.Tun) bool {
+// send hands one tun to the link, ahead of bulk: a handshake's answer and
+// an end.
+func (t *Tunnel) send(m cloudwire.Tun) bool { return t.sendAs(m, false) }
+
+func (t *Tunnel) sendAs(m cloudwire.Tun, bulk bool) bool {
 	t.mu.Lock()
 	s := t.sender
 	t.mu.Unlock()
-	return s != nil && s.SendTun(m)
+	return s != nil && s.SendTun(m, bulk)
 }
 
-// allowOpen counts a handshake against the minute's allowance.
-func (t *Tunnel) allowOpen() bool {
+// allowOpen counts a handshake against its device's allowance for the
+// minute, and against the box's.
+func (t *Tunnel) allowOpen(dev string) bool {
 	now := t.now()
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	kept := t.opens[:0]
-	for _, at := range t.opens {
-		if now.Sub(at) < time.Minute {
-			kept = append(kept, at)
+	total := 0
+	for d, list := range t.opens {
+		kept := list[:0]
+		for _, at := range list {
+			if now.Sub(at) < time.Minute {
+				kept = append(kept, at)
+			}
 		}
+		if len(kept) == 0 {
+			delete(t.opens, d)
+			continue
+		}
+		t.opens[d] = kept
+		total += len(kept)
 	}
-	t.opens = kept
-	if len(t.opens) >= tunOpensPerMinute {
+	if total >= tunOpensPerMinute || len(t.opens[dev]) >= tunOpensPerDevice {
 		return false
 	}
-	t.opens = append(t.opens, now)
+	t.opens[dev] = append(t.opens[dev], now)
 	return true
 }
 

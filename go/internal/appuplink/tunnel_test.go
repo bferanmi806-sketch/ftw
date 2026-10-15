@@ -21,7 +21,7 @@ type capturedTun struct {
 	ch chan cloudwire.Tun
 }
 
-func (c *capturedTun) SendTun(t cloudwire.Tun) bool {
+func (c *capturedTun) SendTun(t cloudwire.Tun, _ bool) bool {
 	select {
 	case c.ch <- t:
 		return true
@@ -378,4 +378,36 @@ func TestARevokeEndsATunnelSession(t *testing.T) {
 	if n := r.tunnel.dropByAppKey(removed[0].Key); n != 1 || r.tunnel.count() != 0 {
 		t.Fatalf("dropped %d, %d left", n, r.tunnel.count())
 	}
+}
+
+// One device cannot spend the handshakes every other phone needs.
+func TestOneDeviceCannotStarveTheOthersOfHandshakes(t *testing.T) {
+	r := newTunRig(t)
+	busy := r.pair(t)
+	busyDev := deviceIDOf(busy.staticPublic())
+	for i := range tunOpensPerDevice + 5 {
+		again := &appClient{static: busy.static}
+		m1, _ := again.message1(r.enroll.StaticKey().Public(), nil)
+		r.tunnel.Deliver(cloudwire.Tun{Dev: busyDev, Sid: uint32(100 + i), D: m1})
+	}
+	// Drain what the busy device got: its answers, and the ends of the
+	// sessions each new one replaced.
+	deadline := time.After(2 * time.Second)
+	answers := 0
+drain:
+	for {
+		select {
+		case m := <-r.out.ch:
+			if !m.Ended() {
+				answers++
+			}
+		case <-deadline:
+			break drain
+		}
+	}
+	if answers != tunOpensPerDevice {
+		t.Fatalf("the busy device got %d handshakes answered, want %d", answers, tunOpensPerDevice)
+	}
+	other := r.pair(t)
+	r.open(t, other, deviceIDOf(other.staticPublic()), 1, nil)
 }

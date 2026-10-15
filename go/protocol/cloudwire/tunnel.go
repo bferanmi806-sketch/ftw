@@ -40,6 +40,16 @@ const (
 	MaxTunFrame = TunDataMax + 256
 )
 
+// The service's limits on tun, per home and per direction: a burst, then a
+// rate. Past them it drops what is over; at twice them it closes. The box
+// paces its bulk under them and never meets them.
+const (
+	TunMsgBurst       = 240
+	TunMsgsPerSecond  = 60
+	TunByteBurst      = 4 << 20
+	TunBytesPerSecond = 512 << 10
+)
+
 // Tun is the tunnel message on /v1/box, both ways.
 type Tun struct {
 	// Dev is the roster device id whose session this is. The service sets

@@ -542,11 +542,15 @@ as it decides for the same session over the relay.
   `roster`, `stats.withdraw` and `bye` until the count falls. It sends no
   `hb` then, so data on phones ages to stale rather than looking current.
   `GET /api/cloud` shows the count and whether the budget is reached.
-- **`tun` has its own queue and budget.** Up to 64 `tun` messages wait for
-  the socket apart from the readable copy, and the newest is dropped when the
-  queue is full. They do not count against the 20 MB, so a phone at work
-  never stops `hb`. The box counts them against 250 MB per 24 hours of
-  uptime, and past that sends no `tun` until the count falls.
+- **`tun` has its own queues and budget.** `tun` waits for the socket apart
+  from the readable copy, in two queues. A `tun` carrying a lane 0 frame (a
+  command, its answer, a tick) goes first and is never held; bulk is paced
+  to nine tenths of the service's [tunnel limits](#tunnel), so the service
+  never drops for this box, and waits its turn. The queues hold 64 and 256;
+  the newest is dropped when one is full. They do not count against the
+  20 MB, so a phone at work never stops `hb`. The box counts them against
+  250 MB per 24 hours of uptime, and past that sends no `tun` until the count
+  falls.
 
 ## Roster
 
@@ -728,8 +732,9 @@ On the app session the phone and the service send `tun {sid, d}`, with no
   service or the relay, ends its older one.
 - **Ends.** An empty `d` ends `(dev, sid)`. The box sends one when it drops a
   session; the service sends one to the box when the phone's app session
-  ends, and one to the phone when the box's uplink ends, when the box does
-  not take `tun`, or when the phone names a session the box does not hold.
+  ends, and one to the phone when the box's uplink ends or is replaced by a
+  newer one, when the box does not take `tun`, or when the phone names a
+  session the box does not hold.
   Every tunnel session ends with the uplink that carried it.
 - **What the service can do.** Drop or delay a `tun`. It cannot read or forge
   `d`, and Noise transport refuses a replay. Every `cmd` carries its own
@@ -737,11 +742,14 @@ On the app session the phone and the service send `tun {sid, d}`, with no
 - **Order.** The service forwards a device's `tun` in the order it received
   them.
 - **Limits.** `d` is at most 16,408 bytes, one transport message around the
-  largest bulk bucket. Per home and per direction the service passes 240
-  messages in a burst and then 60 a second, and 4 MiB in a burst and then
-  512 KiB a second, as the relay does per stream; past that it drops `tun`
-  and counts the drop. `tun` does not count against the uplink's own message
-  rate.
+  largest bulk bucket; a phone that sends more is closed with 4400. Per home
+  and per direction the service passes 240 messages in a burst and then 60 a
+  second, and 4 MiB in a burst and then 512 KiB a second, the limits the
+  relay puts on a box's uplink. Past them it drops `tun` and counts the drop;
+  at twice them it closes the box's uplink, or the phone's session. `tun`
+  does not count against the uplink's own message rate. A box handshake
+  through the tunnel costs the box up to four X25519 operations, so the box
+  answers at most 12 a minute per device and 240 in all.
 
 ### Pairing through the service
 
@@ -1131,7 +1139,8 @@ the registry's roles would remove that copy.
 | Largest frame from the service to the box | 4 KiB; a `tun` frame 16,664 bytes |
 | Largest message from a phone | 4 KiB; a `tun` message 16,664 bytes and Noise's 24 |
 | `tun` per home and direction | 240 messages, then 60 a second; 4 MiB, then 512 KiB a second |
-| `tun` queue and budget on the box | 64 messages; 250 MB per 24 hours of uptime |
+| `tun` queues and budget on the box | 64 lane 0, 256 bulk paced to 90 % of the limits; 250 MB per 24 hours of uptime |
+| Box handshakes through the tunnel | 12 a minute per device, 240 in all |
 | Pending pairing entry | One QR code, for its own ten minutes; admits one handshake |
 | Box session up after TLS | One round trip: its message 1 rides in `now.tun` |
 | Sessions | 16 per home; one per device |

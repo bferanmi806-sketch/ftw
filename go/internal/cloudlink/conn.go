@@ -92,10 +92,18 @@ func (l *Link) backoff() time.Duration {
 // is gone.
 var errLinkEnded = errors.New("cloudlink: the end of the link is confirmed")
 
-// tunQueue is how many tun messages wait for the socket, apart from the
-// readable copy. When it is full the newest is dropped: Noise transport
-// carries its own counter, so a lost message costs the phone one frame.
-const tunQueue = 64
+// The tunnel's two queues, apart from the readable copy. Lane 0, a phone's
+// commands, their answers and the one-second ticks, goes first and is never
+// held. Bulk is paced under the service's limits and waits its turn. When a
+// queue is full the newest message is dropped: Noise transport carries its
+// own counter, so a lost message costs the phone one frame.
+const (
+	tunQueue     = 64
+	tunBulkQueue = 256
+	// tunPace is the share of the service's limits bulk is paced to, so
+	// the service never drops for a box that keeps to it.
+	tunPace = 0.9
+)
 
 // serve runs one connection: the handshake, then the reader here and the
 // sender on its own goroutine.
@@ -161,17 +169,17 @@ func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapsh
 		l.bumpRoster(ok.RosterSeq)
 	}
 
-	tunOut := make(chan []byte, tunQueue)
+	tunOut, tunBulk := make(chan []byte, tunQueue), make(chan []byte, tunBulkQueue)
 	l.mu.Lock()
 	l.connected = true
 	if l.opts.Tunnel != nil {
-		l.tunOut = tunOut
+		l.tunOut, l.tunBulk = tunOut, tunBulk
 	}
 	l.mu.Unlock()
 	l.log.Info("FTW Cloud uplink connected", "home", snap.home)
 	defer func() {
 		l.mu.Lock()
-		l.tunOut = nil
+		l.tunOut, l.tunBulk = nil, nil
 		l.mu.Unlock()
 		// Every session the uplink carried ends with it. The phone starts
 		// again on the next one.
@@ -191,7 +199,7 @@ func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapsh
 	}()
 	tunErr := make(chan error, 1)
 	go func() {
-		tunErr <- w.tunnel(ctx, tunOut)
+		tunErr <- w.tunnel(ctx, tunOut, tunBulk)
 	}()
 
 	// The first to end ends the others: cancel closes the socket under the
@@ -353,10 +361,11 @@ func (w *writer) send(snap grantSnapshot, t string, body any) error {
 	return nil
 }
 
-// SendTun queues one tun for the uplink. It never blocks, and false means the
-// message will not leave: no uplink, a full queue, or the tunnel's own budget
-// reached.
-func (l *Link) SendTun(t cloudwire.Tun) bool {
+// SendTun queues one tun for the uplink. bulk says it carries a lane 1 frame,
+// which is paced; anything else goes first. It never blocks, and false means
+// the message will not leave: no uplink, a full queue, or the tunnel's own
+// budget reached.
+func (l *Link) SendTun(t cloudwire.Tun, bulk bool) bool {
 	if len(t.D) > cloudwire.TunDataMax {
 		return false
 	}
@@ -374,12 +383,16 @@ func (l *Link) SendTun(t cloudwire.Tun) bool {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.tunOut == nil || l.tunBudget.total(l.uptimeMs()) >= tunBudgetBytes {
+	q := l.tunOut
+	if bulk {
+		q = l.tunBulk
+	}
+	if q == nil || l.tunBudget.total(l.uptimeMs()) >= tunBudgetBytes {
 		l.tunDropped++
 		return false
 	}
 	select {
-	case l.tunOut <- frame:
+	case q <- frame:
 		return true
 	default:
 		l.tunDropped++
@@ -387,22 +400,83 @@ func (l *Link) SendTun(t cloudwire.Tun) bool {
 	}
 }
 
+// pacer keeps bulk under the service's tun limits: a message bucket and a
+// byte bucket at tunPace of them. Taking may leave either in debt; the wait
+// is how long until it is paid.
+type pacer struct {
+	msgs, bytes float64
+	at          time.Time
+}
+
+func newPacer(now time.Time) *pacer {
+	return &pacer{msgs: tunPace * cloudwire.TunMsgBurst, bytes: tunPace * cloudwire.TunByteBurst, at: now}
+}
+
+func (p *pacer) take(n int, now time.Time) time.Duration {
+	dt := now.Sub(p.at).Seconds()
+	p.at = now
+	p.msgs = min(tunPace*cloudwire.TunMsgBurst, p.msgs+dt*tunPace*cloudwire.TunMsgsPerSecond) - 1
+	p.bytes = min(tunPace*cloudwire.TunByteBurst, p.bytes+dt*tunPace*cloudwire.TunBytesPerSecond) - float64(n)
+	wait := max(-p.msgs/(tunPace*cloudwire.TunMsgsPerSecond), -p.bytes/(tunPace*cloudwire.TunBytesPerSecond), 0)
+	return time.Duration(wait * float64(time.Second))
+}
+
 // tunnel writes queued tun frames as they come, beside the readable copy,
-// so a phone's session never waits for the copy's cadence. It counts them
+// so a phone's session never waits for the copy's cadence. Lane 0 goes
+// first and at once, even while bulk waits for the pacer. It counts both
 // against the tunnel's budget, never the copy's.
-func (w *writer) tunnel(ctx context.Context, out <-chan []byte) error {
+func (w *writer) tunnel(ctx context.Context, out, bulk <-chan []byte) error {
 	l := w.link
+	pace := newPacer(time.Now())
+	send := func(frame []byte) error {
+		if err := w.write(frame); err != nil {
+			return err
+		}
+		l.mu.Lock()
+		l.tunBudget.add(l.uptimeMs(), int64(len(frame)))
+		l.mu.Unlock()
+		return nil
+	}
 	for {
+		select {
+		case frame := <-out:
+			pace.take(len(frame), time.Now())
+			if err := send(frame); err != nil {
+				return err
+			}
+			continue
+		default:
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case frame := <-out:
-			if err := w.write(frame); err != nil {
+			pace.take(len(frame), time.Now())
+			if err := send(frame); err != nil {
 				return err
 			}
-			l.mu.Lock()
-			l.tunBudget.add(l.uptimeMs(), int64(len(frame)))
-			l.mu.Unlock()
+		case frame := <-bulk:
+			if wait := pace.take(len(frame), time.Now()); wait > 0 {
+				timer := time.NewTimer(wait)
+			held:
+				for {
+					select {
+					case <-ctx.Done():
+						timer.Stop()
+						return ctx.Err()
+					case urgent := <-out:
+						if err := send(urgent); err != nil {
+							timer.Stop()
+							return err
+						}
+					case <-timer.C:
+						break held
+					}
+				}
+			}
+			if err := send(frame); err != nil {
+				return err
+			}
 		}
 	}
 }

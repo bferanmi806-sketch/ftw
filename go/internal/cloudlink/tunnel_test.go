@@ -109,7 +109,7 @@ func TestTunGoesBothWaysApartFromTheBudget(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no tun reached the Tunnel")
 	}
-	if !h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 9, D: []byte{4, 5}}) {
+	if !h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 9, D: []byte{4, 5}}, false) {
 		t.Fatal("SendTun refused with the uplink up")
 	}
 	up := svc.waitFor(cloudwire.MsgTun, 3*time.Second)
@@ -126,7 +126,7 @@ func TestTunGoesBothWaysApartFromTheBudget(t *testing.T) {
 	h.link.mu.Lock()
 	h.link.tunBudget.add(h.link.uptimeMs(), tunBudgetBytes)
 	h.link.mu.Unlock()
-	if h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 9, D: []byte{6}}) {
+	if h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 9, D: []byte{6}}, false) {
 		t.Fatal("SendTun took a message past the tunnel's budget")
 	}
 	if h.link.Status().TunDropped == 0 {
@@ -143,7 +143,7 @@ func TestTunDoesNotSpendTheCopysBudget(t *testing.T) {
 	h.nextRoster(t)
 	before := h.link.Status().BytesLast24h
 	for range 10 {
-		if !h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 1, D: make([]byte, 4096)}) {
+		if !h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 1, D: make([]byte, 4096)}, false) {
 			t.Fatal("SendTun refused")
 		}
 		svc.waitFor(cloudwire.MsgTun, 3*time.Second)
@@ -159,10 +159,10 @@ func TestTunDoesNotSpendTheCopysBudget(t *testing.T) {
 func TestSendTunWithoutAnUplinkIsRefused(t *testing.T) {
 	svc := newFakeService(t)
 	h := newHarness(t, svc)
-	if h.link.SendTun(cloudwire.Tun{Dev: "x", Sid: 1, D: []byte{1}}) {
+	if h.link.SendTun(cloudwire.Tun{Dev: "x", Sid: 1, D: []byte{1}}, false) {
 		t.Fatal("SendTun took a message with no uplink")
 	}
-	if h.link.SendTun(cloudwire.Tun{Dev: "x", Sid: 1, D: make([]byte, cloudwire.TunDataMax+1)}) {
+	if h.link.SendTun(cloudwire.Tun{Dev: "x", Sid: 1, D: make([]byte, cloudwire.TunDataMax+1)}, false) {
 		t.Fatal("SendTun took a d over the limit")
 	}
 }
@@ -278,5 +278,58 @@ func TestHomeIsSetOnlyWhileLinked(t *testing.T) {
 	svc.waitFor(cloudwire.MsgBye, 3*time.Second)
 	if h.link.Home() != "" {
 		t.Fatal("a home while the link ends")
+	}
+}
+
+// Bulk is paced under the service's limits, and lane 0 never waits behind
+// it: a phone's command and its answer go first.
+func TestLaneZeroGoesAheadOfPacedBulk(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	h.nextRoster(t)
+	// More bulk than the pacer's burst lets through at once.
+	big := make([]byte, 16_384)
+	n := 0
+	for range 240 {
+		if h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 1, D: big}, true) {
+			n++
+		}
+	}
+	if n < 230 {
+		t.Fatalf("only %d of 240 bulk messages queued", n)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if !h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 2, D: []byte{1}}, false) {
+		t.Fatal("lane 0 was refused")
+	}
+	start := time.Now()
+	for {
+		env := svc.waitFor(cloudwire.MsgTun, 5*time.Second)
+		var m cloudwire.Tun
+		_ = cloudwire.Unmarshal(env.B, &m)
+		if m.Sid == 2 {
+			break
+		}
+	}
+	if waited := time.Since(start); waited > 500*time.Millisecond {
+		t.Fatalf("lane 0 waited %s behind bulk", waited)
+	}
+}
+
+// The pacer lets a burst through and then holds bulk to nine tenths of the
+// service's rate.
+func TestThePacerKeepsBulkUnderTheServicesLimits(t *testing.T) {
+	now := time.Unix(1_791_820_800, 0)
+	q := newPacer(now)
+	sent, at := 0, now
+	for at.Sub(now) < 10*time.Second {
+		at = at.Add(q.take(16_384, at))
+		sent++
+	}
+	limit := cloudwire.TunMsgBurst + 10*cloudwire.TunMsgsPerSecond
+	byteLimit := (cloudwire.TunByteBurst + 10*cloudwire.TunBytesPerSecond) / 16_384
+	if sent > limit || sent > byteLimit {
+		t.Fatalf("%d bulk messages of 16 KiB in 10 s, over the service's %d messages or %d by bytes", sent, limit, byteLimit)
 	}
 }
