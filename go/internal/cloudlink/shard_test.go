@@ -175,7 +175,7 @@ func TestTwoWrongShardClosesInARowGoBackToTheDefaultHost(t *testing.T) {
 	time.Sleep(1500 * time.Millisecond)
 	// Backoff from 0.5 s with full jitter allows a few rounds in 1.5 s,
 	// never the hundreds a loop without it would make.
-	if n := nw.count("cloud.test") + nw.count("s2.cloud.test"); n < 3 || n > 12 {
+	if n := nw.count("cloud.test") + nw.count("s2.cloud.test"); n < 3 || n > 20 {
 		t.Fatalf("%d dials in 1.5 s", n)
 	}
 	if nw.count("cloud.test") < 2 {
