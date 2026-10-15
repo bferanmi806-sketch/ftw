@@ -505,6 +505,10 @@ back `box.unreachable` until the box returns or an hour passes.
 - Two messages skip the period. The box looks at its source table every
   second, and a `live` whose table changed goes then, with `sources` and
   `fieldSources`. An `hb` goes when it is due.
+- While a `watch` is in force, a driver poll that changed `live` sends it at
+  once if the last `live` left a period ago or more, and otherwise when that
+  period ends. So the copy costs what it did, and a reading from a device
+  read once a second waits for nothing.
 - `plan` goes only when `decisionId` changes, `prices` only when its hash
   changes, `tiles` when a bucket closes, and `event` at once.
 - Every 15 minutes, and after a `resync`, the box sends a full `live` with
@@ -713,9 +717,31 @@ Noise session, in the app protocol's `hello_ok.cloud`.
 
 The phone's own session with its box, `ftw.session.v1` (Noise IK to the
 box's static key, as the app protocol specifies), rides inside the app
-session. Nothing in it changes: lane 0 keeps its buckets and its cadence, so
-the service sees when a message goes, not what it says or how large a command
-is.
+session. Its frames and buckets do not change, so the service sees when a
+message goes, not what it says or how large a command is. Its timing does:
+lane 0 goes as readings land, not on the relay's one-second pulse.
+
+### Lane 0 through the tunnel
+
+- When a driver finishes a poll that changed a field or a source's state,
+  the box sends a `delta`. It waits 5 ms for polls that finish with it, so
+  they go in one frame, and sends such frames at most five a second on
+  average, three at once.
+- When nothing has gone for the subscribed period, 1 s while the phone shows
+  the stream and 5 s while it is hidden, the box sends a `tick`, or a `delta`
+  if something changed. A hidden session gets only these.
+- Every frame keeps its bucket. Over the relay nothing changes: one frame per
+  pulse, every 1 s or 5 s.
+
+**What the service learns.** It cannot read a frame, and every frame is the
+same size. But while a phone watches, the time between frames shows when the
+house's readings change: how often the box reads its devices, and the
+stretches when nothing moved and only the beat went. It does not learn which
+reading changed, by how much, or which way. With the readable copy on, the
+service already reads the values in `live`, so this tells it nothing new.
+With the copy off it is new: the rhythm of the readings, for the minutes
+someone watches. While no phone has a session, nothing goes, and a hidden
+session sends every 5 s whatever happens.
 
 ### `tun`
 
@@ -1161,6 +1187,8 @@ the registry's roles would remove that copy.
 | Largest message from a phone | 4 KiB; a `tun` message 16,664 bytes and Noise's 24 |
 | `tun` per home and direction | 240 messages, then 60 a second; 4 MiB, then 512 KiB a second |
 | `tun` queues and budget on the box | 64 lane 0, 256 bulk paced to 90 % of the limits; 250 MB per 24 hours of uptime |
+| Lane 0 through the tunnel | On each poll that changed something, after 5 ms; at most 5 frames a second, 3 at once; a beat after 1 s quiet, 5 s while hidden |
+| `live` while watched | On each poll that changed it, at most once per period |
 | Box handshakes through the tunnel | 12 a minute per device, 240 in all |
 | Pending pairing entry | One QR code, for its own ten minutes; admits one handshake |
 | Box session up after TLS | One round trip: its message 1 rides in `now.tun` |

@@ -131,3 +131,37 @@ func TestAQuietTunnelSessionStillBeats(t *testing.T) {
 		t.Fatalf("beats %s apart, want about a second", gap)
 	}
 }
+
+// Drivers that each read once a second never wait for the pace; only a
+// stream faster than five frames a second does.
+func TestThePaceTakesThreeAtOnceAndFiveASecond(t *testing.T) {
+	t0 := time.Unix(1_760_000_000, 0)
+	p := pace{tokens: tunBurst, at: t0}
+	for i := range 3 {
+		if w := p.wait(t0); w != 0 {
+			t.Fatalf("frame %d of a burst waits %s", i, w)
+		}
+		p.take(t0)
+	}
+	if w := p.wait(t0); w != 200*time.Millisecond {
+		t.Fatalf("a fourth frame at once waits %s, want 200ms", w)
+	}
+
+	// A poll every 100 ms for ten seconds gets five frames a second.
+	sent := 0
+	next := t0
+	for at := t0; at.Before(t0.Add(10 * time.Second)); at = at.Add(100 * time.Millisecond) {
+		if at.Before(next) {
+			continue
+		}
+		if w := p.wait(at); w > 0 {
+			next = at.Add(w)
+			continue
+		}
+		p.take(at)
+		sent++
+	}
+	if sent < 49 || sent > 52 {
+		t.Fatalf("%d frames in ten seconds of polls every 100 ms, want about 50", sent)
+	}
+}

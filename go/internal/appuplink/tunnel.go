@@ -72,14 +72,17 @@ const (
 	// and pendingWait (session.go) how long one waits to prove itself.
 	tunPendingPerDevice = 4
 
-	// tunGather is how long an arrival waits for the polls that finish with
-	// it, so drivers that read together go in one frame.
-	tunGather = 20 * time.Millisecond
-	// tunSpacing is the least time between two frames an arrival pushes. A
-	// driver that reads ten times a second costs each phone five frames a
-	// second, and four phones stay well under the service's 60 tun a
+	// tunGather is how long an arrival waits for polls that finish with it,
+	// so drivers that read together go in one frame. One driver's poll is
+	// one arrival already.
+	tunGather = 5 * time.Millisecond
+	// tunRate and tunBurst bound the frames arrivals push: five a second on
+	// average, three at once. Drivers that each read once a second never
+	// wait; one that reads ten times a second costs each phone five frames
+	// a second, and four phones stay well under the service's 60 tun a
 	// second per home.
-	tunSpacing = 200 * time.Millisecond
+	tunRate  = 5
+	tunBurst = 3
 	// tunBeat is how often each session is asked whether it has been quiet
 	// for its subscribed period. Silence on the phone is at most the period
 	// plus this.
@@ -192,9 +195,9 @@ func (t *Tunnel) Run(ctx context.Context) {
 	defer beat.Stop()
 	defer t.Drop()
 	// flush is armed by an arrival and fires once its round is in and the
-	// last push is tunSpacing old. Nil while nothing waits.
+	// pace allows a frame. Nil while nothing waits.
 	var flush <-chan time.Time
-	var pushed time.Time
+	p := pace{tokens: tunBurst, at: time.Now()}
 	for {
 		select {
 		case <-ctx.Done():
@@ -203,10 +206,11 @@ func (t *Tunnel) Run(ctx context.Context) {
 			t.route(ctx, m)
 		case <-t.arrivals:
 			if flush == nil {
-				flush = time.After(max(tunGather, tunSpacing-time.Since(pushed)))
+				flush = time.After(max(tunGather, p.wait(time.Now())))
 			}
 		case <-flush:
-			flush, pushed = nil, time.Now()
+			flush = nil
+			p.take(time.Now())
 			t.each("push", (*appproto.Handler).Push)
 		case <-beat.C:
 			t.each("beat", (*appproto.Handler).Beat)
@@ -542,6 +546,32 @@ func (t *Tunnel) allowOpenLocked(dev string) bool {
 	}
 	t.opens[dev] = append(t.opens[dev], now)
 	return true
+}
+
+// pace is a token bucket: tunRate frames a second, tunBurst at once.
+type pace struct {
+	tokens float64
+	at     time.Time
+}
+
+func (p *pace) fill(now time.Time) {
+	p.tokens = min(tunBurst, p.tokens+now.Sub(p.at).Seconds()*tunRate)
+	p.at = now
+}
+
+// wait is how long until a frame may go.
+func (p *pace) wait(now time.Time) time.Duration {
+	p.fill(now)
+	if p.tokens >= 1 {
+		return 0
+	}
+	return time.Duration((1 - p.tokens) / tunRate * float64(time.Second))
+}
+
+// take spends one frame.
+func (p *pace) take(now time.Time) {
+	p.fill(now)
+	p.tokens--
 }
 
 // each runs one lane 0 step on every live session: Push or Beat.
