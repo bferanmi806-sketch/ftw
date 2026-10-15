@@ -778,6 +778,17 @@ func (l *Link) Status() Status {
 	return s
 }
 
+// Home is the home id at FTW Cloud while the box is linked, and "" when it
+// is not or its link is ending. A pairing QR that names the home reads it.
+func (l *Link) Home() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.link == nil || l.link.Ending {
+		return ""
+	}
+	return l.home
+}
+
 // Available reports whether this build names a service, and so can run the
 // uplink at all. Release builds without service keys cannot.
 func (l *Link) Available() bool { return len(l.opts.ServiceKeys) > 0 }

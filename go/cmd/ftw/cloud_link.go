@@ -362,7 +362,9 @@ func startCloudLink(
 		tunnel.Attach(link)
 	}
 	enroll.OnChange(link.RosterChanged)
+	// A code shown links the box at once, so a QR that names the home can.
 	enroll.OnPairingCode(link.RosterChanged)
+	enroll.SetHome(link.Home)
 	go func() {
 		if err := link.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Warn("FTW Cloud uplink stopped", "err", err)

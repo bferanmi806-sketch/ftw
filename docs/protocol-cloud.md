@@ -757,6 +757,23 @@ roster that lists the new device arrives, the session takes that entry
 without closing. If the pairing fails, the session ends when the entry's
 `ttlS` runs out.
 
+**The QR, v3.** A phone that has never reached the box needs the home id
+before any session with it. Pairing payload `v3` is `v2` with a sixth segment:
+
+```
+https://app.ftw.energy/p#v3.<box_noise_pub>.<pairing_code>.<lan_hint>.<rendezvous_secret>.<home>
+```
+
+`<home>` is base64url, without padding, of the home id's 26 ASCII
+characters, like the hint. The other five segments are `v2`'s, byte for byte,
+and everything stays in the fragment. The box shows `v2` until one constant,
+`appenroll.QRNamesHome`, turns `v3` on. It stays off until the apps parse
+`v3` in builds people have: ftw-app's `Enrollment.swift` and `Enrollment.kt`
+and ftw-webapp's `enrollment.ts` each take exactly five `v2` segments today,
+so an earlier `v3` would stop pairing on every shipped app. Until then a new
+phone learns the home id from `hello_ok.cloud` on its first session with the
+box, which the box sends from its first pairing on.
+
 ### Link
 
 - A box links when it first shows a QR pairing code, when a device that may

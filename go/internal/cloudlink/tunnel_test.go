@@ -260,3 +260,23 @@ func TestAGrantWaitsForAnEndingLink(t *testing.T) {
 		t.Fatalf("grant while the link ends: %v", err)
 	}
 }
+
+// A QR that names the home reads it here: empty until the box links, and
+// empty again while its link ends.
+func TestHomeIsSetOnlyWhileLinked(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	if h.link.Home() != "" {
+		t.Fatal("a home before the box linked")
+	}
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	if home := h.link.Home(); home == "" || home != h.link.Status().Home {
+		t.Fatalf("home %q, status %q", home, h.link.Status().Home)
+	}
+	h.nextRoster(t)
+	h.setRoster(func(r *fakeRosterState) { r.gone = true })
+	svc.waitFor(cloudwire.MsgBye, 3*time.Second)
+	if h.link.Home() != "" {
+		t.Fatal("a home while the link ends")
+	}
+}

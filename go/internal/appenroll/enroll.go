@@ -215,6 +215,9 @@ type Identity struct {
 	// onPairingCode hears about a phone's code minted, which puts a new
 	// code on the screen or takes one off it.
 	onPairingCode []func()
+	// home is the home id at FTW Cloud, for a QR that names it. See
+	// SetHome.
+	home func() string
 }
 
 // appMeta is what the box remembers about one paired phone.
