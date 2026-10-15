@@ -395,12 +395,15 @@ unredacted, and nothing is stored in the cloud.
 - **Logs.** The box keeps the time, the level and the box's own message
   text, scrubbed. A driver's free text never leaves: its line keeps the
   level, the driver's agent id and the attributes the allowlist below
-  keeps. Text is scrubbed of every name the configuration and the car store
-  know (site, drivers, devices, chargers, cars, VINs, identifiers, sources),
-  IP and MAC addresses, host names, URLs, e-mail addresses, quoted text,
-  serial-like words (letters and digits mixed, six or more), runs of seven or
-  more digits, and anything that looks like a credential: bearer and basic
-  headers, secret-named keys and long tokens.
+  keeps. Text is scrubbed of every name the configuration knows (site,
+  drivers, chargers, vehicles and their identifiers; the car store's names
+  join when the box has one), IP and MAC addresses, host names, URLs,
+  e-mail addresses, quoted text, serial-like words (letters and digits
+  mixed, six or more), runs of seven or more digits, and anything that
+  looks like a credential: bearer and basic headers, secret-named keys and
+  long tokens. A host name is a dotted name that ends in any two-letter
+  label, as every country's does, or in a common longer one such as `.com`
+  or `.xyz`. A code word such as `planner.prefs.set` ends in neither.
 - **Attributes.** A line's attributes keep only keys on the box's
   allowlist. A value survives when its key is allowed and the value is a
   flag, a duration, a short lowercase code word, or a number for a key the
@@ -409,7 +412,10 @@ unredacted, and nothing is stored in the cloud.
 - **Config.** Every secret-named key is replaced by `***`. Names become
   agent ids. Location, addresses, host names, URLs, serials, MAC addresses,
   vehicle and car ids, VINs, e-mail addresses and notification targets are
-  removed.
+  removed. A number stays only under a key that ends in its unit (`_w`,
+  `_kwh`, `_s`, `_pct`, `_soc` and the like) or names a known setting such
+  as `phases`; any other number goes, so a port, a Modbus unit id or an
+  account number does not leave.
 - **Vectors.** `go/protocol/testdata/redaction-vectors.json` holds lines in
   and out, so a change to the rules shows.
 
@@ -546,8 +552,15 @@ above and its approval key, and an agent can never reach them.
 - **Every route that widens access needs the house password,** from any
   address, loopback included: a driver's Lua and the session passthrough can
   both reach the box from inside it.
-- **Drivers never reach the box.** A driver's HTTP request to a loopback
-  address, or to an address of the box itself, is refused.
+- **Drivers never reach the box's API.** A driver's HTTP, TCP or WebSocket
+  connection to a port the API listens on is refused, whether it goes to a
+  loopback address or to an address of the box. The check runs on the
+  address dialled, after any name lookup. Other ports stay open: a driver
+  may talk to a helper on the box that its configuration names, such as a
+  bridge on `127.0.0.1:8787`. A reverse proxy, or Home Assistant ingress,
+  that serves the API on another port is not covered by this check. There
+  the house password still guards every widening route, and the proxy's
+  forwarding headers make those routes refuse.
 
 What the sign-in is worth today:
 
