@@ -203,9 +203,9 @@ type Link struct {
 	winners   map[string]winner
 	// tickets holds the service's TLS tickets, so a reconnect resumes and,
 	// over QUIC, sends its target as early data.
-	tickets tls.ClientSessionCache
-	lastSend  time.Time
-	budget    budget
+	tickets  tls.ClientSessionCache
+	lastSend time.Time
+	budget   budget
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
 	// the connection's tun writer. Nil while no uplink is up. tunBudget counts what left, apart from
 	// the readable copy's budget, and tunDropped what never did.
