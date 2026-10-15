@@ -167,7 +167,10 @@ A client starts QUIC first. If the QUIC handshake has not finished after
 250 ms, it also dials the WebSocket, takes the first that opens and closes
 the other. It remembers which won on each network for a day and starts the
 next time with that one, giving the other the same 250 ms; after a day QUIC
-goes first again, so a network that blocked UDP once is tried again. A box
+goes first again, so a network that blocked UDP once is tried again. A QUIC
+dial that loses to the WebSocket goes on for up to 3 s, only to learn: if it
+opens, QUIC goes first next time, so one lost packet does not keep QUIC
+second for a day. The session stays on the WebSocket either way. A box
 names its network by its local address; a phone by its path's interfaces
 and gateways, kept as a hash. A client
 says which carries it, by the registry's `cloud_transports`: `quic` or

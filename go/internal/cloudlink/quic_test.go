@@ -236,6 +236,82 @@ func TestTheWebSocketTakesOverWhenUDPIsBlocked(t *testing.T) {
 	}
 }
 
+// A slow QUIC path loses the race to the WebSocket, then opens: the uplink
+// stays on the WebSocket, and QUIC goes first on this network next time.
+func TestALateQUICTeachesThatUDPGetsThrough(t *testing.T) {
+	svc := newFakeService(t)
+	// The QUIC listener sits behind a proxy on the TCP port's UDP twin that
+	// holds every packet 400 ms, so QUIC opens well after the WebSocket.
+	back, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = back.Close() })
+	tr := &quic.Transport{Conn: back}
+	t.Cleanup(func() { _ = tr.Close() })
+	tc := svc.srv.TLS.Clone()
+	tc.NextProtos = []string{cloudwire.ALPNBox}
+	ln, err := tr.Listen(tc, &quic.Config{MaxIdleTimeout: cloudwire.QUICIdleTimeout, EnableDatagrams: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	front, err := net.ListenPacket("udp", svc.srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = front.Close() })
+	go slowProxy(front, back.LocalAddr(), 400*time.Millisecond)
+
+	h := newQUICHarness(t, svc)
+	h.grant(t, protocol.ScopeLiveRead)
+	waitUntil(t, "the uplink up", func() bool { return h.link.Status().Connected })
+	if got := h.link.Status().Transport; got != cloudwire.TransportWebSocket {
+		t.Fatalf("the slow path carried the uplink: %q", got)
+	}
+	addr, _ := h.link.quicAddr()
+	waitWithin(t, 5*time.Second, "QUIC learned", func() bool {
+		return h.link.preferred(localNetwork(addr)) == cloudwire.TransportQUIC
+	})
+}
+
+// slowProxy forwards UDP between clients of front and back, holding each
+// packet d.
+func slowProxy(front net.PacketConn, back net.Addr, d time.Duration) {
+	var mu sync.Mutex
+	ups := map[string]net.PacketConn{}
+	buf := make([]byte, 2048)
+	for {
+		n, from, err := front.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		pkt := append([]byte(nil), buf[:n]...)
+		mu.Lock()
+		up := ups[from.String()]
+		if up == nil {
+			if up, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+				mu.Unlock()
+				continue
+			}
+			ups[from.String()] = up
+			go func(up net.PacketConn, client net.Addr) {
+				b := make([]byte, 2048)
+				for {
+					n, _, err := up.ReadFrom(b)
+					if err != nil {
+						return
+					}
+					p := append([]byte(nil), b[:n]...)
+					time.AfterFunc(d, func() { _, _ = front.WriteTo(p, client) })
+				}
+			}(up, from)
+		}
+		mu.Unlock()
+		time.AfterFunc(d, func() { _, _ = up.WriteTo(pkt, back) })
+	}
+}
+
 // A tun carrying bulk goes on the bulk stream; lane 0 stays on the control
 // stream.
 func TestBulkTunTakesTheBulkStream(t *testing.T) {

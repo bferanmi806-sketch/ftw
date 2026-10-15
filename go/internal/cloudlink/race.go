@@ -43,7 +43,14 @@ func (l *Link) dial(ctx context.Context) (uplinkConn, error) {
 		first, second = second, first
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	// QUIC dials on a context of its own: when the WebSocket wins, a QUIC
+	// dial still under way goes on for learnFor, only to learn whether UDP
+	// gets through here. One lost packet should not keep QUIC second for a
+	// day.
+	wsCtx, cancelWS := context.WithCancel(ctx)
+	// Not ctx itself: the caller ends ctx as soon as dial returns, which
+	// would end the dial that is still learning.
+	quicCtx, cancelQUIC := context.WithTimeout(context.WithoutCancel(ctx), dialTimeout)
 	results := make(chan dialed, 2)
 	start := func(transport string) {
 		go func() {
@@ -51,11 +58,11 @@ func (l *Link) dial(ctx context.Context) (uplinkConn, error) {
 			var err error
 			if transport == cloudwire.TransportQUIC {
 				var q *quicConn
-				if q, err = dialQUIC(ctx, addr, l.tlsConfig(), nil); err == nil {
+				if q, err = dialQUIC(quicCtx, addr, l.tlsConfig(), nil); err == nil {
 					conn = q
 				}
 			} else {
-				conn, err = l.dialWebSocket(ctx)
+				conn, err = l.dialWebSocket(wsCtx)
 			}
 			results <- dialed{transport: transport, conn: conn, err: err}
 		}()
@@ -74,16 +81,13 @@ func (l *Link) dial(ctx context.Context) (uplinkConn, error) {
 			}
 		case r := <-results:
 			if r.err == nil {
-				cancel()
+				l.rememberWinner(network, r.transport)
 				if started == 2 {
-					// The loser may still open; close it once it does.
-					go func() {
-						if late := <-results; late.err == nil {
-							_ = late.conn.Close()
-						}
-					}()
+					l.afterRace(network, r.transport, results, cancelQUIC)
+				} else {
+					cancelQUIC()
 				}
-				l.remember(network, r.transport)
+				cancelWS()
 				return r.conn, nil
 			}
 			errs = append(errs, r.err)
@@ -93,11 +97,40 @@ func (l *Link) dial(ctx context.Context) (uplinkConn, error) {
 				continue
 			}
 			if len(errs) == 2 {
-				cancel()
+				cancelQUIC()
+				cancelWS()
 				return nil, errors.Join(errs...)
 			}
 		}
 	}
+}
+
+// learnFor is how long a QUIC dial that lost goes on.
+const learnFor = 3 * time.Second
+
+// afterRace waits for the loser. A QUIC dial that opens within learnFor
+// teaches that UDP gets through here, so QUIC goes first next time; either
+// way the loser is closed.
+func (l *Link) afterRace(network, won string, results <-chan dialed, cancelQUIC context.CancelFunc) {
+	go func() {
+		t := time.NewTimer(learnFor)
+		defer t.Stop()
+		defer cancelQUIC()
+		select {
+		case late := <-results:
+			if late.err == nil {
+				if late.transport == cloudwire.TransportQUIC && won == cloudwire.TransportWebSocket {
+					l.rememberWinner(network, cloudwire.TransportQUIC)
+				}
+				_ = late.conn.Close()
+			}
+		case <-t.C:
+			cancelQUIC()
+			if late := <-results; late.err == nil {
+				_ = late.conn.Close()
+			}
+		}
+	}()
 }
 
 func (l *Link) dialWebSocket(ctx context.Context) (uplinkConn, error) {
@@ -156,12 +189,11 @@ func (l *Link) preferred(network string) string {
 	return cloudwire.TransportQUIC
 }
 
-func (l *Link) remember(network, transport string) {
+func (l *Link) rememberWinner(network, transport string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.winners == nil {
 		l.winners = map[string]winner{}
 	}
 	l.winners[network] = winner{transport: transport, at: time.Now()}
-	l.transport = transport
 }
