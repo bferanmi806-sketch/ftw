@@ -1125,10 +1125,10 @@ func (m *Manager) AnchorVehicleSoC(id string, socPct float64) bool {
 	return m.AnchorVehicleSoCAt(id, socPct, time.Time{})
 }
 
-// AnchorVehicleSoCAt anchors a car reading at the time the car measured
-// it. Energy delivered since then moves the estimate past the reading, so
-// a cloud SoC that is half an hour old stays useful. A zero observedAt
-// means now. False when the session's energy at observedAt is unknown.
+// AnchorVehicleSoCAt anchors a qualified car reading at its measurement
+// time. Known energy delivered since then moves the estimate forward. When
+// history does not cover that time, adopt the reading without adding unknown
+// energy. A zero observedAt means now.
 func (m *Manager) AnchorVehicleSoCAt(id string, socPct float64, observedAt time.Time) bool {
 	m.sessionMu.Lock()
 	m.mu.Lock()
@@ -1150,16 +1150,14 @@ func (m *Manager) AnchorVehicleSoCAt(id string, socPct float64, observedAt time.
 		return false
 	}
 	deliveredAt := lp.deliveredWhSession
-	if !observedAt.IsZero() {
-		// A reading from before plug-in may predate a drive home.
-		if observedAt.Before(lp.connectionObservedAt.Add(-anchorBeforePlugSlack)) {
-			return false
-		}
-		var ok bool
-		if deliveredAt, ok = lp.deliveredAt(observedAt); !ok {
-			return false
+	if !observedAt.IsZero() && !observedAt.Before(lp.connectionObservedAt.Add(-anchorBeforePlugSlack)) {
+		if known, ok := lp.deliveredAt(observedAt); ok {
+			deliveredAt = known
 		}
 	}
+	// A reading before this connection or outside retained history carries
+	// no known energy delta. Keep its source time even in that raw fallback;
+	// returning false made the caller re-anchor it as a reading taken now.
 	reanchorSoCAtLocked(lp, socPct, deliveredAt, m.now())
 	if !observedAt.IsZero() {
 		// Compare car measurements by source time, not cloud delivery time.

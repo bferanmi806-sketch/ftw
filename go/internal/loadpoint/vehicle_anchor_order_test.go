@@ -69,3 +69,38 @@ func TestDelayedVehicleSoCUsesMeasurementOrder(t *testing.T) {
 		t.Fatal("a car reading measured after the manual correction cannot replace it")
 	}
 }
+
+func TestDelayedVehicleSoCWithoutHistoryKeepsMeasurementOrder(t *testing.T) {
+	for _, age := range []time.Duration{2 * time.Minute, 10 * time.Minute} {
+		t.Run(age.String(), func(t *testing.T) {
+			m := NewManager()
+			m.Load([]Config{{ID: "car", VehicleCapacityWh: 86500, PluginSoC: .60}})
+			received := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+			now := received
+			m.SetNowFn(func() time.Time { return now })
+			// A restart begins mid-session: no energy history before receipt.
+			m.Observe("car", true, 6000, 4000, true)
+			first, second := received.Add(-age), received.Add(-age/2)
+			if !m.AnchorVehicleSoCAt("car", .62, first) {
+				t.Fatal("qualified delayed reading refused")
+			}
+			now = now.Add(time.Minute)
+			m.Observe("car", true, 6000, 4500, true)
+			if !m.VehicleSoCSupersedes("car", second) {
+				t.Fatal("newer car measurement lost to raw fallback receipt time")
+			}
+			if got, fromVehicle := m.PlanningStartSoC("car", .68, second, true); !fromVehicle || math.Abs(got-.68) > 1e-9 {
+				t.Fatalf("unknown earlier energy changed planning SoC: %.12f, %t", got, fromVehicle)
+			}
+			if !m.AnchorVehicleSoCAt("car", .68, second) {
+				t.Fatal("newer delayed reading refused")
+			}
+			if st, _ := m.State("car"); math.Abs(st.CurrentSoC-.68) > 1e-9 || st.UpdatedAtMs != now.UnixMilli() {
+				t.Fatalf("raw fallback changed receipt time or added unknown energy: %+v", st)
+			}
+			if m.VehicleSoCSupersedes("car", first) || m.VehicleSoCSupersedes("car", second) {
+				t.Fatal("old or repeated cloud reading can replace the newer level")
+			}
+		})
+	}
+}
