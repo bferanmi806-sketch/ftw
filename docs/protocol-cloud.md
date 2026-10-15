@@ -434,6 +434,7 @@ The service never forwards these to a phone.
 | `devices` | [Device] | Every device paired with the box |
 | `grant` | Grant | What the owner granted |
 | `pending` | [Pending] | The pairing codes the box shows now, at most one |
+| `noise` | bstr, 32 B | The box's X25519 Noise static key, the one in its pairing QR code. FTW Cloud's `keys` part opens an agent's session to it, and trusts it only as signed here |
 
 **Device**
 
@@ -442,9 +443,9 @@ The service never forwards these to a phone.
 | `id` | text | The box's device id |
 | `key` | bstr, 32 B | The device's X25519 Noise static key |
 | `role` | text | `owner`, `viewer` or `watch`; for an agent row `agent`, `support` or `release` |
-| `scopes` | [text] | Scopes the box derives from the role. For a watch, only those its phone's role also carries now. The service holds no role table |
+| `scopes` | [text] | Scopes the box derives from the role. For a watch, only those its phone's role also carries now. Empty for an agent row: an agent reads the box, never the copy. The service holds no role table |
 | `epoch` | uint | The device's epoch on the box |
-| `tun` | bool | The device may open a session to the box through the service. True for a phone and a live agent row, false for a watch. It needs no grant |
+| `tun` | bool | The device may open a session to the box through the service's doors. True for a phone, false for a watch and for an agent row. It needs no grant |
 | `agent` | map, optional | Only on an agent row: its grant, below. See [Agents](agents.md) |
 
 **Agent**
@@ -457,8 +458,13 @@ The service never forwards these to a phone.
 | `expiresAtMs` | int | Wall clock. The service stops admitting the row then by its own clock, without waiting for a roster |
 | `principal` | map | `client`, `clientId` and `ticket`, below |
 
-The service must never admit an agent row through the relay, and may tighten
-its caps but never loosen them. The box checks all of it again on every call.
+**Who may open an agent's session.** Only the service's own `keys` part, the
+one place that holds agent keys, opens a session for an agent row, and only
+for a call through MCP that the agent's OAuth token allows. The service must
+never admit an agent row on `/v1/app`, `/v1/app/once` or the relay, whatever
+its `tun` says, and an agent row never reads the readable copy. It may
+tighten the caps but never loosen them. The box checks everything again on
+every call.
 
 **Caps**
 
@@ -1165,8 +1171,10 @@ copied them here and to the app.
 | `agent`, `support`, `release` | Roles for agent rows | `registry.yaml`, `roles` |
 | `ftw.logs.read`, `ftw.config.read`, `ftw.diag.run`, `ftw.dispatch.hold`, `ftw.goals.request`, `ftw.update.request` | Agent scopes | `registry.yaml`, `scopes` |
 | `agent` on each op | The scope that opens an op to an agent | `registry.yaml`, `ops` |
-| `E_GRANT_EXPIRED`, `E_OP_NOT_GRANTED`, `E_CAP_EXCEEDED`, `E_RATE_LIMITED`, `E_NEEDS_OWNER`, `E_BAD_SIGNATURE`, `E_NO_APPROVAL_KEY`, `E_NOT_FOUND` | Agents' refusals | `registry.yaml`, `errors` |
-| `agent.added`, `agent.request` | Push kinds, sent to every owner | `push-catalogue.yaml` |
+| `agent_args` | What an agent may put in each op, with a label for each argument | `registry.yaml`, new block |
+| `reads` | The reads an agent may send and the scope each needs | `registry.yaml`, new block |
+| `E_GRANT_EXPIRED`, `E_OP_NOT_GRANTED`, `E_CAP_EXCEEDED`, `E_RATE_LIMITED`, `E_NEEDS_OWNER`, `E_BAD_SIGNATURE`, `E_NO_APPROVAL_KEY`, `E_NOT_FOUND`, `E_CLOCK_SKEW` | Agents' refusals | `registry.yaml`, `errors` |
+| `agent.added`, `agent.request`, `agent.expiring`, `approval.key.set`, `owner.added` | Push kinds, sent to every owner | `push-catalogue.yaml` |
 
 Class names, field names, close codes and the signing tags are not registry
 names. They live here and in `go/protocol`, held by golden vectors in both

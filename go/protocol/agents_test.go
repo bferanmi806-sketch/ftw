@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -27,14 +28,30 @@ type approvalVectors struct {
 	BoxKey   string           `json:"boxKeyHex"`
 	DeviceID string           `json:"deviceId"`
 	Cases    []approvalVector `json:"cases"`
+	Offer    offerVector      `json:"offer"`
 }
 
 type approvalVector struct {
-	What      string `json:"what"`
-	BodyHex   string `json:"bodyHex"`
-	SignedHex string `json:"signedHex"`
-	SHA256Hex string `json:"sha256Hex"`
-	SigHex    string `json:"sigHex"`
+	What    string `json:"what"`
+	BodyHex string `json:"bodyHex"`
+	// ContextHex is what the box adds from its own records: the row's key
+	// for agent.widen, the stored request (CBOR) for agent.confirm.
+	ContextHex string `json:"contextHex,omitempty"`
+	SignedHex  string `json:"signedHex"`
+	SHA256Hex  string `json:"sha256Hex"`
+	SigHex     string `json:"sigHex"`
+}
+
+// offerVector is one signed offer: the link fragment's CBOR, what the offer
+// key signed, and the key.
+type offerVector struct {
+	Note      string `json:"note"`
+	Kid       string `json:"kid"`
+	PubHex    string `json:"pubHex"`
+	NowMs     int64  `json:"nowMs"`
+	SignedHex string `json:"signedOfferHex"`
+	OHex      string `json:"oHex"`
+	BytesHex  string `json:"signedBytesHex"`
 }
 
 const approvalVectorsPath = "testdata/approval-vectors.json"
@@ -82,6 +99,16 @@ func vectorAgentKey() []byte {
 	return key
 }
 
+// contexts is what the box adds to each signed message from its records.
+var contexts = map[string][]byte{}
+
+// vectorRequest is the stored request the confirmation vector approves.
+func vectorRequest() Request {
+	return Request{ReqID: "AAECAwQFBgcICQoLDA0ODw", Agent: "oKGio6Sl", Op: OpSetMode,
+		Args: map[string]any{"mode": "self_consumption"}, Why: "Cheaper tonight",
+		AtMs: 1_792_000_000_000, ExpiresAtMs: 1_792_000_000_000 + RequestTTLMs, State: RequestPending}
+}
+
 // vectorMessages builds every signed message, each with its signing bytes.
 func vectorMessages(t *testing.T, key *ecdsa.PrivateKey) []struct {
 	what string
@@ -116,7 +143,7 @@ func vectorMessages(t *testing.T, key *ecdsa.PrivateKey) []struct {
 		Caps:        Caps{PerMin: 6},
 		ExpiresAtMs: atMs + AgentMaxMs, AtMs: atMs,
 	}
-	confirm := AgentConfirm{ReqID: "r-2f1e0d", Approve: true, AtMs: atMs}
+	confirm := AgentConfirm{ReqID: vectorRequest().ReqID, Approve: true, AtMs: atMs}
 
 	keySetRaw, err := KeySetBytes(f, keySet)
 	if err != nil {
@@ -130,11 +157,11 @@ func vectorMessages(t *testing.T, key *ecdsa.PrivateKey) []struct {
 	if err != nil {
 		t.Fatal(err)
 	}
-	widenRaw, err := WidenBytes(f, widen)
+	widenRaw, err := WidenBytes(f, widen, vectorAgentKey())
 	if err != nil {
 		t.Fatal(err)
 	}
-	confirmRaw, err := ConfirmBytes(f, confirm)
+	confirmRaw, err := ConfirmBytes(f, confirm, vectorRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,6 +171,12 @@ func vectorMessages(t *testing.T, key *ecdsa.PrivateKey) []struct {
 		sign func(sig []byte) any
 		raw  []byte
 	}
+	reqRaw, err := Marshal(vectorRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	contexts[MsgAgentWiden] = vectorAgentKey()
+	contexts[MsgAgentConfirm] = reqRaw
 	return []msg{
 		{MsgApprovalKeySet, keySet, func(sig []byte) any { m := keySet; m.Sig = sig; return m }, keySetRaw},
 		{MsgAgentAdd, add, func(sig []byte) any { m := add; m.Sig = sig; return m }, addRaw},
@@ -172,10 +205,11 @@ func TestApprovalVectors(t *testing.T) {
 			}
 			sum := sha256.Sum256(m.raw)
 			out.Cases = append(out.Cases, approvalVector{
-				What: m.what, BodyHex: hex.EncodeToString(body), SignedHex: hex.EncodeToString(m.raw),
-				SHA256Hex: hex.EncodeToString(sum[:]), SigHex: hex.EncodeToString(sig),
+				What: m.what, BodyHex: hex.EncodeToString(body), ContextHex: hex.EncodeToString(contexts[m.what]),
+				SignedHex: hex.EncodeToString(m.raw), SHA256Hex: hex.EncodeToString(sum[:]), SigHex: hex.EncodeToString(sig),
 			})
 		}
+		out.Offer = makeOfferVector(t)
 		raw, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			t.Fatal(err)
@@ -212,7 +246,8 @@ func TestApprovalVectors(t *testing.T) {
 		// Rebuild the signed bytes from the body as it travels, which is
 		// what the box does.
 		body, _ := hex.DecodeString(c.BodyHex)
-		signed, sig := rebuild(t, c.What, f, body)
+		ctx, _ := hex.DecodeString(c.ContextHex)
+		signed, sig := rebuild(t, c.What, f, body, ctx)
 		if hex.EncodeToString(signed) != c.SignedHex {
 			t.Errorf("case %d (%s): the body does not rebuild the signed bytes", i, c.What)
 		}
@@ -229,7 +264,7 @@ func TestApprovalVectors(t *testing.T) {
 	}
 }
 
-func rebuild(t *testing.T, what string, f SignedFor, body []byte) ([]byte, []byte) {
+func rebuild(t *testing.T, what string, f SignedFor, body, ctx []byte) ([]byte, []byte) {
 	t.Helper()
 	var signed []byte
 	var sig []byte
@@ -250,14 +285,17 @@ func rebuild(t *testing.T, what string, f SignedFor, body []byte) ([]byte, []byt
 	case MsgAgentWiden:
 		var m AgentWiden
 		if err = Unmarshal(body, &m); err == nil {
-			signed, err = WidenBytes(f, m)
+			signed, err = WidenBytes(f, m, ctx)
 			sig = m.Sig
 		}
 	case MsgAgentConfirm:
 		var m AgentConfirm
+		var req Request
 		if err = Unmarshal(body, &m); err == nil {
-			signed, err = ConfirmBytes(f, m)
-			sig = m.Sig
+			if err = Unmarshal(ctx, &req); err == nil {
+				signed, err = ConfirmBytes(f, m, req)
+				sig = m.Sig
+			}
 		}
 	default:
 		t.Fatalf("no rebuild for %s", what)
@@ -339,5 +377,162 @@ func TestEnvelopeCarriesByOnlyWhenSet(t *testing.T) {
 	got, err := DecodeEnvelope(withBy)
 	if err != nil || got.By != "staff-42" {
 		t.Fatalf("by did not survive: %+v %v", got, err)
+	}
+}
+
+// The offer vector's key: fixed like the approval key, and nobody's offer key.
+func offerKey() *ecdsa.PrivateKey {
+	d, _ := new(big.Int).SetString("2f4e6a8c0b1d3e5f7a9c2b4d6e8f0a1c3e5b7d9f1a2c4e6b8d0f2a4c6e8b0d2f", 16)
+	key := &ecdsa.PrivateKey{D: d}
+	key.Curve = elliptic.P256()
+	key.X, key.Y = key.Curve.ScalarBaseMult(d.Bytes())
+	return key
+}
+
+const offerNowMs = 1_792_000_000_000
+
+func vectorOffer() GrantOffer {
+	return GrantOffer{
+		V: GrantOfferVersion, Key: vectorAgentKey(), Role: RoleAgent,
+		Client: "Claude", ClientID: "https://claude.ai/oauth/mcp-client-metadata", ClientHost: "claude.ai", Verified: true,
+		Scopes: []string{ScopeLiveRead, ScopePlanRead}, Ops: []string{}, TTLS: 30 * 24 * 60 * 60,
+		Code: "K7QF-2MXD", ExpMs: offerNowMs + 5*60*1000,
+	}
+}
+
+func makeOfferVector(t *testing.T) offerVector {
+	t.Helper()
+	key := offerKey()
+	o, err := Marshal(vectorOffer())
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err := OfferBytes(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := Marshal(SignedOffer{O: o, Kid: "test-1", Sig: signRaw(t, key, msg)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return offerVector{
+		Note: "docs/agents.md, The grant offer. The link fragment is base64url of signedOfferHex.",
+		Kid:  "test-1", PubHex: hex.EncodeToString(vectorPub(key)), NowMs: offerNowMs,
+		SignedHex: hex.EncodeToString(signed), OHex: hex.EncodeToString(o), BytesHex: hex.EncodeToString(msg),
+	}
+}
+
+func TestTheOfferVectorOpens(t *testing.T) {
+	raw, err := os.ReadFile(filepath.FromSlash(approvalVectorsPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vec approvalVectors
+	if err := json.Unmarshal(raw, &vec); err != nil {
+		t.Fatal(err)
+	}
+	pub, _ := hex.DecodeString(vec.Offer.PubHex)
+	keys := map[string][]byte{vec.Offer.Kid: pub}
+	signed, _ := hex.DecodeString(vec.Offer.SignedHex)
+	var so SignedOffer
+	if err := Unmarshal(signed, &so); err != nil {
+		t.Fatal(err)
+	}
+	o, err := OpenOffer(keys, so, vec.Offer.NowMs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Client != "Claude" || o.Home != "" || !o.Verified || o.ClientHost != "claude.ai" {
+		t.Errorf("offer %+v", o)
+	}
+	if want, _ := hex.DecodeString(vec.Offer.BytesHex); !bytes.Equal(mustOfferBytes(t, so.O), want) {
+		t.Error("the signed bytes changed")
+	}
+
+	if _, err := OpenOffer(keys, so, o.ExpMs); !errors.Is(err, ErrOfferExpired) {
+		t.Errorf("at its expiry: %v", err)
+	}
+	if _, err := OpenOffer(map[string][]byte{"other": pub}, so, vec.Offer.NowMs); !errors.Is(err, ErrOfferSignature) {
+		t.Errorf("an unknown kid: %v", err)
+	}
+	tampered := so
+	tampered.O = append([]byte(nil), so.O...)
+	tampered.O[len(tampered.O)-1] ^= 1
+	if _, err := OpenOffer(keys, tampered, vec.Offer.NowMs); !errors.Is(err, ErrOfferSignature) {
+		t.Errorf("a changed offer: %v", err)
+	}
+
+	// A support offer from any client but Sourceful's is refused, even signed.
+	sup := vectorOffer()
+	sup.Role = RoleSupport
+	sup.Ticket = "FTW-1"
+	so2 := signOffer(t, sup)
+	if _, err := OpenOffer(keys2(), so2, offerNowMs); !errors.Is(err, ErrOfferShape) {
+		t.Errorf("support from another client: %v", err)
+	}
+	sup.ClientID = SupportClientID
+	if _, err := OpenOffer(keys2(), signOffer(t, sup), offerNowMs); err != nil {
+		t.Errorf("support from Sourceful: %v", err)
+	}
+	// An offer that lives longer than ten minutes is refused.
+	long := vectorOffer()
+	long.ExpMs = offerNowMs + OfferTTLMs + 1
+	if _, err := OpenOffer(keys2(), signOffer(t, long), offerNowMs); !errors.Is(err, ErrOfferExpired) {
+		t.Errorf("a long offer: %v", err)
+	}
+}
+
+func keys2() map[string][]byte { return map[string][]byte{"test-1": vectorPub(offerKey())} }
+
+func signOffer(t *testing.T, o GrantOffer) SignedOffer {
+	t.Helper()
+	raw, err := Marshal(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return SignedOffer{O: raw, Kid: "test-1", Sig: signRaw(t, offerKey(), mustOfferBytes(t, raw))}
+}
+
+func mustOfferBytes(t *testing.T, o []byte) []byte {
+	t.Helper()
+	b, err := OfferBytes(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestConfirmBindsTheAgentTheOpAndTheArgs(t *testing.T) {
+	key := vectorKey()
+	pub := vectorPub(key)
+	f := vectorFor()
+	m := AgentConfirm{ReqID: vectorRequest().ReqID, Approve: true, AtMs: 1}
+	raw, err := ConfirmBytes(f, m, vectorRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := signRaw(t, key, raw)
+	for name, edit := range map[string]func(*Request){
+		"another agent": func(r *Request) { r.Agent = "someone" },
+		"another op":    func(r *Request) { r.Op = OpPlannerPrefsSet },
+		"other args":    func(r *Request) { r.Args = map[string]any{"mode": "idle"} },
+	} {
+		req := vectorRequest()
+		edit(&req)
+		other, _ := ConfirmBytes(f, m, req)
+		if VerifyApproval(pub, other, sig) == nil {
+			t.Errorf("%s: the confirmation still verifies", name)
+		}
+	}
+}
+
+func TestByNamesAPersonOrABot(t *testing.T) {
+	for by, want := range map[string]bool{
+		"staff:anna.k": true, "bot:triage": true, "staff:": false, "admin:x": false, "anna": false,
+		"staff:a b": false, "staff:" + strings.Repeat("a", 60): false,
+	} {
+		if ValidBy(by) != want {
+			t.Errorf("%q: want %v", by, want)
+		}
 	}
 }

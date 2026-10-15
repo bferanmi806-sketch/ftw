@@ -267,11 +267,65 @@ var RegistryOps = map[string]string{
 var RegistryAgentOps = map[string]string{
 	"site.mode.set":              "ftw.goals.request",
 	"planner.prefs.set":          "ftw.goals.request",
-	"battery.hold":               "ftw.dispatch.hold",
 	"loadpoint.hold":             "ftw.dispatch.hold",
-	"loadpoint.boost":            "ftw.dispatch.hold",
 	"loadpoint.soc.set":          "ftw.goals.request",
 	"loadpoint.surplus_only.set": "ftw.goals.request",
+}
+
+// RegistryAgentArgs is what an agent may put in each op it can name. The
+// box refuses any other key, kind or range, in a cmd and in an
+// agent.request, as it arrives.
+var RegistryAgentArgs = map[string][]AgentArg{
+	"loadpoint.hold": {
+		{Name: "id", Kind: "loadpoint", Unit: "", Required: true, Cap: "", Label: "Charger"},
+		{Name: "power_w", Kind: "power", Unit: "W", Min: bound(0), Required: false, Cap: "maxW", Label: "Charging power"},
+		{Name: "hold_s", Kind: "duration", Unit: "s", Min: bound(1), Required: false, Cap: "holdS", Label: "For how long"},
+		{Name: "phase_mode", Kind: "enum", Unit: "", Values: []string{"auto", "1p", "3p"}, Required: false, Cap: "", Label: "Phases"},
+		{Name: "clear", Kind: "bool", Unit: "", Required: false, Cap: "", Label: "Stop the agent's own hold"},
+	},
+	"loadpoint.soc.set": {
+		{Name: "id", Kind: "loadpoint", Unit: "", Required: true, Cap: "", Label: "Charger"},
+		{Name: "soc", Kind: "ratio", Unit: "", Min: bound(0), Max: bound(1), Required: true, Cap: "", Label: "The car's charge level"},
+	},
+	"loadpoint.surplus_only.set": {
+		{Name: "id", Kind: "loadpoint", Unit: "", Required: true, Cap: "", Label: "Charger"},
+		{Name: "surplus_only", Kind: "bool", Unit: "", Required: true, Cap: "", Label: "Charge from solar only"},
+	},
+	"planner.prefs.set": {
+		{Name: "safety_k", Kind: "number", Unit: "", Min: bound(0), Max: bound(2), Required: false, Cap: "", Label: "How cautious the plan is"},
+		{Name: "battery_export", Kind: "enum", Unit: "", Values: []string{"unknown", "not_allowed", "allowed"}, Required: false, Cap: "", Label: "Whether the battery may sell to the grid"},
+	},
+	"site.mode.set": {
+		{Name: "mode", Kind: "mode", Unit: "", Required: true, Cap: "", Label: "Operating mode"},
+	},
+}
+
+// RegistryReads maps each read an agent may send to the scope it needs.
+var RegistryReads = map[string]string{
+	// live.get — Readings and freshness now.
+	"live.get": "ftw.live.read",
+	// loadpoints.get — Each charger and the car on it.
+	"loadpoints.get": "ftw.live.read",
+	// cars.get — Each car's level and goal.
+	"cars.get": "ftw.live.read",
+	// plan.get — The plan and its reasons.
+	"plan.get": "ftw.plan.read",
+	// price.get — Electricity prices.
+	"price.get": "ftw.plan.read",
+	// hist.query — Stored history.
+	"hist.query": "ftw.history.read",
+	// health.get — The health summary.
+	"health.get": "ftw.health.read",
+	// drivers.get — Each driver's state.
+	"drivers.get": "ftw.health.read",
+	// events.get — Recent events.
+	"events.get": "ftw.events.read",
+	// logs.get — A log excerpt the box redacts.
+	"logs.get": "ftw.logs.read",
+	// config.get — A configuration section the box redacts.
+	"config.get": "ftw.config.read",
+	// diag.run — A check that changes nothing.
+	"diag.run": "ftw.diag.run",
 }
 
 // Error codes. The box sends the code and machine-readable args; the app
@@ -321,8 +375,10 @@ const (
 	ErrBadSignature = "E_BAD_SIGNATURE"
 	// ErrNoApprovalKey — This phone has no approval key on the box.
 	ErrNoApprovalKey = "E_NO_APPROVAL_KEY"
-	// ErrNotFound — No such agent or request.
+	// ErrNotFound — Nothing by that id or name.
 	ErrNotFound = "E_NOT_FOUND"
+	// ErrClockSkew — The approval's time is too far from the box's.
+	ErrClockSkew = "E_CLOCK_SKEW"
 )
 
 // ErrorRetryable reports whether the app should offer a retry for a code.
@@ -350,6 +406,7 @@ var ErrorRetryable = map[string]bool{
 	ErrBadSignature:       false,
 	ErrNoApprovalKey:      false,
 	ErrNotFound:           false,
+	ErrClockSkew:          true,
 }
 
 // SourceState says whether a device is answering. It is orthogonal to the

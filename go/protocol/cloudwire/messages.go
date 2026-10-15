@@ -274,6 +274,10 @@ type Roster struct {
 	// first session through the service, for a phone the roster does not
 	// list yet.
 	Pending []Pending `cbor:"pending"`
+	// Noise is the box's X25519 Noise static key, the one in its pairing
+	// QR code. FTW Cloud's keys part opens an agent's session to it, and
+	// trusts it only as signed here, by the home's key.
+	Noise []byte `cbor:"noise"`
 }
 
 // Device is one paired phone.

@@ -59,7 +59,25 @@ type Registry struct {
 	// with FTW Cloud, and what for.
 	CloudScopes   []string `yaml:"cloud_scopes"`
 	CloudPurposes []string `yaml:"cloud_purposes"`
-	Resolutions   map[string]struct {
+	// AgentArgs is what an agent may put in each op it can name, and
+	// Reads the reads it may send with the scope each needs.
+	AgentArgs map[string][]struct {
+		Name     string   `yaml:"name"`
+		Kind     string   `yaml:"kind"`
+		Unit     string   `yaml:"unit"`
+		Min      *float64 `yaml:"min"`
+		Max      *float64 `yaml:"max"`
+		Values   []string `yaml:"values"`
+		Required bool     `yaml:"required"`
+		Cap      string   `yaml:"cap"`
+		Label    string   `yaml:"label"`
+	} `yaml:"agent_args"`
+	Reads []struct {
+		Msg   string `yaml:"msg"`
+		Scope string `yaml:"scope"`
+		Desc  string `yaml:"desc"`
+	} `yaml:"reads"`
+	Resolutions map[string]struct {
 		TileSpanMs    int64  `yaml:"tile_span_ms"`
 		RetentionDays int    `yaml:"retention_days"`
 		Source        string `yaml:"source"`
@@ -98,6 +116,8 @@ func Generate(raw []byte) ([]byte, error) {
 	writeRoleNames(&b, reg)
 	writeCloud(&b, reg)
 	writeOps(&b, reg)
+	writeAgentArgs(&b, reg)
+	writeReads(&b, reg)
 	writeErrors(&b, reg)
 	writeSourceStates(&b, reg)
 	writeResolutions(&b, reg)
@@ -332,6 +352,48 @@ func writeOps(b *bytes.Buffer, reg Registry) {
 			continue
 		}
 		fmt.Fprintf(b, "\t%q: %q,\n", o.Name, o.Agent)
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeAgentArgs emits what an agent may put in each op, as data.
+func writeAgentArgs(b *bytes.Buffer, reg Registry) {
+	ops := make([]string, 0, len(reg.AgentArgs))
+	for op := range reg.AgentArgs {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+	b.WriteString("// RegistryAgentArgs is what an agent may put in each op it can name. The\n")
+	b.WriteString("// box refuses any other key, kind or range, in a cmd and in an\n")
+	b.WriteString("// agent.request, as it arrives.\n")
+	b.WriteString("var RegistryAgentArgs = map[string][]AgentArg{\n")
+	for _, op := range ops {
+		fmt.Fprintf(b, "\t%q: {\n", op)
+		for _, a := range reg.AgentArgs[op] {
+			fmt.Fprintf(b, "\t\t{Name: %q, Kind: %q, Unit: %q", a.Name, a.Kind, a.Unit)
+			if a.Min != nil {
+				fmt.Fprintf(b, ", Min: bound(%v)", *a.Min)
+			}
+			if a.Max != nil {
+				fmt.Fprintf(b, ", Max: bound(%v)", *a.Max)
+			}
+			if len(a.Values) > 0 {
+				fmt.Fprintf(b, ", Values: %#v", a.Values)
+			}
+			fmt.Fprintf(b, ", Required: %t, Cap: %q, Label: %q},\n", a.Required, a.Cap, a.Label)
+		}
+		b.WriteString("\t},\n")
+	}
+	b.WriteString("}\n\n")
+}
+
+// writeReads emits each read an agent may send with the scope it needs.
+func writeReads(b *bytes.Buffer, reg Registry) {
+	b.WriteString("// RegistryReads maps each read an agent may send to the scope it needs.\n")
+	b.WriteString("var RegistryReads = map[string]string{\n")
+	for _, r := range reg.Reads {
+		fmt.Fprintf(b, "\t// %s — %s.\n", r.Msg, r.Desc)
+		fmt.Fprintf(b, "\t%q: %q,\n", r.Msg, r.Scope)
 	}
 	b.WriteString("}\n\n")
 }

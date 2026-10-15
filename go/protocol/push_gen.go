@@ -20,6 +20,9 @@ const (
 	PushCloudRevoked            = "cloud.revoked"
 	PushAgentAdded              = "agent.added"
 	PushAgentRequest            = "agent.request"
+	PushAgentExpiring           = "agent.expiring"
+	PushApprovalKeySet          = "approval.key.set"
+	PushOwnerAdded              = "owner.added"
 )
 
 // PushSentence is one lock-screen sentence, exactly as the app wrote it.
@@ -43,4 +46,7 @@ var PushSentences = map[string]PushSentence{
 	PushCloudRevoked:            {Title: "FTW Cloud is off", Body: "Your box stopped sharing with FTW Cloud and asked it to delete its copy."},
 	PushAgentAdded:              {Title: "New access to your box", Body: "You gave an assistant or Sourceful access. See who has access in the app."},
 	PushAgentRequest:            {Title: "Waiting for your answer", Body: "An assistant asks to change a setting. Open FTW to confirm or decline."},
+	PushAgentExpiring:           {Title: "Access ends tomorrow", Body: "An assistant's or Sourceful's access to your box runs out in a day. Renew it in the app if it should go on."},
+	PushApprovalKeySet:          {Title: "A phone can now approve access", Body: "A phone set up the key it uses to approve access to your box. If that was not you, remove the phone in the app."},
+	PushOwnerAdded:              {Title: "A new owner", Body: "A phone was paired as an owner of your box. If that was not you, remove it in the app."},
 }

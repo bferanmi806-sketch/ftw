@@ -8,7 +8,17 @@ import (
 	"fmt"
 	"math/big"
 	"slices"
+	"strings"
+
+	"github.com/fxamacker/cbor/v2"
 )
+
+// strictDec decodes a signed body: a key it does not know, or a key twice,
+// is a body the box will not sign off on.
+var strictDec, _ = cbor.DecOptions{
+	DupMapKey:         cbor.DupMapKeyEnforcedAPF,
+	ExtraReturnErrors: cbor.ExtraDecErrorUnknownField,
+}.DecMode()
 
 // Agents: grants an owner gives to an assistant, to Sourceful support for one
 // ticket, or to the release check. docs/agents.md is the normative text; this
@@ -25,7 +35,9 @@ const (
 	MsgAgentRequest   = "agent.request"
 	MsgAgentConfirm   = "agent.confirm"
 	MsgAgentOK        = "agent.ok"
-	MsgAuditGet       = "audit.get"
+	// MsgAgentDecided tells an agent's open session how its request ended.
+	MsgAgentDecided = "agent.decided"
+	MsgAuditGet     = "audit.get"
 
 	MsgHealthGet = "health.get"
 	MsgHealth    = "health"
@@ -37,6 +49,18 @@ const (
 	MsgConfig    = "config"
 	MsgDiagRun   = "diag.run"
 	MsgDiag      = "diag"
+
+	// The typed reads, whose answers name nothing. live, loadpoints and
+	// cars carry FTW Cloud's class bodies (cloudwire.Live, LP and Cars)
+	// with the box's agent ids in place of the copy's.
+	MsgLiveGet       = "live.get"
+	MsgLive          = "live"
+	MsgLoadpointsGet = "loadpoints.get"
+	MsgLoadpoints    = "loadpoints"
+	MsgCarsGet       = "cars.get"
+	MsgCars          = "cars"
+	MsgDriversGet    = "drivers.get"
+	MsgDrivers       = "drivers"
 )
 
 // TerminateExpired ends an agent's session when its grant runs out.
@@ -94,6 +118,10 @@ const (
 	AuditDaysKept = 90
 	// ByMax bounds the staff id a support call carries.
 	ByMax = 64
+	// ReqIDBytes is a request id's randomness: 128 bits.
+	ReqIDBytes = 16
+	// OfferTTLMs is the longest a signed offer may live.
+	OfferTTLMs int64 = 10 * 60 * 1000
 	// PrincipalFieldMax bounds each principal field.
 	PrincipalFieldMax = 256
 )
@@ -137,6 +165,9 @@ type ApprovalKeySet struct {
 	Pub  []byte `cbor:"pub"`
 	AtMs int64  `cbor:"atMs"`
 	Sig  []byte `cbor:"sig"`
+	// PrevSig is the phone's current key's signature over the same bytes.
+	// Replacing a key needs it.
+	PrevSig []byte `cbor:"prevSig,omitempty"`
 }
 
 // AgentAdd grants access.
@@ -166,21 +197,87 @@ type AgentWiden struct {
 
 // GrantOffer is what FTW Cloud's consent page offers the owner: the agent's
 // key and the rights its client asks for (docs/agents.md, The grant offer).
-// It travels as CBOR, base64url without padding, in a link's fragment. The
-// owner may grant less than it asks.
+// It travels signed, as SignedOffer. The owner may grant less than it asks.
 type GrantOffer struct {
-	V        uint64   `cbor:"v"`
-	Home     string   `cbor:"home"`
-	Key      []byte   `cbor:"key"`
-	Role     string   `cbor:"role"`
-	Client   string   `cbor:"client"`
-	ClientID string   `cbor:"clientId"`
-	Scopes   []string `cbor:"scopes"`
-	Ops      []string `cbor:"ops"`
-	Caps     Caps     `cbor:"caps"`
-	TTLS     uint64   `cbor:"ttlS"`
-	Ticket   string   `cbor:"ticket,omitempty"`
-	Code     string   `cbor:"code"`
+	V uint64 `cbor:"v"`
+	// Home is empty: the owner picks the home in the app or on the box page.
+	// A box takes an offer whose home is empty or its own.
+	Home string `cbor:"home"`
+	Key  []byte `cbor:"key"`
+	Role string `cbor:"role"`
+	// Client is the name the client gives itself. ClientHost is the host of
+	// its metadata document or redirect URI, and Verified says FTW Cloud
+	// knows the client by its own list. The app shows all three.
+	Client     string   `cbor:"client"`
+	ClientID   string   `cbor:"clientId"`
+	ClientHost string   `cbor:"clientHost"`
+	Verified   bool     `cbor:"verified"`
+	Scopes     []string `cbor:"scopes"`
+	Ops        []string `cbor:"ops"`
+	Caps       Caps     `cbor:"caps"`
+	TTLS       uint64   `cbor:"ttlS"`
+	Ticket     string   `cbor:"ticket"`
+	// Code is what the consent page shows, for the owner to type or compare.
+	Code string `cbor:"code"`
+	// ExpMs is when the offer stops being good, wall clock, at most
+	// OfferTTLMs after FTW Cloud made it.
+	ExpMs int64 `cbor:"exp"`
+}
+
+// SignedOffer is an offer as it travels: O is the offer's deterministic
+// CBOR, Sig FTW Cloud's offer key's signature over OfferBytes(O), and Kid
+// names that key. It goes base64url, without padding, in a link's fragment.
+type SignedOffer struct {
+	O   []byte `cbor:"o"`
+	Kid string `cbor:"kid"`
+	Sig []byte `cbor:"sig"`
+}
+
+// OfferTag starts what an offer key signs.
+const OfferTag = "ftw.offer.v1"
+
+// SupportClientID is the one client a support offer may come from: the
+// support tooling's client at FTW Cloud.
+const SupportClientID = "https://cloud.ftw.energy/clients/sourceful-support"
+
+// Errors from reading a signed offer.
+var (
+	ErrOfferSignature = errors.New("protocol: the offer is not signed by a pinned offer key")
+	ErrOfferExpired   = errors.New("protocol: the offer has expired")
+	ErrOfferShape     = errors.New("protocol: the offer is malformed")
+)
+
+// OfferBytes is what an offer key signs: ["ftw.offer.v1", o].
+func OfferBytes(o []byte) ([]byte, error) {
+	return encMode.Marshal([]any{OfferTag, o})
+}
+
+// OpenOffer checks a signed offer against pinned offer keys (kid → SEC1
+// P-256 point) and the wall clock, and returns the offer. A support offer
+// must come from SupportClientID.
+func OpenOffer(keys map[string][]byte, so SignedOffer, nowMs int64) (GrantOffer, error) {
+	pub, ok := keys[so.Kid]
+	if !ok {
+		return GrantOffer{}, ErrOfferSignature
+	}
+	msg, err := OfferBytes(so.O)
+	if err != nil {
+		return GrantOffer{}, ErrOfferShape
+	}
+	if VerifyApproval(pub, msg, so.Sig) != nil {
+		return GrantOffer{}, ErrOfferSignature
+	}
+	var o GrantOffer
+	if err := strictDec.Unmarshal(so.O, &o); err != nil || o.V != GrantOfferVersion || len(o.Key) != 32 {
+		return GrantOffer{}, ErrOfferShape
+	}
+	if nowMs >= o.ExpMs || o.ExpMs > nowMs+OfferTTLMs {
+		return GrantOffer{}, ErrOfferExpired
+	}
+	if o.Role == RoleSupport && o.ClientID != SupportClientID {
+		return GrantOffer{}, ErrOfferShape
+	}
+	return o, nil
 }
 
 // GrantOfferVersion is GrantOffer.V.
@@ -190,6 +287,23 @@ const GrantOfferVersion = 1
 type AgentRevoke struct {
 	ID string `cbor:"id"`
 }
+
+// AgentArg is one argument an agent may put in an op, from the registry's
+// agent_args. Min and Max bound a number; Cap names the grant's cap that
+// bounds it as well.
+type AgentArg struct {
+	Name     string
+	Kind     string
+	Unit     string
+	Min      *float64
+	Max      *float64
+	Values   []string
+	Required bool
+	Cap      string
+	Label    string
+}
+
+func bound(v float64) *float64 { return &v }
 
 // AgentRequest is an agent asking for a durable change.
 type AgentRequest struct {
@@ -224,6 +338,15 @@ type ApprovalKeyInfo struct {
 	SetAtMs  int64  `cbor:"setAtMs" json:"setAtMs"`
 }
 
+// AgentDecided is how a request ended, sent to the agent's open session.
+// Result is the command's outcome when the request ran.
+type AgentDecided struct {
+	ReqID  string     `cbor:"reqId"`
+	State  string     `cbor:"state"`
+	CmdID  string     `cbor:"cmdId,omitempty"`
+	Result *CmdResult `cbor:"result,omitempty"`
+}
+
 // AgentList is agent.ok's body for agent.list. An agent sees its own row.
 type AgentList struct {
 	Agents   []AgentRow        `cbor:"agents" json:"agents"`
@@ -248,6 +371,8 @@ type AuditRow struct {
 	What      string `cbor:"what" json:"what"`
 	Target    string `cbor:"target" json:"target"`
 	Result    string `cbor:"result" json:"result"`
+	// Count folds an agent's reads: how many of what in that minute.
+	Count uint64 `cbor:"count" json:"count"`
 }
 
 // AuditPage is agent.ok's body for audit.get.
@@ -256,10 +381,41 @@ type AuditPage struct {
 	More bool       `cbor:"more" json:"more"`
 }
 
-// LogsGet asks for a redacted log excerpt.
+// LogsGet asks for a redacted log excerpt: lines older than BeforeMs, or
+// newer than AfterMs, newest first up to N.
 type LogsGet struct {
-	N     uint64 `cbor:"n,omitempty"`
-	Level string `cbor:"level,omitempty"`
+	N        uint64 `cbor:"n,omitempty"`
+	Level    string `cbor:"level,omitempty"`
+	BeforeMs int64  `cbor:"beforeMs,omitempty"`
+	AfterMs  int64  `cbor:"afterMs,omitempty"`
+}
+
+// EventsGet asks for recent events, with the same cursors as LogsGet.
+type EventsGet struct {
+	N        uint64 `cbor:"n,omitempty"`
+	BeforeMs int64  `cbor:"beforeMs,omitempty"`
+	AfterMs  int64  `cbor:"afterMs,omitempty"`
+}
+
+// Events is the answer to events.get: FTW Cloud's event bodies, oldest
+// first. More says older events remain.
+type Events struct {
+	Events []cbor.RawMessage `cbor:"events"`
+	More   bool              `cbor:"more"`
+}
+
+// DriverState is one driver in drivers.get, by its opaque source id.
+type DriverState struct {
+	Src   string `cbor:"src"`
+	Kind  string `cbor:"kind"`
+	State string `cbor:"state"`
+	// AgeMs is the time since its last good reading, or -1 for never.
+	AgeMs int64 `cbor:"ageMs"`
+}
+
+// Drivers is the answer to drivers.get.
+type Drivers struct {
+	Drivers []DriverState `cbor:"drivers"`
 }
 
 // LogLine is one redacted line. Src is an opaque source id for a driver's
@@ -271,11 +427,27 @@ type LogLine struct {
 	Msg   string `cbor:"msg"`
 }
 
-// Logs is the answer to logs.get. Dropped counts lines left out to stay
-// within the limits.
+// Logs is the answer to logs.get, oldest first. Dropped counts lines left
+// out to fit one frame; More says older lines remain.
 type Logs struct {
 	Lines   []LogLine `cbor:"lines"`
 	Dropped uint64    `cbor:"dropped"`
+	More    bool      `cbor:"more"`
+}
+
+// ValidBy says whether a support call's by is well formed: staff:<id> for a
+// person or bot:<name> for Sourceful's own tooling.
+func ValidBy(by string) bool {
+	kind, id, ok := strings.Cut(by, ":")
+	if !ok || (kind != "staff" && kind != "bot") || id == "" || len(by) > ByMax {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._@-", c)) {
+			return false
+		}
+	}
+	return true
 }
 
 // --------------------------------------------------------------------------
@@ -345,15 +517,36 @@ func AddBytes(f SignedFor, m AgentAdd) ([]byte, error) {
 		capsArray(m.Caps), m.ExpiresAtMs, m.Principal.Client, m.Principal.ClientID, m.Principal.Ticket)
 }
 
-// WidenBytes is what agent.widen signs.
-func WidenBytes(f SignedFor, m AgentWiden) ([]byte, error) {
-	return ApprovalBytes(MsgAgentWiden, f, m.AtMs, m.ID, m.Epoch, emptyIfNil(m.Scopes), emptyIfNil(m.Ops),
+// WidenBytes is what agent.widen signs. key is the row's whole key, which
+// the phone read from agent.list: an id and an epoch alone could name
+// another row that took the same id.
+func WidenBytes(f SignedFor, m AgentWiden, key []byte) ([]byte, error) {
+	return ApprovalBytes(MsgAgentWiden, f, m.AtMs, m.ID, key, m.Epoch, emptyIfNil(m.Scopes), emptyIfNil(m.Ops),
 		capsArray(m.Caps), m.ExpiresAtMs)
 }
 
-// ConfirmBytes is what agent.confirm signs to approve.
-func ConfirmBytes(f SignedFor, m AgentConfirm) ([]byte, error) {
-	return ApprovalBytes(MsgAgentConfirm, f, m.AtMs, m.ReqID)
+// ConfirmBytes is what agent.confirm signs to approve: the request, the
+// agent that asked, the op and the hash of its args, as the phone showed
+// them.
+func ConfirmBytes(f SignedFor, m AgentConfirm, req Request) ([]byte, error) {
+	sum, err := ArgsHash(req.Args)
+	if err != nil {
+		return nil, err
+	}
+	return ApprovalBytes(MsgAgentConfirm, f, m.AtMs, m.ReqID, req.Agent, req.Op, sum)
+}
+
+// ArgsHash is SHA-256 over the deterministic CBOR of a request's args.
+func ArgsHash(args map[string]any) ([]byte, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	raw, err := encMode.Marshal(args)
+	if err != nil {
+		return nil, fmt.Errorf("protocol: encode args: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return sum[:], nil
 }
 
 // ParseApprovalKey reads a SEC1 uncompressed P-256 public key.

@@ -33,7 +33,7 @@ var Fields = map[string][]string{
 
 	MsgEvent: {"eventId", "ts", "kind", "severity", "args", "src", "lp"},
 
-	MsgRoster: {"rosterSeq", "ttlS", "devices", "grant", "pending"},
+	MsgRoster: {"rosterSeq", "ttlS", "devices", "grant", "pending", "noise"},
 	"Device":  {"id", "key", "role", "scopes", "epoch", "tun", "agent"},
 	// An agent row's grant (docs/agents.md). The client's name and the
 	// ticket came from FTW Cloud's own consent page and support system.
