@@ -127,6 +127,7 @@ const (
 	CapCloudLink       = "cloud.link"
 	CapCloudTun        = "cloud.tun"
 	CapCmdExchange     = "cmd.exchange"
+	CapAccessAgents    = "access.agents"
 )
 
 // AllCapabilities is every capability name the registry defines.
@@ -150,10 +151,11 @@ var AllCapabilities = []string{
 	CapCloudLink,
 	CapCloudTun,
 	CapCmdExchange,
+	CapAccessAgents,
 }
 
-// Scopes are one object axis and two verb axes. Roles are a projection over
-// these, never a replacement for them.
+// Scopes are an object and a verb. Roles are a projection over these,
+// never a replacement for them.
 const (
 	// ScopeLiveRead — Current readings and freshness.
 	ScopeLiveRead = "ftw.live.read"
@@ -175,14 +177,46 @@ const (
 	ScopeMembersRead = "ftw.members.read"
 	// ScopeMembersWrite — Invite and revoke.
 	ScopeMembersWrite = "ftw.members.write"
+	// ScopeLogsRead — Log excerpts the box redacts.
+	ScopeLogsRead = "ftw.logs.read"
+	// ScopeConfigRead — Configuration the box redacts.
+	ScopeConfigRead = "ftw.config.read"
+	// ScopeDiagRun — Checks that change nothing.
+	ScopeDiagRun = "ftw.diag.run"
+	// ScopeDispatchHold — Hold energy assets for a capped time.
+	ScopeDispatchHold = "ftw.dispatch.hold"
+	// ScopeGoalsRequest — Ask an owner to change a durable goal.
+	ScopeGoalsRequest = "ftw.goals.request"
+	// ScopeUpdateRequest — Ask an owner to install a version.
+	ScopeUpdateRequest = "ftw.update.request"
 )
 
-// WriteScopes is every scope that changes something.
+// WriteScopes is every scope that changes something, now or once an
+// owner confirms it.
 var WriteScopes = []string{
 	ScopeDispatchWrite,
 	ScopeModeWrite,
 	ScopeMembersWrite,
+	ScopeDispatchHold,
+	ScopeGoalsRequest,
+	ScopeUpdateRequest,
 }
+
+// Roles, as the registry names them. apiauth holds what each carries.
+const (
+	// RoleAgent — Assistant.
+	RoleAgent = "agent"
+	// RoleOwner — Owner.
+	RoleOwner = "owner"
+	// RoleRelease — Release check.
+	RoleRelease = "release"
+	// RoleSupport — Sourceful support.
+	RoleSupport = "support"
+	// RoleViewer — Viewer.
+	RoleViewer = "viewer"
+	// RoleWatch — Watch.
+	RoleWatch = "watch"
+)
 
 // CloudScopes are the scopes an FTW Cloud grant may name.
 var CloudScopes = []string{
@@ -226,6 +260,20 @@ var RegistryOps = map[string]string{
 	"loadpoint.surplus_only.set": "ftw.dispatch.write",
 }
 
+// RegistryAgentOps maps each op an agent may name to the scope that opens
+// it. ftw.dispatch.hold runs as a cmd within the grant's caps;
+// ftw.goals.request waits as an agent.request for an owner. An op not
+// listed is never open to an agent.
+var RegistryAgentOps = map[string]string{
+	"site.mode.set":              "ftw.goals.request",
+	"planner.prefs.set":          "ftw.goals.request",
+	"battery.hold":               "ftw.dispatch.hold",
+	"loadpoint.hold":             "ftw.dispatch.hold",
+	"loadpoint.boost":            "ftw.dispatch.hold",
+	"loadpoint.soc.set":          "ftw.goals.request",
+	"loadpoint.surplus_only.set": "ftw.goals.request",
+}
+
 // Error codes. The box sends the code and machine-readable args; the app
 // owns every word of prose, in every language it ships.
 const (
@@ -259,6 +307,22 @@ const (
 	ErrWholeDocument = "E_WHOLE_DOCUMENT"
 	// ErrLocalOnly — Route is served only on the box's own page.
 	ErrLocalOnly = "E_LOCAL_ONLY"
+	// ErrGrantExpired — Access ran out at its expiry.
+	ErrGrantExpired = "E_GRANT_EXPIRED"
+	// ErrOpNotGranted — The grant does not list this operation.
+	ErrOpNotGranted = "E_OP_NOT_GRANTED"
+	// ErrCapExceeded — An argument or a count is past its cap.
+	ErrCapExceeded = "E_CAP_EXCEEDED"
+	// ErrRateLimited — Too many commands for the grant's rate.
+	ErrRateLimited = "E_RATE_LIMITED"
+	// ErrNeedsOwner — A durable change waits for an owner as agent.request.
+	ErrNeedsOwner = "E_NEEDS_OWNER"
+	// ErrBadSignature — The approval signature is missing or does not verify.
+	ErrBadSignature = "E_BAD_SIGNATURE"
+	// ErrNoApprovalKey — This phone has no approval key on the box.
+	ErrNoApprovalKey = "E_NO_APPROVAL_KEY"
+	// ErrNotFound — No such agent or request.
+	ErrNotFound = "E_NOT_FOUND"
 )
 
 // ErrorRetryable reports whether the app should offer a retry for a code.
@@ -278,6 +342,14 @@ var ErrorRetryable = map[string]bool{
 	ErrUnsupportedMedia:   false,
 	ErrWholeDocument:      false,
 	ErrLocalOnly:          false,
+	ErrGrantExpired:       false,
+	ErrOpNotGranted:       false,
+	ErrCapExceeded:        false,
+	ErrRateLimited:        true,
+	ErrNeedsOwner:         false,
+	ErrBadSignature:       false,
+	ErrNoApprovalKey:      false,
+	ErrNotFound:           false,
 }
 
 // SourceState says whether a device is answering. It is orthogonal to the
