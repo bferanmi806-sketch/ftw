@@ -54,11 +54,11 @@ type Config struct {
 	// window.
 	PlannerPrefs PlannerPrefs
 
-	// PlanCars puts each charger's share on the plan, or nil on a box with
+	// PlanChargers puts each charger's share on the plan, or nil on a box with
 	// no chargers. PlanFeed pushes the plan when the box replans, or nil for
 	// a box that pushes it only after a command.
-	PlanCars PlanCars
-	PlanFeed *PlanFeed
+	PlanChargers PlanChargers
+	PlanFeed     *PlanFeed
 
 	// Caller is whose session this is. Required: a session always belongs to
 	// one enrolled device, and a handler that does not know which one cannot
@@ -1123,8 +1123,8 @@ func (h *Handler) sendPlan(id *uint32) error {
 		h.cfg.Clock.UptimeMs(),
 		h.cfg.Clock.Now(),
 	)
-	if h.cfg.PlanCars != nil {
-		body.Cars = h.cfg.PlanCars.PlanCars(h.cfg.Clock.Now())
+	if h.cfg.PlanChargers != nil {
+		body.Chargers = h.cfg.PlanChargers.PlanChargers(h.cfg.Clock.Now())
 	}
 
 	// The optimizer plans further than the wire carries: 193 fifteen-minute

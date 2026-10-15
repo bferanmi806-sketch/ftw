@@ -235,10 +235,10 @@ type PlanReader interface {
 	CeilingW() *int64
 }
 
-// PlanCars is each charger's share of the plan as the box holds it now, read
+// PlanChargers is each charger's share of the plan as the box holds it now, read
 // the way GET /api/loadpoints reads it, so a pushed plan and a read agree.
-type PlanCars interface {
-	PlanCars(now time.Time) []PlanCar
+type PlanChargers interface {
+	PlanChargers(now time.Time) []PlanCharger
 }
 
 // PricePoint is one stored price slot as the box holds it.

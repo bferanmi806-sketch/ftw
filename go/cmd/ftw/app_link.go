@@ -561,37 +561,38 @@ func (a *appPlans) CeilingW() *int64 {
 	return &ceiling
 }
 
-// appPlanCars is each charger's share of the plan, read from the same plan
-// snapshot and the same windows GET /api/loadpoints serves.
-type appPlanCars struct {
+// appPlanChargers is each charger's share of the plan, read from the same plan
+// snapshot and the same windows GET /api/loadpoints serves. Keyed by the
+// charger; CarID stays empty until Core keeps cars.
+type appPlanChargers struct {
 	planner *mpc.Service
 	mgr     *loadpoint.Manager
 }
 
-func (a *appPlanCars) PlanCars(now time.Time) []appproto.PlanCar {
+func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
 	snap := a.planner.PlanSnapshot()
 	states := a.mgr.States()
-	out := make([]appproto.PlanCar, 0, len(states))
+	out := make([]appproto.PlanCharger, 0, len(states))
 	for _, st := range states {
-		car := appproto.PlanCar{
+		ch := appproto.PlanCharger{
 			ID: st.ID, PluggedIn: st.PluggedIn,
 			Pending: snap.Pending, Outdated: snap.Outdated,
-			Windows: []appproto.PlanCarWindow{},
+			Windows: []appproto.PlanChargerWindow{},
 		}
 		windows, totalWh := snap.LoadpointPlanWindows(st.ID, now, api.MaxPlanWindows)
 		for _, w := range windows {
-			car.Windows = append(car.Windows, appproto.PlanCarWindow{
+			ch.Windows = append(ch.Windows, appproto.PlanChargerWindow{
 				StartMs: w.Start.UnixMilli(), EndMs: w.End.UnixMilli(), Wh: int64(math.Round(w.EnergyWh)),
 			})
 		}
-		car.TotalWh = int64(math.Round(totalWh))
+		ch.TotalWh = int64(math.Round(totalWh))
 		if snap.Plan != nil && !snap.Pending && !snap.Outdated {
 			if wh, ok := snap.Plan.LoadpointShortfallWh[st.ID]; ok && !math.IsNaN(wh) && !math.IsInf(wh, 0) {
 				short := int64(math.Round(max(0, wh)))
-				car.ShortfallWh = &short
+				ch.ShortfallWh = &short
 			}
 		}
-		out = append(out, car)
+		out = append(out, ch)
 	}
 	return out
 }
@@ -666,15 +667,15 @@ func startAppLink(
 	}
 
 	// The plan reaches every streaming phone the moment the planner
-	// replaces it, with each car's windows, so a car plugged in shows its
-	// plan without a read.
-	var planCars appproto.PlanCars
+	// replaces it, with each charger's windows, so a car plugged in shows
+	// its plan without a read.
+	var planChargers appproto.PlanChargers
 	var planFeed *appproto.PlanFeed
 	if planner != nil {
 		planFeed = appproto.NewPlanFeed(appproto.PlanSettle, func() bool { return planner.PlanSnapshot().Pending })
 		planner.OnPlanChange(planFeed.Changed)
 		if lpMgr != nil {
-			planCars = &appPlanCars{planner: planner, mgr: lpMgr}
+			planChargers = &appPlanChargers{planner: planner, mgr: lpMgr}
 		}
 	}
 
@@ -730,7 +731,7 @@ func startAppLink(
 				History:      history,
 				Prices:       priceReader,
 				Loadpoints:   loadpoints,
-				PlanCars:     planCars,
+				PlanChargers: planChargers,
 				PlanFeed:     planFeed,
 				API:          gateway,
 				Caller:       caller,

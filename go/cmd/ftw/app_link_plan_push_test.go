@@ -73,30 +73,30 @@ func TestAPlugInReachesAStreamingPhoneAsAPlan(t *testing.T) {
 
 	feed := appproto.NewPlanFeed(appproto.PlanSettle, func() bool { return svc.PlanSnapshot().Pending })
 	svc.OnPlanChange(feed.Changed)
-	cars := &appPlanCars{planner: svc, mgr: mgr}
-	owner := streamingSession(t, cars, feed, apiauth.RoleOwner)
-	viewer := streamingSession(t, cars, feed, apiauth.RoleViewer)
+	chargers := &appPlanChargers{planner: svc, mgr: mgr}
+	owner := streamingSession(t, chargers, feed, apiauth.RoleOwner)
+	viewer := streamingSession(t, chargers, feed, apiauth.RoleViewer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); svc.Stop() })
 	svc.Start(ctx)
-	first := owner.waitPlan(t, func(p appproto.Plan) bool { return len(p.Cars) == 1 && !p.Cars[0].PluggedIn })
-	if len(first.Cars[0].Windows) != 0 {
-		t.Fatalf("an unplugged car has windows: %+v", first.Cars[0])
+	first := owner.waitPlan(t, func(p appproto.Plan) bool { return len(p.Chargers) == 1 && !p.Chargers[0].PluggedIn })
+	if len(first.Chargers[0].Windows) != 0 {
+		t.Fatalf("an unplugged car has windows: %+v", first.Chargers[0])
 	}
 
 	plugged := time.Now()
 	mgr.Observe("easee", true, 0, 0, true)
 	got := owner.waitPlan(t, func(p appproto.Plan) bool {
-		return len(p.Cars) == 1 && p.Cars[0].PluggedIn && len(p.Cars[0].Windows) > 0
+		return len(p.Chargers) == 1 && p.Chargers[0].PluggedIn && len(p.Chargers[0].Windows) > 0
 	})
 	took := time.Since(plugged)
-	t.Logf("plug-in to pushed plan: %v, %d windows, %d Wh", took, len(got.Cars[0].Windows), got.Cars[0].TotalWh)
+	t.Logf("plug-in to pushed plan: %v, %d windows, %d Wh", took, len(got.Chargers[0].Windows), got.Chargers[0].TotalWh)
 	if took > 3*time.Second {
 		t.Fatalf("plan pushed %v after the plug-in", took)
 	}
-	if got.Rev <= first.Rev || got.Cars[0].Pending || got.Cars[0].Outdated {
-		t.Fatalf("pushed rev %d after %d, car %+v", got.Rev, first.Rev, got.Cars[0])
+	if got.Rev <= first.Rev || got.Chargers[0].Pending || got.Chargers[0].Outdated {
+		t.Fatalf("pushed rev %d after %d, car %+v", got.Rev, first.Rev, got.Chargers[0])
 	}
 	if n := viewer.plans(t); len(n) != 0 {
 		t.Fatalf("a viewer got %d plans", len(n))
@@ -108,7 +108,7 @@ type pushedSession struct {
 }
 
 // streamingSession is one phone that said hello and subscribed.
-func streamingSession(t *testing.T, cars appproto.PlanCars, feed *appproto.PlanFeed, role string) pushedSession {
+func streamingSession(t *testing.T, chargers appproto.PlanChargers, feed *appproto.PlanFeed, role string) pushedSession {
 	t.Helper()
 	sent := &sentFrames{}
 	h, err := appproto.New(appproto.Config{
@@ -116,16 +116,16 @@ func streamingSession(t *testing.T, cars appproto.PlanCars, feed *appproto.PlanF
 		Site:  emptySite{},
 		// Not newAppBoxInfo: the box's zone is read once per process, and
 		// a test that sets TZ later must still be the first to read it.
-		Info:     appBoxInfo{id: "ftw-0001", build: "test", tz: "UTC"},
-		Modes:    &appModes{},
-		Plans:    &appPlans{planner: cars.(*appPlanCars).planner, ctrl: &control.State{}, ctrlMu: &sync.Mutex{}},
-		PlanCars: cars,
-		PlanFeed: feed,
-		Codec:    appuplink.Codec(),
-		Sender:   sent,
-		Caller:   apiauth.Caller{Kind: apiauth.KindApp, Role: role, Scopes: appproto.ScopesForRole(role)},
-		Grants:   roleGrant(role),
-		Commands: appproto.NewCmdLog(),
+		Info:         appBoxInfo{id: "ftw-0001", build: "test", tz: "UTC"},
+		Modes:        &appModes{},
+		Plans:        &appPlans{planner: chargers.(*appPlanChargers).planner, ctrl: &control.State{}, ctrlMu: &sync.Mutex{}},
+		PlanChargers: chargers,
+		PlanFeed:     feed,
+		Codec:        appuplink.Codec(),
+		Sender:       sent,
+		Caller:       apiauth.Caller{Kind: apiauth.KindApp, Role: role, Scopes: appproto.ScopesForRole(role)},
+		Grants:       roleGrant(role),
+		Commands:     appproto.NewCmdLog(),
 	})
 	if err != nil {
 		t.Fatal(err)
