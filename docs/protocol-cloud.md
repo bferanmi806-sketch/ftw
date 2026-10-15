@@ -6,7 +6,9 @@ or the phone. The bytes live in `go/protocol/cloudwire`, with golden vectors
 in its `testdata`: `cloud-vectors.json` for the uplink,
 `cloud-app-vectors.json` for one whole app session, its
 [tunnel](#tunnel) messages and a pairing proof, and
-`cloud-once-vectors.json` for one [one-shot read](#one-shot-read).
+`cloud-once-vectors.json` for one [one-shot read](#one-shot-read), and
+`cloud-shard-vectors.json` for which hosts a client may follow and how it
+reads a restart's spread ([Shards and restarts](#shards-and-restarts)).
 `srcfl/ftw-cloud`, the phone and the watch replay them. `cloudwire.View` is the phone's
 [freshness](#freshness) rules in Go, and the cases listed there are its tests.
 
@@ -16,7 +18,10 @@ specified in
 FTW Cloud reuses its frame layout, CBOR rules, field encoding and tile format.
 It adds the `cloud.link` capability and one optional field to the app
 protocol's `hello_ok`, `cloud` (see
-[Session information](#session-information)), and changes nothing else. Lane 0 and the relay stay as they are. The Go types
+[Session information](#session-information)), and changes nothing else.
+Assistants, Sourceful support and the release check reach the box as agents
+through the [tunnel](#tunnel); [Agents](agents.md) specifies their roles,
+scopes, approval and messages. Lane 0 and the relay stay as they are. The Go types
 for both live in `go/protocol`, under Apache-2.0
 ([#1588](https://github.com/srcfl/ftw/pull/1588)).
 
@@ -49,7 +54,9 @@ for both live in `go/protocol`, under Apache-2.0
 - No proxy may end TLS in front of the service, because that breaks the
   handshake binding. A plain TCP load balancer is fine.
 - Reconnects back off with full jitter from 0.5 s to 60 s. The attempt
-  counter resets after 60 s connected.
+  counter resets after 60 s connected. Two closes are not failures: 4421
+  names the instance that holds the home, and 4503 asks the box to come back
+  within a spread (see [Shards and restarts](#shards-and-restarts)).
 - The service sends a WebSocket ping every 15 s. The box's read deadline is
   45 s and its write deadline 10 s.
 - WebSocket compression is off.
@@ -431,6 +438,7 @@ The service never forwards these to a phone.
 | `devices` | [Device] | Every device paired with the box |
 | `grant` | Grant | What the owner granted |
 | `pending` | [Pending] | The pairing codes the box shows now, at most one |
+| `noise` | bstr, 32 B | The box's X25519 Noise static key, the one in its pairing QR code. FTW Cloud's `keys` part opens an agent's session to it, and trusts it only as signed here |
 
 **Device**
 
@@ -438,10 +446,45 @@ The service never forwards these to a phone.
 |---|---|---|
 | `id` | text | The box's device id |
 | `key` | bstr, 32 B | The device's X25519 Noise static key |
-| `role` | text | `owner`, `viewer` or `watch` |
-| `scopes` | [text] | Scopes the box derives from the role. For a watch, only those its phone's role also carries now. The service holds no role table |
+| `role` | text | `owner`, `viewer` or `watch`; for an agent row `agent`, `support` or `release` |
+| `scopes` | [text] | Scopes the box derives from the role. For a watch, only those its phone's role also carries now. Empty for an agent row: an agent reads the box, never the copy. The service holds no role table |
 | `epoch` | uint | The device's epoch on the box |
-| `tun` | bool | The device may open a session to the box through the service. True for a phone, false for a watch. It needs no grant |
+| `tun` | bool | The device may open a session to the box through the service's doors. True for a phone, false for a watch and for an agent row. It needs no grant |
+| `agent` | map, optional | Only on an agent row: its grant, below. See [Agents](agents.md) |
+
+**Agent**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `scopes` | [text] | The grant's scopes, within what its approving owner holds now |
+| `ops` | [text] | The ops the grant allows |
+| `caps` | map | `holdS`, `maxW` and `perMin`, below |
+| `expiresAtMs` | int | Wall clock. The service stops admitting the row then by its own clock, without waiting for a roster |
+| `principal` | map | `client`, `clientId` and `ticket`, below |
+
+**Who may open an agent's session.** Only the service's own `keys` part, the
+one place that holds agent keys, opens a session for an agent row, and only
+for a call through MCP that the agent's OAuth token allows. The service must
+never admit an agent row on `/v1/app`, `/v1/app/once` or the relay, whatever
+its `tun` says, and an agent row never reads the readable copy. It may
+tighten the caps but never loosen them. The box checks everything again on
+every call.
+
+**Caps**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `holdS` | uint | The longest hold, in seconds; 0 without `ftw.dispatch.hold` |
+| `maxW` | uint | The largest power a hold may set, in W |
+| `perMin` | uint | `cmd` and `agent.request` per rolling minute |
+
+**Principal**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `client` | text | The client's name, from FTW Cloud's consent page |
+| `clientId` | text | The client id |
+| `ticket` | text | The support ticket, for `support` |
 
 **Grant**
 
@@ -661,6 +704,8 @@ nothing about which check failed.
 | 4409 | The roster changed what this device may read | Reconnects at once, once; then retries with backoff |
 | 4429 | The home has as many sessions as the service allows, as at the relay | Retries with backoff |
 | 1013 | The phone fell too far behind | Retries with backoff and gets a fresh snapshot |
+| 4421 | Another instance holds the home. The reason is its host | Follows once and keeps the host for the home (see [Shards and restarts](#shards-and-restarts)) |
+| 4503 | The service is about to stop. The reason is the spread in milliseconds | Redials at a random moment within the spread, without backoff |
 
 - **Backoff** is full jitter from 0.5 s to 60 s, as on the uplink. It also
   covers a lost socket.
@@ -865,7 +910,10 @@ through the relay instead, and prices and the plan wait for the phone.
 
 ## Extension token
 
-- 32 random bytes, base64url. The service stores its SHA-256, never the token.
+- The home id, a dot, and 32 random bytes in base64url. The service stores
+  the SHA-256 of the random bytes, never the token, and refuses a token whose
+  home is not the one its row is bound to. The home id lets any instance tell
+  which shard holds the token. To the extension the token is opaque.
 - Bound to one roster entry and valid for 7 days. The app renews it at each
   foreground and background refresh.
 - It dies when the roster drops the device, the device's epoch changes, an
@@ -1090,6 +1138,78 @@ app's, so the grant screen claims no more than an owner's session.
   After 90 days without a valid roster it deletes the home as in a purge.
 - **A new home** that sends no roster within 24 hours is deleted.
 
+## Shards and restarts
+
+Every home lives on exactly one instance of the service, its shard. Its box,
+phones, watch and extensions all meet there, so nothing about a home crosses
+between instances: no shared pub/sub and no shared storage, and readings stay
+off disk. `cloud.ftw.energy` is the default host. With one shard it is the
+only host and nothing below happens.
+
+**Wrong shard.** An instance that gets a connection or a request for a home
+it does not hold names the host that does:
+
+| Where | When the service knows the home | Answer |
+|---|---|---|
+| `/v1/box` | After `hello`, from the key that signed it, before the registry is touched | Close 4421, reason the host |
+| `/v1/app` | From `?home=`, before message 1 is read | Close 4421, reason the host |
+| `/v1/app/once` | From `?home=`, before the body is read | 421, the host in `Ftw-Shard`, empty body |
+| `/v1/now` | From the home id in the token | 421, the host in `Ftw-Shard`, empty body |
+
+A client follows a wrong-shard answer only to `cloud.ftw.energy` itself or
+one DNS label of lowercase letters, digits and hyphens directly under it,
+such as `s2.cloud.ftw.energy` (`cloudwire.ShardHostOK`). No port, userinfo,
+uppercase or trailing dot; `cloud-shard-vectors.json` holds the cases every
+client must decide alike. A phone that follows `Ftw-Shard` on `/v1/now`
+carries its bearer token there. The redirect carries
+no trust: the box still checks the TLS certificate for that host and
+`hello_ok` against the service keys it was built with, and the phone still
+runs Noise IK to the service Noise key it carries.
+
+- The client keeps the host for that home. The box stores it with its link,
+  so a restart dials the shard first.
+- It follows once. A second wrong-shard answer before it is connected again
+  sends it back to `cloud.ftw.energy` after backoff, where it may follow once
+  more.
+- After 3 dials in a row that fail at a kept host over at least 30 s, the
+  client forgets it and starts again at `cloud.ftw.energy`. The window
+  outlasts a shard's restart, so a restart does not send its clients to
+  the default host.
+- A box lists `shard` in `hello.caps` when it follows 4421 and spreads its
+  redial after 4503. A second shard holds homes only once their boxes list
+  it.
+
+**Directory.** Each instance holds the same directory: the shards' hosts, a
+shard for each of 256 buckets of homes, and single homes moved on their own.
+A home's bucket is the first byte of SHA-256 of `ftw.cloud.shard\0` and the
+home id. Moving homes copies their registry rows to the new shard, then
+updates the directory on every instance; the tool for it comes with the
+second shard. Their clients follow the redirect at their next connection,
+and extension tokens keep working, because the rows hold their hashes and
+each token names its home.
+
+Assistants' MCP and OAuth clients belong to other parties and follow neither
+4421 nor 421. `/mcp` and `/oauth/*` therefore stay on `cloud.ftw.energy`.
+Once there is a second shard, that instance forwards each call to the shard
+that holds the home; the client never sees another host.
+
+**Restart.** An instance that is about to stop, for a deploy or a move, stops
+accepting connections and closes every socket with 4503. The reason is a
+spread in milliseconds, in decimal, which the service sets from how many
+sockets it holds and how fast the next instance can take them. The client
+redials at a uniformly random moment within the spread, from 1 s to 60 s,
+and does not count the close as a failed attempt. A missing or unreadable
+reason means 5 s. A 4503 that comes before `hello_ok`, or before message 2
+on `/v1/app`, is a failed attempt: the backoff grows, so a service that
+sends every client away at once cannot hold them in a loop. The service
+sends no `box.unreachable` for boxes it closed this way.
+
+A command in flight when the service stops may be lost with the socket,
+before or after the box acted on it. A phone treats a command that got no
+answer as unknown, not failed: it shows the box's state once the session is
+back, and sends the command again only if the state says it was not
+applied.
+
 ## Service state
 
 Per home, the service keeps in memory the newest envelope of each class, the
@@ -1112,11 +1232,11 @@ owner must suspend again.
 
 ## Registry names
 
-The contract registry does not hold these names yet.
-[srcfl/ftw-webapp#81](https://github.com/srcfl/ftw-webapp/pull/81) adds them
-there first; [#1595](https://github.com/srcfl/ftw/pull/1595) and
-[srcfl/ftw-app#15](https://github.com/srcfl/ftw-app/pull/15) copy them here and
-to the app.
+These names live in the contract registry. srcfl/ftw-webapp added them there
+first ([#81](https://github.com/srcfl/ftw-webapp/pull/81),
+[#88](https://github.com/srcfl/ftw-webapp/pull/88) and, for agents,
+[#90](https://github.com/srcfl/ftw-webapp/pull/90)), and paired pull requests
+copied them here and to the app.
 
 | Name | Kind | Goes into |
 |---|---|---|
@@ -1128,21 +1248,30 @@ to the app.
 | `cloud.tun` | Capability: the box takes its app session through the service as `tun`. Absent means the phone uses the relay, even when it knows the home id | `registry.yaml`, `capabilities` |
 | `tunnel` | Carrier state, between `relay` and `cloud`: the box's own session, carried by the service | `registry.yaml`, `carrier_states` |
 | `cloud.granted`, `cloud.revoked` | Push kinds, sent to every owner when FTW Cloud is turned on or off | `push-catalogue.yaml` |
+| `access.agents` | Capability: the box takes agents and answers the `agent.*` messages. See [Agents](agents.md) | `registry.yaml`, `capabilities` |
+| `agent`, `support`, `release` | Roles for agent rows | `registry.yaml`, `roles` |
+| `ftw.logs.read`, `ftw.config.read`, `ftw.diag.run`, `ftw.dispatch.hold`, `ftw.goals.request`, `ftw.update.request` | Agent scopes | `registry.yaml`, `scopes` |
+| `agent` on each op | The scope that opens an op to an agent | `registry.yaml`, `ops` |
+| `agent_args` | What an agent may put in each op, with a label for each argument | `registry.yaml`, new block |
+| `reads` | The reads an agent may send and the scope each needs | `registry.yaml`, new block |
+| `E_GRANT_EXPIRED`, `E_OP_NOT_GRANTED`, `E_CAP_EXCEEDED`, `E_RATE_LIMITED`, `E_NEEDS_OWNER`, `E_BAD_SIGNATURE`, `E_NO_APPROVAL_KEY`, `E_NOT_FOUND`, `E_CLOCK_SKEW` | Agents' refusals | `registry.yaml`, `errors` |
+| `agent.added`, `agent.request`, `agent.expiring`, `approval.key.set`, `owner.added` | Push kinds, sent to every owner | `push-catalogue.yaml` |
 
 Class names, field names, close codes and the signing tags are not registry
 names. They live here and in `go/protocol`, held by golden vectors in both
 repositories.
 
-Role names, `owner`, `viewer` and `watch`, are registry names, but
-`go/protocol` does not generate them yet, so `srcfl/ftw-cloud` spells `owner`
-by hand. Generating
-the registry's roles would remove that copy.
+Role names are registry names. `go/protocol` generates them as `Role*`
+constants, so `srcfl/ftw-cloud` need not spell them by hand.
 
 ## Numbers in one place
 
 | What | Value |
 |---|---|
 | Reconnect backoff, box and phone | 0.5 s to 60 s, full jitter |
+| Redial after 4503 | Uniform within the reason's spread, 1 s to 60 s; 5 s without one; backoff when it comes before `hello_ok` or message 2 |
+| Wrong-shard redirects followed | One per connection; a kept host is forgotten after 3 failed dials over at least 30 s |
+| Shard buckets | 256 |
 | Phone retry after 4403 | Half to all of min(15 s × 2ⁿ, 5 min) |
 | Ping, read deadline, write deadline | 15 s, 45 s, 10 s, on both sockets |
 | Period per class | 5 s; 1 s while watched; `lp` at least 2 s |
