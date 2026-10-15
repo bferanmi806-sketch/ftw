@@ -139,6 +139,10 @@ service also serves over HTTP/3 (RFC 9114); they need nothing here.
     the newest of its type on this connection, and drops a late one.
   - Each end offers datagrams in its transport parameters. A sender whose
     peer does not uses the control stream.
+  - Until a phone's first transport message arrives, the service sends it
+    everything on the control stream, behind message 2. quic-go and other
+    stacks send datagrams ahead of stream data, so an early `hb` could
+    otherwise reach a phone before the message 2 it needs to read it.
 - **Order.** Messages on one stream arrive in order; across streams and
   datagrams they may not. Noise transport carries its own counter and a
   window of 64 (`appwire.ReplayWindow`), so the app session and the tunnel
