@@ -1145,11 +1145,11 @@ owner must suspend again.
 
 ## Registry names
 
-The contract registry does not hold these names yet.
-[srcfl/ftw-webapp#81](https://github.com/srcfl/ftw-webapp/pull/81) adds them
-there first; [#1595](https://github.com/srcfl/ftw/pull/1595) and
-[srcfl/ftw-app#15](https://github.com/srcfl/ftw-app/pull/15) copy them here and
-to the app.
+These names live in the contract registry. srcfl/ftw-webapp added them there
+first ([#81](https://github.com/srcfl/ftw-webapp/pull/81),
+[#88](https://github.com/srcfl/ftw-webapp/pull/88) and, for agents,
+[#90](https://github.com/srcfl/ftw-webapp/pull/90)), and paired pull requests
+copied them here and to the app.
 
 | Name | Kind | Goes into |
 |---|---|---|
