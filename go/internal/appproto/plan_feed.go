@@ -5,53 +5,66 @@ import (
 	"time"
 )
 
-// PlanSettle is how long the feed waits after the planner's first word
-// before it pushes. A change that replans twice in that time reaches the
-// phone as one plan.
-const PlanSettle = 250 * time.Millisecond
+// PlanSettle is the quiet time after a push. Changes inside it are sent once,
+// when it ends, so a burst of replans reaches a phone as the first change at
+// once and one follow-up.
+const PlanSettle = 100 * time.Millisecond
 
-// PlanFeed pushes the plan to every streaming session the moment the box's
-// plan changes, so a phone never shows a plan the box has replaced.
+// PlanFeed pushes the plan to every streaming session the moment what a plan
+// reader sees moves: a replan starts and the plan is pending, a plan is
+// published, or a replan fails.
 //
-// The planner calls Changed when it publishes a plan and when its newest
-// replan ends without one. Nothing here runs on a timer of its own: the only
-// wait is the settle after a change. One feed serves the whole box; each
-// handler joins it when built and leaves when closed.
+// The first change goes out at once. Changes inside the settle that follows
+// are sent once when it ends, and that send starts another settle. The feed
+// runs no periodic timer, only that one wait after a push. One feed serves
+// the whole box; each handler joins it when built and leaves when closed.
 type PlanFeed struct {
 	settle time.Duration
-	// newer reports that a newer plan is being made. A push then would show
-	// a plan that is about to go, and the newer one calls Changed itself.
-	newer func() bool
 
 	mu      sync.Mutex
 	members map[*Handler]struct{}
-	armed   bool
+	// quiet is set from a push to the end of its settle; dirty says a
+	// change came meanwhile.
+	quiet bool
+	dirty bool
 }
 
-// NewPlanFeed builds the box's feed. newer may be nil.
-func NewPlanFeed(settle time.Duration, newer func() bool) *PlanFeed {
-	return &PlanFeed{settle: settle, newer: newer, members: map[*Handler]struct{}{}}
+// NewPlanFeed builds the box's feed.
+func NewPlanFeed(settle time.Duration) *PlanFeed {
+	return &PlanFeed{settle: settle, members: map[*Handler]struct{}{}}
 }
 
 // Changed is the planner's word that what a plan reader sees has moved.
-// Calls inside the settle after the first are the same push.
 func (f *PlanFeed) Changed() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.armed {
+	if f.quiet {
+		f.dirty = true
+		f.mu.Unlock()
 		return
 	}
-	f.armed = true
-	time.AfterFunc(f.settle, f.push)
+	f.quiet = true
+	f.mu.Unlock()
+	f.push()
+	time.AfterFunc(f.settle, f.settled)
 }
 
-func (f *PlanFeed) push() {
+func (f *PlanFeed) settled() {
 	f.mu.Lock()
-	f.armed = false
-	f.mu.Unlock()
-	if f.newer != nil && f.newer() {
+	if !f.dirty {
+		f.quiet = false
+		f.mu.Unlock()
 		return
 	}
+	f.dirty = false
+	f.mu.Unlock()
+	f.push()
+	time.AfterFunc(f.settle, f.settled)
+}
+
+// push hands each session its plan on a goroutine of its own, so neither the
+// planner nor another phone waits on a slow socket. A session sends one plan
+// at a time and reads it when it sends, so the newest plan lands last.
+func (f *PlanFeed) push() {
 	f.mu.Lock()
 	members := make([]*Handler, 0, len(f.members))
 	for h := range f.members {
@@ -59,7 +72,7 @@ func (f *PlanFeed) push() {
 	}
 	f.mu.Unlock()
 	for _, h := range members {
-		h.pushPlan()
+		go h.pushPlan()
 	}
 }
 
@@ -75,9 +88,10 @@ func (f *PlanFeed) leave(h *Handler) {
 	delete(f.members, h)
 }
 
-// pushPlan sends the plan unasked to a phone that streams and may read it.
-// The role is read as it stands now, the way every privileged request reads
-// it: a phone demoted to a viewer stops getting plans at the next one.
+// pushPlan sends the plan unasked to a phone that streams and may read it,
+// unless that phone already has this very plan. The role is read as it
+// stands now, the way every privileged request reads it: a phone demoted to
+// a viewer stops getting plans at the next one.
 func (h *Handler) pushPlan() {
 	h.mu.Lock()
 	streaming := h.subscribed
@@ -91,7 +105,7 @@ func (h *Handler) pushPlan() {
 	}
 	// A failed send is the session's carrier going away; the carrier ends
 	// the session, and this handler leaves the feed when it closes.
-	if err := h.sendPlan(nil); err != nil {
+	if err := h.writePlan(nil, true); err != nil {
 		h.log.Debug("plan push not sent", "err", err)
 	}
 }

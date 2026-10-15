@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,15 +12,19 @@ import (
 	"github.com/srcfl/ftw/go/internal/appproto"
 	"github.com/srcfl/ftw/go/internal/appuplink"
 	"github.com/srcfl/ftw/go/internal/control"
+	"github.com/srcfl/ftw/go/internal/events"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
 	"github.com/srcfl/ftw/go/internal/mpc"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
-// A car plugged in reaches a streaming phone as a plan with its windows as
-// soon as the planner has replanned, wired the way startAppLink wires it: the
-// real planner, loadpoint manager, feed and handler. A viewer gets nothing.
+// A car plugged in reaches a streaming phone as a plan with its windows in the
+// time a solve takes, wired the way the box wires it: the real planner with
+// its production reactive check (10 s, 30 s between reactive replans), the
+// loadpoint manager on the event bus, the plug-in replan, the feed and the
+// handler. The plug-in lands right after a replan, inside the gap the
+// reactive check would wait out. A viewer gets nothing.
 func TestAPlugInReachesAStreamingPhoneAsAPlan(t *testing.T) {
 	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -50,10 +55,6 @@ func TestAPlugInReachesAStreamingPhoneAsAPlan(t *testing.T) {
 	})
 	svc.Horizon = 5 * time.Hour
 	svc.BaseLoad = 500
-	// Production checks every ten seconds with a 30 s gap; the test waits
-	// for neither, only for the planner to see the plug.
-	svc.ReactiveInterval = 20 * time.Millisecond
-	svc.MinReplanGap = 0
 
 	mgr := loadpoint.NewManager()
 	mgr.Load([]loadpoint.Config{{ID: "easee", DriverName: "easee", VehicleCapacityWh: 60000, MinChargeW: 4100, MaxChargeW: 11000}})
@@ -71,7 +72,18 @@ func TestAPlugInReachesAStreamingPhoneAsAPlan(t *testing.T) {
 		return specs
 	}
 
-	feed := appproto.NewPlanFeed(appproto.PlanSettle, func() bool { return svc.PlanSnapshot().Pending })
+	// The charger's driver is healthy, so the manager confirms a cable, and
+	// its clock is the test's, so the cable's two seconds out pass at once.
+	bus := events.NewBus()
+	mgr.SetBus(bus)
+	replanOnPlugIn(bus, svc)
+	tel.DriverHealthMut("easee").RecordSuccess()
+	bus.Publish(events.HealthTick{Health: map[string]telemetry.DriverHealth{"easee": *tel.DriverHealth("easee")}, Now: time.Now()})
+	var ahead atomic.Int64
+	mgr.SetNowFn(func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) })
+	mgr.Observe("easee", false, 0, 0, false)
+
+	feed := appproto.NewPlanFeed(appproto.PlanSettle)
 	svc.OnPlanChange(feed.Changed)
 	chargers := &appPlanChargers{planner: svc, mgr: mgr}
 	owner := streamingSession(t, chargers, feed, apiauth.RoleOwner)
@@ -80,24 +92,39 @@ func TestAPlugInReachesAStreamingPhoneAsAPlan(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); svc.Stop() })
 	svc.Start(ctx)
-	first := owner.waitPlan(t, func(p appproto.Plan) bool { return len(p.Chargers) == 1 && !p.Chargers[0].PluggedIn })
+	first := owner.waitPlan(t, func(p appproto.Plan) bool {
+		return len(p.Chargers) == 1 && !p.Chargers[0].PluggedIn && !p.Chargers[0].Pending && p.Rev > 0
+	})
 	if len(first.Chargers[0].Windows) != 0 {
 		t.Fatalf("an unplugged car has windows: %+v", first.Chargers[0])
 	}
 
+	// The feed sends a change at once unless it pushed in the last settle;
+	// let the start-up plan's settle pass, as any quiet moment would.
+	time.Sleep(2 * appproto.PlanSettle)
+	ahead.Store(int64(3 * time.Second))
 	plugged := time.Now()
 	mgr.Observe("easee", true, 0, 0, true)
+	cable := owner.waitPlan(t, func(p appproto.Plan) bool { return len(p.Chargers) == 1 && p.Chargers[0].PluggedIn })
+	tookCable := time.Since(plugged)
 	got := owner.waitPlan(t, func(p appproto.Plan) bool {
-		return len(p.Chargers) == 1 && p.Chargers[0].PluggedIn && len(p.Chargers[0].Windows) > 0
+		return len(p.Chargers) == 1 && p.Chargers[0].PluggedIn && !p.Chargers[0].Pending && len(p.Chargers[0].Windows) > 0
 	})
 	took := time.Since(plugged)
-	t.Logf("plug-in to pushed plan: %v, %d windows, %d Wh", took, len(got.Chargers[0].Windows), got.Chargers[0].TotalWh)
-	if took > 3*time.Second {
-		t.Fatalf("plan pushed %v after the plug-in", took)
+	t.Logf("plug-in to the cable on a phone: %v (pending %v); to the plan: %v, %d windows, %d Wh",
+		tookCable, cable.Chargers[0].Pending, took, len(got.Chargers[0].Windows), got.Chargers[0].TotalWh)
+	if tookCable > 200*time.Millisecond {
+		t.Fatalf("the cable reached the phone %v after the plug-in", tookCable)
 	}
-	if got.Rev <= first.Rev || got.Chargers[0].Pending || got.Chargers[0].Outdated {
+	if took > appproto.PlanSettle+time.Second {
+		t.Fatalf("the plan reached the phone %v after the plug-in", took)
+	}
+	if got.Rev <= first.Rev || got.Chargers[0].Outdated {
 		t.Fatalf("pushed rev %d after %d, car %+v", got.Rev, first.Rev, got.Chargers[0])
 	}
+
+	// A viewer's session is on the same feed; give it the settle to be sure.
+	time.Sleep(2 * appproto.PlanSettle)
 	if n := viewer.plans(t); len(n) != 0 {
 		t.Fatalf("a viewer got %d plans", len(n))
 	}
@@ -199,4 +226,61 @@ type roleGrant string
 
 func (r roleGrant) Grant() (appproto.Enrolment, bool) {
 	return appproto.Enrolment{Role: string(r), Epoch: 1}, true
+}
+
+// While a newer plan is being made the box goes on acting on the plan it has,
+// so a phone keeps its windows, marked pending, and no shortfall: a plan being
+// remade says nothing about whether the car makes it.
+func TestAPendingPlanKeepsTheWindowsTheBoxActsOn(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Now().UTC().Truncate(15 * time.Minute)
+	if err := st.SavePrices([]state.PricePoint{{Zone: "SE4", SlotTsMs: now.UnixMilli(), SlotLenMin: 60, SpotOreKwh: 50, TotalOreKwh: 100}}); err != nil {
+		t.Fatal(err)
+	}
+	cloud := 0.0
+	if err := st.SaveForecasts([]state.ForecastPoint{{SlotTsMs: now.UnixMilli(), SlotLenMin: 15, CloudCoverPct: &cloud, Source: "test", FetchedAtMs: now.UnixMilli()}}); err != nil {
+		t.Fatal(err)
+	}
+	svc := mpc.New(st, nil, "SE4", mpc.Params{Mode: mpc.ModeSelfConsumption, SoCLevels: 11, ActionLevels: 5, CapacityWh: 10000, InitialSoC: .5, SoCMin: .1, SoCMax: .95, MaxChargeW: 3000, MaxDischargeW: 3000, ChargeEfficiency: .95, DischargeEfficiency: .95})
+	svc.Horizon = time.Hour
+	svc.InstallPlan(mpc.Plan{GeneratedAtMs: time.Now().UnixMilli(), Actions: []mpc.Action{{
+		SlotStartMs: now.UnixMilli(), SlotLenMin: 60, LoadpointPowerW: map[string]float64{"easee": 6000},
+	}}, LoadpointShortfallWh: map[string]float64{"easee": 1000}}, svc.Defaults, "easee")
+	mgr := loadpoint.NewManager()
+	mgr.Load([]loadpoint.Config{{ID: "easee", DriverName: "easee", VehicleCapacityWh: 60000}})
+	mgr.Observe("easee", true, 0, 0, true)
+	chargers := &appPlanChargers{planner: svc, mgr: mgr}
+
+	before := chargers.PlanChargers(time.Now())[0]
+	if before.Pending || len(before.Windows) != 1 || before.ShortfallWh == nil {
+		t.Fatalf("before: %+v", before)
+	}
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	svc.PV = func(time.Time, float64) float64 { once.Do(func() { close(entered) }); <-release; return 0 }
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	svc.RequestReplan("test")
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replan never reached the forecast")
+	}
+	during := chargers.PlanChargers(time.Now())[0]
+	if !during.Pending || len(during.Windows) != 1 || during.Windows[0] != before.Windows[0] || during.ShortfallWh != nil {
+		t.Fatalf("during: %+v", during)
+	}
+	if during.GoalRev != before.GoalRev {
+		t.Fatal("the goal moved with the plan")
+	}
 }

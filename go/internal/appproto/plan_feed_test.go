@@ -2,6 +2,8 @@ package appproto
 
 import (
 	"encoding/hex"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -78,7 +80,7 @@ func settled(rec *recorder) []sent {
 }
 
 func TestAReplanPushesThePlanWithTheChargerToAStreamingPhone(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	h, box, rec, chargers := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
 	subscribe(t, h, rec)
 
@@ -110,51 +112,93 @@ func TestAReplanPushesThePlanWithTheChargerToAStreamingPhone(t *testing.T) {
 	}
 }
 
-func TestTwoReplansInsideTheSettleArePushedOnce(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+// The first change goes out at once; a burst inside the settle that follows
+// is one more push, of the newest plan.
+func TestTheFirstChangeGoesAtOnceAndABurstIsOneFollowUp(t *testing.T) {
+	feed := NewPlanFeed(time.Second)
+	h, box, rec, _ := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
+	subscribe(t, h, rec)
+
+	start := time.Now()
+	box.replan(2, box.plan.GeneratedAtMs+60_000)
+	feed.Changed()
+	until := time.Now().Add(500 * time.Millisecond)
+	for len(plans(rec)) == 0 && time.Now().Before(until) {
+		time.Sleep(time.Millisecond)
+	}
+	if took := time.Since(start); len(plans(rec)) != 1 || took > 200*time.Millisecond {
+		t.Fatalf("first push after %v: %d plans", took, len(plans(rec)))
+	}
+	for rev := uint64(3); rev <= 5; rev++ {
+		box.replan(rev, box.plan.GeneratedAtMs+60_000)
+		feed.Changed()
+	}
+	time.Sleep(2500 * time.Millisecond)
+	got := plans(rec)
+	if len(got) != 2 {
+		t.Fatalf("want the first and one follow-up, got %d", len(got))
+	}
+	if p := body[Plan](t, got[1]); p.Rev != 5 {
+		t.Fatalf("follow-up rev %d, want the newest", p.Rev)
+	}
+}
+
+// A plan this phone already has is not sent again: a failed replan, then
+// another, says the same thing.
+func TestTheSamePlanIsNotPushedTwice(t *testing.T) {
+	feed := NewPlanFeed(testSettle)
 	h, box, rec, _ := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
 	subscribe(t, h, rec)
 
 	box.replan(2, box.plan.GeneratedAtMs+60_000)
 	feed.Changed()
-	box.replan(3, box.plan.GeneratedAtMs+60_000)
+	waitPlans(t, rec, 1)
 	feed.Changed()
-
-	got := waitPlans(t, rec, 1)
-	if len(got) != 1 {
-		t.Fatalf("want one push, got %d", len(got))
+	if got := settled(rec); len(got) != 1 {
+		t.Fatalf("the same plan went %d times", len(got))
 	}
-	if p := body[Plan](t, got[0]); p.Rev != 3 {
-		t.Fatalf("pushed rev %d, want the newest", p.Rev)
+	// A plan.get is answered whatever the phone has.
+	deliver(t, h, MsgPlanGet, ptrU32(9), nil)
+	if got := plans(rec); len(got) != 2 {
+		t.Fatalf("plan.get answered %d times", len(got)-1)
 	}
 }
 
-func TestThePushWaitsForANewerPlanBeingMade(t *testing.T) {
-	var newer atomic.Bool
-	feed := NewPlanFeed(testSettle, newer.Load)
+// Pushes race on goroutines of their own; the newest plan still lands last.
+func TestTheNewestPlanLandsLast(t *testing.T) {
+	feed := NewPlanFeed(time.Millisecond)
 	h, box, rec, _ := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
 	subscribe(t, h, rec)
 
-	// A plan is published while a newer request is already running: the
-	// phone would see it for a moment and then lose it.
-	newer.Store(true)
-	box.replan(2, box.plan.GeneratedAtMs+60_000)
-	feed.Changed()
-	if got := settled(rec); len(got) != 0 {
-		t.Fatalf("pushed a plan that is about to go")
+	var plansMu sync.Mutex
+	h.cfg.Plans = lockedPlans{box: box, mu: &plansMu}
+	var wg sync.WaitGroup
+	for rev := uint64(2); rev <= 60; rev++ {
+		plansMu.Lock()
+		box.replan(rev, box.plan.GeneratedAtMs+60_000)
+		plansMu.Unlock()
+		wg.Add(1)
+		go func() { defer wg.Done(); h.pushPlan() }()
 	}
-
-	newer.Store(false)
-	box.replan(3, box.plan.GeneratedAtMs+60_000)
-	feed.Changed()
-	got := waitPlans(t, rec, 1)
-	if len(got) != 1 || body[Plan](t, got[0]).Rev != 3 {
-		t.Fatalf("want the newer plan once, got %d", len(got))
+	wg.Wait()
+	got := plans(rec)
+	if p := body[Plan](t, got[len(got)-1]); p.Rev != 60 {
+		t.Fatalf("last plan on the wire is rev %d", p.Rev)
 	}
 }
+
+// lockedPlans reads the fake box's plan under the lock the test writes it with.
+type lockedPlans struct {
+	box *fakeBox
+	mu  *sync.Mutex
+}
+
+func (l lockedPlans) Latest() *mpc.Plan { l.mu.Lock(); defer l.mu.Unlock(); return l.box.plan }
+func (l lockedPlans) Rev() uint64       { l.mu.Lock(); defer l.mu.Unlock(); return l.box.planRev }
+func (l lockedPlans) CeilingW() *int64  { return nil }
 
 func TestAPhoneWithoutThePlanScopeGetsNoPush(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	h, _, rec, _ := newFeedRig(t, feed, viewerCaller(), newViewerGrants(), false)
 	subscribe(t, h, rec)
 
@@ -165,7 +209,7 @@ func TestAPhoneWithoutThePlanScopeGetsNoPush(t *testing.T) {
 }
 
 func TestADemotedPhoneStopsGettingPushes(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	grants := newGrants()
 	h, _, rec, _ := newFeedRig(t, feed, ownerCaller(), grants, false)
 	subscribe(t, h, rec)
@@ -178,7 +222,7 @@ func TestADemotedPhoneStopsGettingPushes(t *testing.T) {
 }
 
 func TestNoPushBeforeTheStreamOrAfterTheSessionCloses(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	h, _, rec, _ := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
 
 	feed.Changed()
@@ -195,7 +239,7 @@ func TestNoPushBeforeTheStreamOrAfterTheSessionCloses(t *testing.T) {
 }
 
 func TestAWatchExchangeIsNotOnTheFeed(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	newFeedRig(t, feed, ownerCaller(), newGrants(), true)
 	feed.mu.Lock()
 	defer feed.mu.Unlock()
@@ -206,7 +250,7 @@ func TestAWatchExchangeIsNotOnTheFeed(t *testing.T) {
 
 // The far tail of a long plan gives way to the chargers, never the session.
 func TestALongPlanWithTwoChargersStillFitsABulkFrame(t *testing.T) {
-	feed := NewPlanFeed(testSettle, nil)
+	feed := NewPlanFeed(testSettle)
 	h, box, rec, chargers := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
 	subscribe(t, h, rec)
 
@@ -242,10 +286,38 @@ func TestALongPlanWithTwoChargersStillFitsABulkFrame(t *testing.T) {
 	}
 }
 
+// Many chargers can outgrow the largest frame even with one slot left: the
+// far windows go too, never the session.
+func TestManyChargersGiveUpTheirFarWindowsBeforeTheSession(t *testing.T) {
+	feed := NewPlanFeed(testSettle)
+	h, box, rec, chargers := newFeedRig(t, feed, ownerCaller(), newGrants(), false)
+	subscribe(t, h, rec)
+
+	start := box.plan.GeneratedAtMs
+	var many []PlanCharger
+	for i := range 24 {
+		ch := PlanCharger{ID: fmt.Sprintf("charger-%02d", i), CarID: "0123456789abcdef0123456789abcdef", PluggedIn: true, TotalWh: 99_999}
+		for j := range 32 {
+			ch.Windows = append(ch.Windows, PlanChargerWindow{StartMs: start + int64(j)*1_800_000, EndMs: start + int64(j)*1_800_000 + 900_000, Wh: 2_750})
+		}
+		many = append(many, ch)
+	}
+	chargers.set(many)
+	deliver(t, h, MsgPlanGet, ptrU32(4), nil)
+	got := plans(rec)
+	if len(got) != 1 {
+		t.Fatalf("plan.get answered %d times (%s)", len(got), rec.types())
+	}
+	p := body[Plan](t, got[0])
+	if len(p.Chargers) != 24 || len(p.Chargers[0].Windows) == 0 || len(p.Chargers[0].Windows) == 32 {
+		t.Fatalf("%d chargers, first with %d windows", len(p.Chargers), len(p.Chargers[0].Windows))
+	}
+}
+
 // planChargersVector is a plan with two chargers as the box encodes it. The same hex
 // is decoded in srcfl/ftw-app's PlanPushTests, so a change here is a change
 // to the apps' wire.
-const planChargersVector = "a6637265760765736c6f747381a765677269645719012c66726561736f6e70657870656e736976655f696d706f72746773746172744d731b000001a131ea48806862617474657279573904af6a6475726174696f6e4d731a000dbba06a70726963654d696e6f7218576b736f635065726d696c6c65190280657374616c65f4686365696c696e6757f668636861726765727382a76269646565617365656770656e64696e67f467746f74616c5768191ce86777696e646f777381a3627768191ce865656e644d731b000001a1325825806773746172744d731b000001a131ea4880686f75746461746564f469706c7567676564496ef56b73686f727466616c6c57681904b0a762696466676172616765656361724964782030313233343536373839616263646566303132333435363738396162636465666770656e64696e67f567746f74616c5768006777696e646f777380686f75746461746564f569706c7567676564496ef468757074696d654d731a0036ee80"
+const planChargersVector = "a6637265760765736c6f747381a765677269645719012c66726561736f6e70657870656e736976655f696d706f72746773746172744d731b000001a131ea48806862617474657279573904af6a6475726174696f6e4d731a000dbba06a70726963654d696e6f7218576b736f635065726d696c6c65190280657374616c65f4686365696c696e6757f668636861726765727382a962696465656173656567676f616c5265761acafebabe6770656e64696e67f467746f74616c5768191ce86777696e646f777381a3627768191ce865656e644d731b000001a1325825806773746172744d731b000001a131ea4880686f75746461746564f469706c7567676564496ef56b73686f727466616c6c57681904b06c677269644465666572726564f5a9626964666761726167656563617249647820303132333435363738396162636465663031323334353637383961626364656667676f616c526576076770656e64696e67f567746f74616c5768006777696e646f777380686f75746461746564f569706c7567676564496ef46c677269644465666572726564f468757074696d654d731a0036ee80"
 
 func TestThePlanWithChargersVector(t *testing.T) {
 	short, price, soc := int64(1200), int64(87), int64(640)
@@ -253,8 +325,8 @@ func TestThePlanWithChargersVector(t *testing.T) {
 		Rev: 7, UptimeMs: 3_600_000,
 		Slots: []PlanSlot{{StartMs: 1_791_838_800_000, DurationMs: 900_000, BatteryW: -1200, GridW: 300, PriceMinor: &price, Reason: ReasonExpensiveImport, SocPermille: &soc}},
 		Chargers: []PlanCharger{
-			{ID: "easee", PluggedIn: true, Windows: []PlanChargerWindow{{StartMs: 1_791_838_800_000, EndMs: 1_791_846_000_000, Wh: 7400}}, TotalWh: 7400, ShortfallWh: &short},
-			{ID: "garage", CarID: "0123456789abcdef0123456789abcdef", Pending: true, Outdated: true, Windows: []PlanChargerWindow{}},
+			{ID: "easee", PluggedIn: true, GridDeferred: true, GoalRev: 3_405_691_582, Windows: []PlanChargerWindow{{StartMs: 1_791_838_800_000, EndMs: 1_791_846_000_000, Wh: 7400}}, TotalWh: 7400, ShortfallWh: &short},
+			{ID: "garage", CarID: "0123456789abcdef0123456789abcdef", Pending: true, Outdated: true, GoalRev: 7, Windows: []PlanChargerWindow{}},
 		},
 	}
 	b, err := Marshal(p)

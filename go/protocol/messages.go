@@ -510,11 +510,18 @@ type PlanCharger struct {
 	// replan, and the plan reaches the phone as every replan does.
 	CarID     string `cbor:"carId,omitempty"`
 	PluggedIn bool   `cbor:"pluggedIn"`
-	// Pending is set while a newer plan is being made, Outdated while the
-	// plan is not one the box acts on. Windows are empty in either case,
-	// as plan_pending and plan_outdated leave them on the HTTP route.
+	// Pending is set while a newer plan is being made; the windows are then
+	// the plan the box goes on acting on until the new one lands. Outdated
+	// is set with it, and alone when the plan is not one the box acts on;
+	// without Pending the windows are then empty.
 	Pending  bool `cbor:"pending"`
 	Outdated bool `cbor:"outdated"`
+	// GridDeferred says grid-funded charging waits for prices that reach
+	// the deadline, as grid_deferred on the HTTP route.
+	GridDeferred bool `cbor:"gridDeferred"`
+	// GoalRev changes when the charger's goal, ready time, schedule or
+	// solar-only choice changes, wherever that was done.
+	GoalRev uint32 `cbor:"goalRev"`
 	// Windows are the charging windows still ahead, the next one first.
 	Windows []PlanChargerWindow `cbor:"windows"`
 	// TotalWh is what the plan still means to deliver across its horizon.

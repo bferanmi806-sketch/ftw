@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	"net/http"
@@ -567,10 +568,17 @@ func (a *appPlans) CeilingW() *int64 {
 type appPlanChargers struct {
 	planner *mpc.Service
 	mgr     *loadpoint.Manager
+	ctrl    *loadpoint.Controller
 }
 
 func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
 	snap := a.planner.PlanSnapshot()
+	// While a newer plan is being made the box goes on acting on the one it
+	// has, so its windows stay, marked pending. The HTTP route empties them.
+	acting := snap
+	if snap.Pending && !snap.Unproven {
+		acting.Outdated = false
+	}
 	states := a.mgr.States()
 	out := make([]appproto.PlanCharger, 0, len(states))
 	for _, st := range states {
@@ -578,8 +586,12 @@ func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
 			ID: st.ID, PluggedIn: st.PluggedIn,
 			Pending: snap.Pending, Outdated: snap.Outdated,
 			Windows: []appproto.PlanChargerWindow{},
+			GoalRev: goalRev(st),
 		}
-		windows, totalWh := snap.LoadpointPlanWindows(st.ID, now, api.MaxPlanWindows)
+		if a.ctrl != nil && !acting.Outdated {
+			ch.GridDeferred = a.ctrl.GridDeferred(st.ID)
+		}
+		windows, totalWh := acting.LoadpointPlanWindows(st.ID, now, api.MaxPlanWindows)
 		for _, w := range windows {
 			ch.Windows = append(ch.Windows, appproto.PlanChargerWindow{
 				StartMs: w.Start.UnixMilli(), EndMs: w.End.UnixMilli(), Wh: int64(math.Round(w.EnergyWh)),
@@ -595,6 +607,21 @@ func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
 		out = append(out, ch)
 	}
 	return out
+}
+
+// goalRev changes when a charger's goal, ready time, schedule or solar-only
+// choice changes, wherever that was done, so a phone knows to read it again.
+func goalRev(st loadpoint.State) uint32 {
+	raw, _ := json.Marshal(struct {
+		Schedule      loadpoint.Schedule
+		TargetSoC     float64
+		TargetTimeMs  int64
+		SurplusOnly   bool
+		FinishAtLimit bool
+	}{st.Schedule, st.TargetSoC, st.TargetTime.UnixMilli(), st.SurplusOnly, st.FinishAtVehicleLimit})
+	h := fnv.New32a()
+	_, _ = h.Write(raw)
+	return h.Sum32()
 }
 
 // startAppLink connects the box to the app relay when its loaded config leaves
@@ -672,10 +699,10 @@ func startAppLink(
 	var planChargers appproto.PlanChargers
 	var planFeed *appproto.PlanFeed
 	if planner != nil {
-		planFeed = appproto.NewPlanFeed(appproto.PlanSettle, func() bool { return planner.PlanSnapshot().Pending })
+		planFeed = appproto.NewPlanFeed(appproto.PlanSettle)
 		planner.OnPlanChange(planFeed.Changed)
 		if lpMgr != nil {
-			planChargers = &appPlanChargers{planner: planner, mgr: lpMgr}
+			planChargers = &appPlanChargers{planner: planner, mgr: lpMgr, ctrl: lpCtrl}
 		}
 	}
 
