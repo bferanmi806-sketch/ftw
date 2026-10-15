@@ -704,6 +704,10 @@ Noise session, in the app protocol's `hello_ok.cloud`.
   added later has no name on the phone until its next session with the box.
 - The box lists `cloud.link` in `hello_ok.caps` when its build can run the
   uplink. A build that names no service does not.
+- It also lists `cloud.tun` when its link carries the phones' own sessions
+  as [`tun`](#tunnel). A phone sends its box session through the service
+  only to a box that said so at its last hello, or to one it has never
+  reached when a v3 QR named the home. Otherwise it uses the relay.
 
 ## Tunnel
 
@@ -1121,6 +1125,8 @@ to the app.
 | `cloud_purposes` | List: `serve`, `stats` | `registry.yaml`, new block |
 | `cloud.link` | Capability: the box can run the FTW Cloud uplink. Absent means the app uses the relay only and offers no FTW Cloud | `registry.yaml`, `capabilities` |
 | `cloud` | Carrier state, between `relay` and `cache` | `registry.yaml`, `carrier_states` |
+| `cloud.tun` | Capability: the box takes its app session through the service as `tun`. Absent means the phone uses the relay, even when it knows the home id | `registry.yaml`, `capabilities` |
+| `tunnel` | Carrier state, between `relay` and `cloud`: the box's own session, carried by the service | `registry.yaml`, `carrier_states` |
 | `cloud.granted`, `cloud.revoked` | Push kinds, sent to every owner when FTW Cloud is turned on or off | `push-catalogue.yaml` |
 
 Class names, field names, close codes and the signing tags are not registry

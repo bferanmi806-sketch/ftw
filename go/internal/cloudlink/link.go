@@ -803,6 +803,10 @@ func (l *Link) Home() string {
 // uplink at all. Release builds without service keys cannot.
 func (l *Link) Available() bool { return len(l.opts.ServiceKeys) > 0 }
 
+// TakesTun reports whether the link carries the phones' own sessions as tun,
+// so a phone that knows the home id can reach the box without the relay.
+func (l *Link) TakesTun() bool { return l.Available() && l.opts.Tunnel != nil }
+
 // SessionInfo is what a phone needs, over its Noise session with the box, to
 // reach this home through FTW Cloud: the home id, the key that signs the
 // readable copy, the boot that anchors its times and names for the opaque
