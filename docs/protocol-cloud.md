@@ -581,11 +581,15 @@ as it decides for the same session over the relay.
    phone learned from the box (see [Session information](#session-information)).
    The query only says which home to look in: the prologue binds it, so a
    query that names another home fails the handshake.
-2. Handshake message 1 carries an unsigned `now` envelope, `{hz, pair}`: `hz`
-   is 1 while the phone is looking at the home, 0 while it is not. `pair` is
-   only for a new phone; see [Pairing through the service](#pairing-through-the-service).
+2. Handshake message 1 carries an unsigned `now` envelope, `{hz, pair, tun}`:
+   `hz` is 1 while the phone is looking at the home, 0 while it is not. `pair`
+   is only for a new phone; see
+   [Pairing through the service](#pairing-through-the-service). `tun`, `{sid,
+   d}`, is optional and carries message 1 of the phone's session with its
+   box. The service forwards it as soon as it admits the phone, so that
+   session is up one round trip after TLS.
 3. The service admits the phone only if the static key that message 1 proved
-   is in the home's roster with `tun` or a non-empty effective scope, the
+   is in the home's roster, with `tun` or while the readable copy is on, the
    roster has not run out, and no owner has suspended the device; or if
    `pair` matches a pending entry. Every refusal closes with 4403 before
    message 2.
@@ -1112,6 +1116,7 @@ the registry's roles would remove that copy.
 | `tun` per home and direction | 240 messages, then 60 a second; 4 MiB, then 512 KiB a second |
 | `tun` queue and budget on the box | 64 messages; 250 MB per 24 hours of uptime |
 | Pending pairing entry | One QR code, for its own ten minutes; admits one handshake |
+| Box session up after TLS | One round trip: its message 1 rides in `now.tun` |
 | Sessions | 16 per home; one per device |
 | Envelopes queued per phone | 256 |
 | Phone messages | 20 in a burst, then 2 a second |

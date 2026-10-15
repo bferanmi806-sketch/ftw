@@ -77,6 +77,11 @@ type Now struct {
 	// Pair is PairingHash of the code a new phone scanned. It admits a key
 	// the roster does not list yet, once, while the roster lists the hash.
 	Pair []byte `cbor:"pair,omitempty"`
+	// Tun is the first message of the phone's session with its box,
+	// handshake message 1. The service forwards it as soon as it has
+	// admitted the phone, so the box session is up one round trip after
+	// TLS rather than two.
+	Tun *AppTun `cbor:"tun,omitempty"`
 }
 
 // Suspend names the roster device an owner suspends or lifts a suspension

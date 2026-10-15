@@ -41,12 +41,14 @@ type appVectorFile struct {
 
 // appVectorPairing is a new phone's proof: the code it scanned, the hash the
 // roster lists and now.pair carries, and the device id the service names it
-// by until the roster lists it.
+// by until the roster lists it. Msg1NowTun is the same now with the box
+// session's message 1 riding along, as a phone sends it to save a round trip.
 type appVectorPairing struct {
-	Code     string `json:"code"`
-	Hash     string `json:"hash"`
-	Msg1Now  string `json:"msg1Now"`
-	DeviceID string `json:"deviceId"`
+	Code       string `json:"code"`
+	Hash       string `json:"hash"`
+	Msg1Now    string `json:"msg1Now"`
+	Msg1NowTun string `json:"msg1NowTun"`
+	DeviceID   string `json:"deviceId"`
 }
 
 type appVectorFrame struct {
@@ -224,9 +226,12 @@ func TestAppSessionVectors(t *testing.T) {
 
 	code := bytes.Repeat([]byte{0x88}, 16)
 	pairNow, _ := Unsigned(MsgNow, Now{Hz: HzLooking, Pair: PairingHash(home, code)})
+	pairNowTun, _ := Unsigned(MsgNow, Now{Hz: HzLooking, Pair: PairingHash(home, code),
+		Tun: &AppTun{Sid: 1, D: bytes.Repeat([]byte{0x9b}, 112)}})
 	out.Pairing = appVectorPairing{
 		Code: hex.EncodeToString(code), Hash: hex.EncodeToString(PairingHash(home, code)),
-		Msg1Now: hex.EncodeToString(pairNow), DeviceID: DeviceID(phoneStatic.Public()),
+		Msg1Now: hex.EncodeToString(pairNow), Msg1NowTun: hex.EncodeToString(pairNowTun),
+		DeviceID: DeviceID(phoneStatic.Public()),
 	}
 
 	got, err := json.MarshalIndent(out, "", "  ")
