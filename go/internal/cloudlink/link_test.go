@@ -182,8 +182,11 @@ type fakeService struct {
 	afterHello  func(conn *websocket.Conn, home string)
 	rosterSeqOK uint64
 	// wrongShard, when set, closes after hello with CloseWrongShard and
-	// this host, as an instance that does not hold the home.
-	wrongShard string
+	// this host, as an instance that does not hold the home;
+	// restartBeforeOK closes after hello with CloseRestart, as a service
+	// that is stopping.
+	wrongShard      string
+	restartBeforeOK bool
 
 	wmu   sync.Mutex
 	mu    sync.Mutex
@@ -277,6 +280,11 @@ func (s *fakeService) handle(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	if shard != "" {
 		closeWith(conn, cloudwire.CloseWrongShard, shard)
+		_, _, _ = conn.ReadMessage()
+		return
+	}
+	if s.restartBeforeOK {
+		closeWith(conn, cloudwire.CloseRestart, "0")
 		_, _, _ = conn.ReadMessage()
 		return
 	}

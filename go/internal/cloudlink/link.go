@@ -171,6 +171,7 @@ type Options struct {
 	RootCAs     *x509.CertPool
 	Tick        time.Duration
 	NetDial     func(ctx context.Context, network, addr string) (net.Conn, error)
+	Now         func() time.Time
 }
 
 // Link is the box's one uplink to FTW Cloud.
@@ -211,11 +212,12 @@ type Link struct {
 	attempt    int
 	// shardHops counts wrong-shard closes since the box was last
 	// connected, and hostFails dials in a row that failed at the kept
-	// host (linkRecord.Host).
-	shardHops int
-	hostFails int
-	purgedAt  int64
-	rosterDue bool
+	// host (linkRecord.Host), since hostFailedSince.
+	shardHops       int
+	hostFails       int
+	hostFailedSince time.Time
+	purgedAt        int64
+	rosterDue       bool
 
 	// events wait for the writer; eventsDropped counts those that never
 	// left. closing is set by Bye, after which the link does not dial
@@ -262,6 +264,9 @@ func New(opts Options) (*Link, error) {
 	}
 	if opts.Started.IsZero() {
 		opts.Started = time.Now()
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
 	}
 	if opts.Tick <= 0 {
 		opts.Tick = 250 * time.Millisecond
@@ -981,3 +986,6 @@ func (l *Link) caps(snap grantSnapshot) []string {
 func (l *Link) tlsConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: l.opts.RootCAs}
 }
+
+// now is the wall clock, or a test's.
+func (l *Link) now() time.Time { return l.opts.Now() }

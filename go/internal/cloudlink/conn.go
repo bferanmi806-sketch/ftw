@@ -87,10 +87,16 @@ func (l *Link) once(ctx context.Context, snap grantSnapshot) (time.Duration, err
 				return 0, nil
 			}
 		case cloudwire.CloseRestart:
+			wait := spread(cloudwire.RestartSpreadMs(closed.Text))
+			if !up {
+				// A service that sends every box away before hello_ok is
+				// not restarting once; the backoff grows as for a failure.
+				return max(wait, l.backoff()), nil
+			}
 			l.mu.Lock()
 			l.attempt = 0
 			l.mu.Unlock()
-			return spread(cloudwire.RestartSpreadMs(closed.Text)), nil
+			return wait, nil
 		}
 	}
 	if !up {
@@ -158,16 +164,23 @@ func (l *Link) followShard(host string) bool {
 }
 
 // hostFailed counts a dial or handshake that failed at a kept host. After
-// cloudwire.ShardHostFailures in a row the box forgets it, and Endpoint's
-// host names the right one again.
+// cloudwire.ShardHostFailures in a row over at least
+// cloudwire.ShardHostFailWindowMs the box forgets it, and Endpoint's host
+// names the right one again. The window outlasts a shard's restart, so a
+// box does not leave its shard for the default host because of one.
 func (l *Link) hostFailed() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.link == nil || l.link.Host == "" {
 		return
 	}
+	now := l.now()
+	if l.hostFails == 0 {
+		l.hostFailedSince = now
+	}
 	l.hostFails++
-	if l.hostFails >= cloudwire.ShardHostFailures {
+	window := time.Duration(cloudwire.ShardHostFailWindowMs) * time.Millisecond
+	if l.hostFails >= cloudwire.ShardHostFailures && now.Sub(l.hostFailedSince) >= window {
 		l.log.Info("FTW Cloud: the kept host stopped answering; starting again at the default host")
 		l.keepHostLocked("")
 	}

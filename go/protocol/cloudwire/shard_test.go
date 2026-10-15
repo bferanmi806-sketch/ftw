@@ -1,47 +1,56 @@
 package cloudwire
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"testing"
+)
 
-func TestShardHostOKStaysOnTheServicesDomain(t *testing.T) {
-	for _, c := range []struct {
-		base, host string
-		ok         bool
-	}{
-		{"cloud.ftw.energy", "cloud.ftw.energy", true},
-		{"cloud.ftw.energy", "s2.cloud.ftw.energy", true},
-		{"cloud.ftw.energy", "eu-2.cloud.ftw.energy", true},
-		{"cloud.ftw.energy", "a.b.cloud.ftw.energy", false},
-		{"cloud.ftw.energy", "S2.cloud.ftw.energy", false},
-		{"cloud.ftw.energy", "-s2.cloud.ftw.energy", false},
-		{"cloud.ftw.energy", "s2-.cloud.ftw.energy", false},
-		{"cloud.ftw.energy", ".cloud.ftw.energy", false},
-		{"cloud.ftw.energy", "s2cloud.ftw.energy", false},
-		{"cloud.ftw.energy", "evil.example", false},
-		{"cloud.ftw.energy", "cloud.ftw.energy.evil.example", false},
-		{"cloud.ftw.energy", "s2.cloud.ftw.energy:8443", false},
-		{"cloud.ftw.energy", "s2.cloud.ftw.energy/v1/box", false},
-		{"cloud.ftw.energy", "", false},
-		{"127.0.0.1:8443", "127.0.0.1:8443", false},
-		{"", "cloud.ftw.energy", false},
-	} {
-		if got := ShardHostOK(c.base, c.host); got != c.ok {
-			t.Errorf("ShardHostOK(%q, %q) = %v, want %v", c.base, c.host, got, c.ok)
+// testdata/cloud-shard-vectors.json is what every client must decide about a
+// wrong-shard host and a restart's spread. A phone that follows Ftw-Shard on
+// /v1/now carries its bearer token there, so the clients must agree to the
+// byte.
+const shardVectorsPath = "testdata/cloud-shard-vectors.json"
+
+type shardVectors struct {
+	ShardHost []struct {
+		Name, Base, Host string
+		OK               bool `json:"ok"`
+	} `json:"shardHost"`
+	RestartSpread []struct {
+		Name, Reason string
+		MS           int64 `json:"ms"`
+	} `json:"restartSpread"`
+}
+
+func loadShardVectors(t *testing.T) shardVectors {
+	t.Helper()
+	raw, err := os.ReadFile(shardVectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v shardVectors
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.ShardHost) == 0 || len(v.RestartSpread) == 0 {
+		t.Fatal("empty vectors")
+	}
+	return v
+}
+
+func TestShardHostVectors(t *testing.T) {
+	for _, c := range loadShardVectors(t).ShardHost {
+		if got := ShardHostOK(c.Base, c.Host); got != c.OK {
+			t.Errorf("%s: ShardHostOK(%q, %q) = %v, want %v", c.Name, c.Base, c.Host, got, c.OK)
 		}
 	}
 }
 
-func TestRestartSpreadReadsTheReason(t *testing.T) {
-	for reason, want := range map[string]int64{
-		"2500":   2500,
-		" 800 ":  800,
-		"0":      0,
-		"":       RestartSpreadDefaultMs,
-		"soon":   RestartSpreadDefaultMs,
-		"-1":     RestartSpreadDefaultMs,
-		"999999": RestartSpreadMaxMs,
-	} {
-		if got := RestartSpreadMs(reason); got != want {
-			t.Errorf("RestartSpreadMs(%q) = %d, want %d", reason, got, want)
+func TestRestartSpreadVectors(t *testing.T) {
+	for _, c := range loadShardVectors(t).RestartSpread {
+		if got := RestartSpreadMs(c.Reason); got != c.MS {
+			t.Errorf("%s: RestartSpreadMs(%q) = %d, want %d", c.Name, c.Reason, got, c.MS)
 		}
 	}
 }

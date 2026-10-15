@@ -119,7 +119,22 @@ func shardBox(t *testing.T, svc *fakeService, nw *shardNet, pool *x509.CertPool,
 		if keyPath != "" {
 			o.KeyPath = keyPath
 		}
+		o.Now = fastClock()
 	})
+}
+
+// fastClock moves 16 s each time it is read, so three failed dials span
+// the 30 s window that lets a box forget its kept host, without the test
+// waiting for it.
+func fastClock() func() time.Time {
+	var mu sync.Mutex
+	t := time.Now()
+	return func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		t = t.Add(16 * time.Second)
+		return t
+	}
 }
 
 // An instance that does not hold the home names the one that does. The box
@@ -241,7 +256,9 @@ func TestARestartCloseRedialsWithinTheSpreadWithoutBackoff(t *testing.T) {
 	}
 	h := newHarness(t, svc)
 	h.setRoster(func(r *fakeRosterState) { r.tun = true })
-	deadline := time.Now().Add(3 * time.Second)
+	// Each spread is at least cloudwire.RestartSpreadMinMs, so five take
+	// up to 5 s; five failures in a row would back off up to 15.5 s.
+	deadline := time.Now().Add(7 * time.Second)
 	for {
 		svc.mu.Lock()
 		n := svc.conns
@@ -250,8 +267,7 @@ func TestARestartCloseRedialsWithinTheSpreadWithoutBackoff(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			// Five failures in a row back off for up to 0.5+1+2+4+8 s.
-			t.Fatalf("%d connections in 3 s after five restarts", n)
+			t.Fatalf("%d connections in 7 s after five restarts", n)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -268,6 +284,9 @@ func TestSpreadStaysWithinItsMilliseconds(t *testing.T) {
 		if d := spread(40); d < 0 || d >= 40*time.Millisecond {
 			t.Fatalf("spread(40) = %s", d)
 		}
+	}
+	if cloudwire.RestartSpreadMs("0") < cloudwire.RestartSpreadMinMs {
+		t.Fatal("a reason of 0 gives no spread")
 	}
 	if spread(0) != 0 {
 		t.Fatal("spread(0) waits")
@@ -319,5 +338,59 @@ func TestAfterForgettingAHostTheNextRedirectIsFollowed(t *testing.T) {
 	}
 	if got[want-2] != "cloud.test" || got[want-1] != "s2.cloud.test" {
 		t.Fatalf("after forgetting s2 the box dialled %v; want the redirect followed at once", got[:want])
+	}
+}
+
+// Three failed dials within a few seconds, as during a shard's restart, do
+// not send the box back to the default host: the window is 30 s.
+func TestAShardRestartDoesNotMakeTheBoxForgetItsHost(t *testing.T) {
+	s1, s2, nw, pool := twoShards(t)
+	kv := &memKV{}
+	h := shardBox(t, s1, nw, pool, kv, "")
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	s2.waitFor(cloudwire.MsgRoster, 5*time.Second)
+	keyPath := h.link.opts.KeyPath
+	stop(h)
+	nw.mu.Lock()
+	addr := nw.at["s2.cloud.test"]
+	delete(nw.at, "s2.cloud.test") // s2 restarts
+	nw.mu.Unlock()
+	h2 := newHarnessWith(t, s1, []*ecdsa.PublicKey{&s1.key.PublicKey}, kv, func(o *Options) {
+		o.Endpoint, o.RootCAs, o.NetDial, o.KeyPath = "wss://cloud.test:443/v1/box", pool, nw.dial, keyPath
+	})
+	h2.setRoster(func(r *fakeRosterState) { r.tun = true })
+	deadline := time.Now().Add(10 * time.Second)
+	for nw.count("s2.cloud.test") < 1+cloudwire.ShardHostFailures+1 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	before := nw.count("cloud.test")
+	nw.mu.Lock()
+	nw.at["s2.cloud.test"] = addr // s2 is back
+	nw.mu.Unlock()
+	s2.waitFor(cloudwire.MsgRoster, 20*time.Second)
+	if n := nw.count("cloud.test") - before; n != 0 {
+		t.Fatalf("the box went to the default host %d times during its shard's restart", n)
+	}
+}
+
+// A 4503 before hello_ok, again and again, makes the backoff grow: only a
+// box that was connected treats it as a restart.
+func TestARestartBeforeHelloOKKeepsTheBackoff(t *testing.T) {
+	svc := newFakeService(t)
+	svc.restartBeforeOK = true
+	h := newHarness(t, svc)
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		h.link.mu.Lock()
+		attempt := h.link.attempt
+		h.link.mu.Unlock()
+		if attempt >= 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("attempt %d after 8 s of closes before hello_ok", attempt)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

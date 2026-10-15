@@ -45,22 +45,28 @@ const (
 	CapShard = "shard"
 
 	// RestartSpreadDefaultMs is the spread when a CloseRestart reason is
-	// missing or not a number; RestartSpreadMaxMs caps any spread.
+	// missing or not a number. RestartSpreadMinMs and RestartSpreadMaxMs
+	// bound any spread: a reason of 0 must not make every client redial in
+	// a tight loop.
 	RestartSpreadDefaultMs = 5_000
+	RestartSpreadMinMs     = 1_000
 	RestartSpreadMaxMs     = 60_000
-	// ShardHostFailures is how many dials in a row to a kept host may fail
-	// before the client forgets it and starts again at DefaultHost.
-	ShardHostFailures = 3
+	// A client forgets a kept host when ShardHostFailures dials in a row
+	// to it have failed over at least ShardHostFailWindowMs, and starts
+	// again at DefaultHost. The window outlasts a shard's restart.
+	ShardHostFailures     = 3
+	ShardHostFailWindowMs = 30_000
 )
 
 // RestartSpreadMs reads a CloseRestart reason: a whole number of
-// milliseconds, at most RestartSpreadMaxMs. Anything else is the default.
+// milliseconds, from RestartSpreadMinMs to RestartSpreadMaxMs. Anything else
+// is the default.
 func RestartSpreadMs(reason string) int64 {
 	ms, err := strconv.ParseInt(strings.TrimSpace(reason), 10, 64)
 	if err != nil || ms < 0 {
 		return RestartSpreadDefaultMs
 	}
-	return min(ms, RestartSpreadMaxMs)
+	return min(max(ms, RestartSpreadMinMs), RestartSpreadMaxMs)
 }
 
 // ShardHostOK reports whether a client of the service at base may follow a
