@@ -6,7 +6,9 @@ or the phone. The bytes live in `go/protocol/cloudwire`, with golden vectors
 in its `testdata`: `cloud-vectors.json` for the uplink,
 `cloud-app-vectors.json` for one whole app session, its
 [tunnel](#tunnel) messages and a pairing proof, and
-`cloud-once-vectors.json` for one [one-shot read](#one-shot-read).
+`cloud-once-vectors.json` for one [one-shot read](#one-shot-read), and
+`cloud-shard-vectors.json` for which hosts a client may follow and how it
+reads a restart's spread ([Shards and restarts](#shards-and-restarts)).
 `srcfl/ftw-cloud`, the phone and the watch replay them. `cloudwire.View` is the phone's
 [freshness](#freshness) rules in Go, and the cases listed there are its tests.
 
@@ -1117,7 +1119,10 @@ it does not hold names the host that does:
 
 A client follows a wrong-shard answer only to `cloud.ftw.energy` itself or
 one DNS label of lowercase letters, digits and hyphens directly under it,
-such as `s2.cloud.ftw.energy` (`cloudwire.ShardHostOK`). The redirect carries
+such as `s2.cloud.ftw.energy` (`cloudwire.ShardHostOK`). No port, userinfo,
+uppercase or trailing dot; `cloud-shard-vectors.json` holds the cases every
+client must decide alike. A phone that follows `Ftw-Shard` on `/v1/now`
+carries its bearer token there. The redirect carries
 no trust: the box still checks the TLS certificate for that host and
 `hello_ok` against the service keys it was built with, and the phone still
 runs Noise IK to the service Noise key it carries.
@@ -1127,8 +1132,10 @@ runs Noise IK to the service Noise key it carries.
 - It follows once. A second wrong-shard answer before it is connected again
   sends it back to `cloud.ftw.energy` after backoff, where it may follow once
   more.
-- After 3 dials in a row that fail at a kept host, the client forgets it and
-  starts again at `cloud.ftw.energy`.
+- After 3 dials in a row that fail at a kept host over at least 30 s, the
+  client forgets it and starts again at `cloud.ftw.energy`. The window
+  outlasts a shard's restart, so a restart does not send its clients to
+  the default host.
 - A box lists `shard` in `hello.caps` when it follows 4421 and spreads its
   redial after 4503. A second shard holds homes only once their boxes list
   it.
@@ -1136,19 +1143,33 @@ runs Noise IK to the service Noise key it carries.
 **Directory.** Each instance holds the same directory: the shards' hosts, a
 shard for each of 256 buckets of homes, and single homes moved on their own.
 A home's bucket is the first byte of SHA-256 of `ftw.cloud.shard\0` and the
-home id. Moving homes means copying their registry rows to the new shard,
-then updating the directory on every instance. Their clients follow the
-redirect at their next connection, and extension tokens keep working,
-because the rows hold their hashes.
+home id. Moving homes copies their registry rows to the new shard, then
+updates the directory on every instance; the tool for it comes with the
+second shard. Their clients follow the redirect at their next connection,
+and extension tokens keep working, because the rows hold their hashes and
+each token names its home.
+
+Assistants' MCP and OAuth clients belong to other parties and follow neither
+4421 nor 421. `/mcp` and `/oauth/*` therefore stay on `cloud.ftw.energy`.
+Once there is a second shard, that instance forwards each call to the shard
+that holds the home; the client never sees another host.
 
 **Restart.** An instance that is about to stop, for a deploy or a move, stops
 accepting connections and closes every socket with 4503. The reason is a
 spread in milliseconds, in decimal, which the service sets from how many
 sockets it holds and how fast the next instance can take them. The client
-redials at a uniformly random moment within the spread, at most 60 s, and
-does not count the close as a failed attempt. A missing or unreadable reason
-means 5 s. The service sends no `box.unreachable` for boxes it closed this
-way.
+redials at a uniformly random moment within the spread, from 1 s to 60 s,
+and does not count the close as a failed attempt. A missing or unreadable
+reason means 5 s. A 4503 that comes before `hello_ok`, or before message 2
+on `/v1/app`, is a failed attempt: the backoff grows, so a service that
+sends every client away at once cannot hold them in a loop. The service
+sends no `box.unreachable` for boxes it closed this way.
+
+A command in flight when the service stops may be lost with the socket,
+before or after the box acted on it. A phone treats a command that got no
+answer as unknown, not failed: it shows the box's state once the session is
+back, and sends the command again only if the state says it was not
+applied.
 
 ## Service state
 
@@ -1203,8 +1224,8 @@ the registry's roles would remove that copy.
 | What | Value |
 |---|---|
 | Reconnect backoff, box and phone | 0.5 s to 60 s, full jitter |
-| Redial after 4503 | Uniform within the reason's spread; 5 s without one; at most 60 s |
-| Wrong-shard redirects followed | One per connection; a kept host is forgotten after 3 failed dials |
+| Redial after 4503 | Uniform within the reason's spread, 1 s to 60 s; 5 s without one; backoff when it comes before `hello_ok` or message 2 |
+| Wrong-shard redirects followed | One per connection; a kept host is forgotten after 3 failed dials over at least 30 s |
 | Shard buckets | 256 |
 | Phone retry after 4403 | Half to all of min(15 s × 2ⁿ, 5 min) |
 | Ping, read deadline, write deadline | 15 s, 45 s, 10 s, on both sockets |
