@@ -58,6 +58,14 @@ type shardNet struct {
 	mu    sync.Mutex
 	at    map[string]string
 	dials map[string]int
+	seq   []string
+}
+
+// order is every name dialled, in order.
+func (n *shardNet) order() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]string(nil), n.seq...)
 }
 
 func (n *shardNet) dial(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -67,6 +75,7 @@ func (n *shardNet) dial(ctx context.Context, network, addr string) (net.Conn, er
 	}
 	n.mu.Lock()
 	n.dials[host]++
+	n.seq = append(n.seq, host)
 	to, ok := n.at[host]
 	n.mu.Unlock()
 	if !ok {
@@ -208,6 +217,7 @@ func TestAKeptHostThatStopsAnsweringIsForgotten(t *testing.T) {
 	if n := nw.count("s2.cloud.test"); n != 1+cloudwire.ShardHostFailures {
 		t.Fatalf("the gone host was dialled %d times, want %d", n, 1+cloudwire.ShardHostFailures)
 	}
+
 	if rec, _ := loadJSON[linkRecord](kv, linkKey); rec == nil || rec.Host != "" {
 		t.Fatalf("stored link %+v", rec)
 	}
@@ -264,5 +274,50 @@ func TestSpreadStaysWithinItsMilliseconds(t *testing.T) {
 	}
 	if !strings.HasPrefix(cloudwire.DefaultHost, "cloud.") {
 		t.Fatal(cloudwire.DefaultHost)
+	}
+}
+
+// A host kept under another Endpoint, as after a build moved the service, is
+// not dialled.
+func TestAKeptHostOffTheEndpointsDomainIsNotDialled(t *testing.T) {
+	s1, _, nw, pool := twoShards(t)
+	s1.wrongShard = ""
+	kv := &memKV{}
+	h := shardBox(t, s1, nw, pool, kv, "")
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	s1.waitFor(cloudwire.MsgRoster, 5*time.Second)
+	h.link.mu.Lock()
+	rec := *h.link.link
+	rec.Host = "s2.old-cloud.example"
+	h.link.link = &rec
+	h.link.mu.Unlock()
+	if got := h.link.endpoint(); got != "wss://cloud.test:443/v1/box" {
+		t.Fatalf("dials %s", got)
+	}
+}
+
+// After a host the box followed to is forgotten, the default host's next
+// redirect is followed at once, not refused as a second hop.
+func TestAfterForgettingAHostTheNextRedirectIsFollowed(t *testing.T) {
+	s1, _, nw, pool := twoShards(t)
+	// s2 never answers.
+	nw.mu.Lock()
+	delete(nw.at, "s2.cloud.test")
+	nw.mu.Unlock()
+	h := shardBox(t, s1, nw, pool, nil, "")
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	// cloud.test, then s2 until it is forgotten, then cloud.test again,
+	// and the dial after that.
+	want := 1 + cloudwire.ShardHostFailures + 2
+	deadline := time.Now().Add(15 * time.Second)
+	for len(nw.order()) < want && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	got := nw.order()
+	if len(got) < want {
+		t.Fatalf("dials %v", got)
+	}
+	if got[want-2] != "cloud.test" || got[want-1] != "s2.cloud.test" {
+		t.Fatalf("after forgetting s2 the box dialled %v; want the redirect followed at once", got[:want])
 	}
 }

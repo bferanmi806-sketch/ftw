@@ -112,7 +112,8 @@ func spread(ms int64) time.Duration {
 }
 
 // endpoint is the uplink at the host the service last named for this home,
-// or at Endpoint's own host.
+// or at Endpoint's own host. A kept host that is not under Endpoint's, as
+// after a build moved the service, is not dialled.
 func (l *Link) endpoint() string {
 	l.mu.Lock()
 	host := ""
@@ -121,7 +122,7 @@ func (l *Link) endpoint() string {
 	}
 	l.mu.Unlock()
 	u, err := url.Parse(l.opts.Endpoint)
-	if host == "" || err != nil {
+	if host == "" || err != nil || !cloudwire.ShardHostOK(u.Hostname(), host) {
 		return l.opts.Endpoint
 	}
 	if port := u.Port(); port != "" {
@@ -172,9 +173,14 @@ func (l *Link) hostFailed() {
 	}
 }
 
-// keepHostLocked stores the host the uplink dials. The caller holds l.mu.
+// keepHostLocked stores the host the uplink dials. Forgetting it starts a
+// new chain at Endpoint's host, where one redirect may be followed again.
+// The caller holds l.mu.
 func (l *Link) keepHostLocked(host string) {
 	l.hostFails = 0
+	if host == "" {
+		l.shardHops = 0
+	}
 	if l.link.Host == host {
 		return
 	}
