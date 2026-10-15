@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math/big"
@@ -246,6 +247,14 @@ var (
 	ErrOfferExpired   = errors.New("protocol: the offer has expired")
 	ErrOfferShape     = errors.New("protocol: the offer is malformed")
 )
+
+// OfferKid names an offer key: the first 16 characters of base64url, without
+// padding, of SHA-256 over its SEC1 point. FTW Cloud publishes kid and key at
+// /.well-known/ftw-offer-key; the box and the apps pin a list of them.
+func OfferKid(pub []byte) string {
+	sum := sha256.Sum256(pub)
+	return base64.RawURLEncoding.EncodeToString(sum[:])[:16]
+}
 
 // OfferBytes is what an offer key signs: ["ftw.offer.v1", o].
 func OfferBytes(o []byte) ([]byte, error) {

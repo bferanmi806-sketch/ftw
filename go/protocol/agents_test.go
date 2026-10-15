@@ -411,13 +411,13 @@ func makeOfferVector(t *testing.T) offerVector {
 	if err != nil {
 		t.Fatal(err)
 	}
-	signed, err := Marshal(SignedOffer{O: o, Kid: "test-1", Sig: signRaw(t, key, msg)})
+	signed, err := Marshal(SignedOffer{O: o, Kid: OfferKid(vectorPub(key)), Sig: signRaw(t, key, msg)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return offerVector{
 		Note: "docs/agents.md, The grant offer. The link fragment is base64url of signedOfferHex.",
-		Kid:  "test-1", PubHex: hex.EncodeToString(vectorPub(key)), NowMs: offerNowMs,
+		Kid:  OfferKid(vectorPub(key)), PubHex: hex.EncodeToString(vectorPub(key)), NowMs: offerNowMs,
 		SignedHex: hex.EncodeToString(signed), OHex: hex.EncodeToString(o), BytesHex: hex.EncodeToString(msg),
 	}
 }
@@ -482,7 +482,9 @@ func TestTheOfferVectorOpens(t *testing.T) {
 	}
 }
 
-func keys2() map[string][]byte { return map[string][]byte{"test-1": vectorPub(offerKey())} }
+func keys2() map[string][]byte {
+	return map[string][]byte{OfferKid(vectorPub(offerKey())): vectorPub(offerKey())}
+}
 
 func signOffer(t *testing.T, o GrantOffer) SignedOffer {
 	t.Helper()
@@ -490,7 +492,7 @@ func signOffer(t *testing.T, o GrantOffer) SignedOffer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return SignedOffer{O: raw, Kid: "test-1", Sig: signRaw(t, offerKey(), mustOfferBytes(t, raw))}
+	return SignedOffer{O: raw, Kid: OfferKid(vectorPub(offerKey())), Sig: signRaw(t, offerKey(), mustOfferBytes(t, raw))}
 }
 
 func mustOfferBytes(t *testing.T, o []byte) []byte {

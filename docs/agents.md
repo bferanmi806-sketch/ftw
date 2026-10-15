@@ -581,8 +581,15 @@ the link's fragment, and what FTW Cloud's code lookup returns for a code:
 - `sig` is ECDSA P-256 with SHA-256 over the deterministic CBOR of
   `["ftw.offer.v1", o]`, `r ‖ s`, by FTW Cloud's offer key named `kid`.
 
-The app and the box pin the offer keys, as they pin the service key, and
-refuse an offer no pinned key signed. A build that pins none opens no offer.
+The app and the box pin a list of offer keys, as they pin the service key,
+and refuse an offer no pinned key signed. A build that pins none opens no
+offer. A key's `kid` is the first 16 characters of base64url, without
+padding, of SHA-256 over its SEC1 point (`protocol.OfferKid`); the box drops a
+pinned entry whose `kid` does not match its key. FTW Cloud's `keys` part
+makes the key on the host and keeps it sealed; FTW Cloud publishes `kid` and
+the public key at `https://cloud.ftw.energy/.well-known/ftw-offer-key`, and a
+release pins them. A new key sits beside the old one until every offer the
+old one signed has expired.
 
 | Field | Type | Meaning |
 |---|---|---|
