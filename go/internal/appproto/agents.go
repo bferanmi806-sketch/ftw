@@ -652,7 +652,10 @@ func (h *Handler) onAgentConfirm(ctx context.Context, env Envelope) error {
 	if err := protocol.UnmarshalSigned(env.B, &m); err != nil {
 		return h.refuse(env.ID, ErrUnknownOp, map[string]any{"t": env.T, "field": "body"})
 	}
-	now, _ := h.wall()
+	now, synced := h.wall()
+	if m.Approve && !synced {
+		return h.refuse(env.ID, ErrUnavailable, map[string]any{"subsystem": "clock"})
+	}
 	live := h.liveAgents()
 	req, ok := h.cfg.Agents.pending(m.ReqID, now, live)
 	if !ok {
@@ -907,30 +910,51 @@ func (h *Handler) onLogsGet(env Envelope) error {
 	if m.Level == "" {
 		floor = levelRank("WARN")
 	}
+	if m.BeforeMs < 0 || m.AfterMs < 0 || (m.BeforeMs > 0 && m.AfterMs >= m.BeforeMs) {
+		return h.refuse(env.ID, ErrUnknownOp, map[string]any{"t": env.T, "field": "beforeMs"})
+	}
 	red := h.cfg.Redactor()
-	// The ring holds every level; read more than asked so the filter still
-	// fills the answer.
-	lines := h.cfg.Logs.Recent(n * 8)
-	out := protocol.Logs{Lines: []protocol.LogLine{}}
-	for _, l := range lines {
-		if levelRank(l.Level) < floor {
+	// The whole ring, every level: the filter and the cursors pick from it.
+	var picked []redact.Line
+	for _, l := range h.cfg.Logs.Recent(logsScan) {
+		if levelRank(l.Level) < floor || (m.BeforeMs > 0 && l.TsMs >= m.BeforeMs) || (m.AfterMs > 0 && l.TsMs <= m.AfterMs) {
 			continue
 		}
+		picked = append(picked, l)
+	}
+	// afterMs pages forward from the cursor: the oldest lines after it.
+	// Otherwise the page is the newest lines before beforeMs, or now.
+	forward := m.AfterMs > 0 && m.BeforeMs == 0
+	out := protocol.Logs{Lines: []protocol.LogLine{}}
+	if len(picked) > n {
+		out.More = true
+		if forward {
+			picked = picked[:n]
+		} else {
+			picked = picked[len(picked)-n:]
+		}
+	}
+	for _, l := range picked {
 		r := red.Log(l)
 		out.Lines = append(out.Lines, protocol.LogLine{Ts: r.TsMs, Level: r.Level, Src: r.Src, Msg: r.Msg})
 	}
-	if len(out.Lines) > n {
-		out.Dropped += uint64(len(out.Lines) - n)
-		out.Lines = out.Lines[len(out.Lines)-n:]
-	}
-	// One bulk frame holds the answer. The oldest lines give way.
+	// One bulk frame holds the answer. The lines furthest from the cursor
+	// give way, and the next page reaches them.
 	for !h.fits(protocol.MsgLogs, env.ID, out) && len(out.Lines) > 0 {
 		drop := max(1, len(out.Lines)/4)
 		out.Dropped += uint64(drop)
-		out.Lines = out.Lines[drop:]
+		out.More = true
+		if forward {
+			out.Lines = out.Lines[:len(out.Lines)-drop]
+		} else {
+			out.Lines = out.Lines[drop:]
+		}
 	}
 	return h.sendBulk(protocol.MsgLogs, env.ID, out)
 }
+
+// logsScan is how far back logs.get looks: the box's whole log ring.
+const logsScan = 2000
 
 func levelRank(level string) int {
 	switch strings.ToUpper(level) {
@@ -995,7 +1019,12 @@ func (h *Handler) Decide(ctx context.Context, reqID string, approve bool) (strin
 	if h.cfg.Access == nil {
 		return "", nil, protocol.Refuse(ErrUnavailable, map[string]any{"subsystem": "access"})
 	}
-	now, _ := h.wall()
+	now, synced := h.wall()
+	if approve && !synced {
+		// A request's life is wall time. Without a clock to trust, the box
+		// cannot tell one that has ended from one that has not.
+		return "", nil, protocol.Refuse(ErrUnavailable, map[string]any{"subsystem": "clock"})
+	}
 	req, ok := h.cfg.Agents.pending(reqID, now, h.liveAgents())
 	if !ok {
 		h.audit("", protocol.MsgAgentConfirm, reqID, protocol.ErrNotFound)

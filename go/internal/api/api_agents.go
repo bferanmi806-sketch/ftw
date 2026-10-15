@@ -48,6 +48,9 @@ type AgentAdmin interface {
 	RevokeAgent(by, id string) error
 	Decide(ctx context.Context, by, reqID string, approve bool) (string, *protocol.CmdResult, error)
 	Audit(beforeSeq int64, n int) ([]protocol.AuditRow, bool, error)
+	// ResetClock makes the box trust its clock again after it once ran
+	// ahead, and ends every agent's grant.
+	ResetClock(by string) error
 }
 
 func (s *Server) agentRoutes() {
@@ -58,6 +61,22 @@ func (s *Server) agentRoutes() {
 	s.handle("DELETE /api/agents/{id}", Local, s.handleAgentsRevoke)
 	s.handle("POST   /api/agent-requests/{reqId}", Local, s.handleAgentsDecide)
 	s.handle("POST   /api/agents/approval-key", Local, s.handleAgentsApprovalKey)
+	s.handle("POST   /api/agents/clock-reset", Local, s.handleAgentsClockReset)
+}
+
+// handleAgentsClockReset is for a clock that once ran ahead and now keeps
+// every agent locked out. It needs the house password, and every agent's
+// grant ends.
+func (s *Server) handleAgentsClockReset(w http.ResponseWriter, r *http.Request) {
+	by, ok := s.agentsGate(w, r, true)
+	if !ok {
+		return
+	}
+	if err := s.deps.Agents.ResetClock(by); err != nil {
+		agentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // agentsGate admits a client on the home network, and with widen only one

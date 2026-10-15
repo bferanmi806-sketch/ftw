@@ -682,6 +682,64 @@ func TestLogsReachAnAgentRedacted(t *testing.T) {
 	}
 }
 
+// Cursors page through the ring: beforeMs back, afterMs forward, and more
+// says the asked side has lines left.
+func TestLogsPageWithCursors(t *testing.T) {
+	r := newAgentRig(t)
+	row, _ := r.grant(apiauth.RoleAgent, []string{protocol.ScopeLogsRead}, nil, protocol.Caps{}, time.Hour, protocol.Principal{})
+	for ts := int64(1); ts <= 10; ts++ {
+		r.logs = append(r.logs, redact.Line{TsMs: ts * 100, Level: "WARN", Msg: "line"})
+	}
+	h, rec := r.agentSession(row)
+	page := func(m protocol.LogsGet) (first, last int64, n int, more bool) {
+		t.Helper()
+		rec.reset()
+		deliver(t, h, protocol.MsgLogsGet, ptrU32(1), m)
+		logs := body[protocol.Logs](t, rec.last(t, protocol.MsgLogs))
+		if len(logs.Lines) == 0 {
+			return 0, 0, 0, logs.More
+		}
+		return logs.Lines[0].Ts, logs.Lines[len(logs.Lines)-1].Ts, len(logs.Lines), logs.More
+	}
+	if first, last, n, more := page(protocol.LogsGet{N: 3}); first != 800 || last != 1000 || n != 3 || !more {
+		t.Errorf("newest: %d..%d %d more=%v", first, last, n, more)
+	}
+	if first, last, n, more := page(protocol.LogsGet{N: 3, BeforeMs: 800}); first != 500 || last != 700 || n != 3 || !more {
+		t.Errorf("back from 800: %d..%d %d more=%v", first, last, n, more)
+	}
+	if first, last, n, more := page(protocol.LogsGet{N: 3, BeforeMs: 300}); first != 100 || last != 200 || n != 2 || more {
+		t.Errorf("the oldest: %d..%d %d more=%v", first, last, n, more)
+	}
+	if first, last, n, more := page(protocol.LogsGet{N: 3, AfterMs: 200}); first != 300 || last != 500 || n != 3 || !more {
+		t.Errorf("forward from 200: %d..%d %d more=%v", first, last, n, more)
+	}
+	if first, last, n, more := page(protocol.LogsGet{N: 3, AfterMs: 400, BeforeMs: 700}); first != 500 || last != 600 || n != 2 || more {
+		t.Errorf("between: %d..%d %d more=%v", first, last, n, more)
+	}
+	deliver(t, h, protocol.MsgLogsGet, ptrU32(2), protocol.LogsGet{AfterMs: 700, BeforeMs: 700})
+	if got := errCode(t, rec); got != ErrUnknownOp {
+		t.Errorf("a window that is empty by its own bounds: %s", got)
+	}
+}
+
+// A phone with the scope reads the typed reads too.
+func TestAPhoneReadsTheTypedReads(t *testing.T) {
+	r := newAgentRig(t)
+	owner, rec := r.ownerSession()
+	deliver(t, owner, protocol.MsgLoadpointsGet, ptrU32(1), struct{}{})
+	if lp := body[cloudwire.LP](t, rec.last(t, protocol.MsgLoadpoints)); len(lp.Loadpoints) != 1 {
+		t.Errorf("loadpoints %+v", lp)
+	}
+	deliver(t, owner, protocol.MsgDriversGet, ptrU32(2), struct{}{})
+	if d := body[protocol.Drivers](t, rec.last(t, protocol.MsgDrivers)); len(d.Drivers) != 3 {
+		t.Errorf("drivers %+v", d)
+	}
+	deliver(t, owner, protocol.MsgCarsGet, ptrU32(3), struct{}{})
+	if got := errCode(t, rec); got != ErrUnknownOp {
+		t.Errorf("cars.get before the car store: %s", got)
+	}
+}
+
 func TestAnOwnerPhoneManagesAgents(t *testing.T) {
 	r := newAgentRig(t)
 	owner, rec := r.ownerSession()
@@ -881,6 +939,23 @@ func opArgsOf(t *testing.T, r *agentRig, op string, args map[string]any) *ErrorB
 	t.Helper()
 	h, _ := r.agentSession(r.controlAgent())
 	return h.opArgs(op, args)
+}
+
+// Approving needs a clock to trust; declining does not.
+func TestApprovingNeedsAClock(t *testing.T) {
+	r := newAgentRig(t)
+	h, rec := r.agentSession(r.controlAgent())
+	deliver(t, h, protocol.MsgAgentRequest, ptrU32(1), protocol.AgentRequest{Op: OpSetMode, Args: map[string]any{"mode": "idle"}})
+	reqID, _ := body[map[string]any](t, rec.last(t, protocol.MsgAgentOK))["reqId"].(string)
+	owner, _ := r.ownerSession()
+	r.synced = false
+	var refusal *protocol.Refusal
+	if _, _, err := owner.Decide(context.Background(), reqID, true); !errors.As(err, &refusal) || refusal.Code != ErrUnavailable {
+		t.Fatalf("approving without a clock: %v", err)
+	}
+	if state, _, err := owner.Decide(context.Background(), reqID, false); err != nil || state != protocol.RequestDeclined {
+		t.Errorf("declining without a clock: %s %v", state, err)
+	}
 }
 
 // The typed reads name nothing: chargers and sources go by agent ids.

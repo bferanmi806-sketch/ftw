@@ -21,6 +21,7 @@ type stubAgents struct {
 	by       []string
 	home     string
 	unsynced bool
+	resets   int
 }
 
 func (a *stubAgents) Agents() []protocol.AgentRow              { return nil }
@@ -48,6 +49,11 @@ func (a *stubAgents) Decide(_ context.Context, by, _ string, approve bool) (stri
 	return "approved", nil, nil
 }
 func (a *stubAgents) Audit(int64, int) ([]protocol.AuditRow, bool, error) { return nil, false, nil }
+func (a *stubAgents) ResetClock(by string) error {
+	a.resets++
+	a.by = append(a.by, by)
+	return nil
+}
 func (a *stubAgents) OpenOffer(raw string) (protocol.GrantOffer, error) {
 	signed, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
@@ -193,6 +199,22 @@ func TestALostApprovalKeyIsReplacedOnlyWithThePassword(t *testing.T) {
 	w = httptest.NewRecorder()
 	s.handleAgentsApprovalKey(w, signedIn(localRequest(http.MethodPost, "/api/agents/approval-key", body)))
 	if w.Code != http.StatusNoContent || len(agents.replaced) != 1 {
+		t.Fatalf("with the password: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Resetting the clock's mark ends every grant and needs the house password.
+func TestTheClockResetNeedsThePassword(t *testing.T) {
+	agents := newStubAgents("")
+	s := New(&Deps{Agents: agents})
+	w := httptest.NewRecorder()
+	s.handleAgentsClockReset(w, localRequest(http.MethodPost, "/api/agents/clock-reset", ""))
+	if w.Code != http.StatusForbidden || agents.resets != 0 {
+		t.Fatalf("without the password: %d", w.Code)
+	}
+	w = httptest.NewRecorder()
+	s.handleAgentsClockReset(w, signedIn(localRequest(http.MethodPost, "/api/agents/clock-reset", "")))
+	if w.Code != http.StatusNoContent || agents.resets != 1 {
 		t.Fatalf("with the password: %d %s", w.Code, w.Body.String())
 	}
 }

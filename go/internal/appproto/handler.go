@@ -424,7 +424,8 @@ func (h *Handler) dispatch(ctx context.Context, env Envelope) error {
 		return h.onAgentConfirm(ctx, env)
 	case protocol.MsgAuditGet:
 		return h.onAuditGet(env)
-	case protocol.MsgHealthGet, protocol.MsgLogsGet, protocol.MsgConfigGet, protocol.MsgEventsGet, protocol.MsgDiagRun:
+	case protocol.MsgHealthGet, protocol.MsgLogsGet, protocol.MsgConfigGet, protocol.MsgEventsGet, protocol.MsgDiagRun,
+		protocol.MsgLiveGet, protocol.MsgLoadpointsGet, protocol.MsgDriversGet, protocol.MsgCarsGet:
 		return h.onRead(env)
 	case MsgPlanGet:
 		return h.onPlanGet(env.ID)

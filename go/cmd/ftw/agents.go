@@ -77,6 +77,17 @@ func (w *wallMark) load(st *state.Store) {
 	}
 }
 
+// reset makes now the mark, lower or not, and keeps it.
+func (w *wallMark) reset(st *state.Store, nowMs int64) error {
+	w.mu.Lock()
+	w.highMs, w.saved = nowMs, nowMs
+	w.mu.Unlock()
+	if st == nil {
+		return nil
+	}
+	return st.SaveConfig(wallHighKey, strconv.FormatInt(nowMs, 10))
+}
+
 // save keeps the mark, at most once a sweep.
 func (w *wallMark) save(st *state.Store) {
 	if st == nil {
@@ -461,6 +472,26 @@ func (b boxPageAgents) RevokeAgent(by, id string) error {
 	if err == nil {
 		b.p.state.Forget(id)
 	}
+	return err
+}
+
+// ResetClock is for a clock that once ran ahead: until it passes that time
+// again, the box trusts no wall time and every agent stays locked out. The
+// owner says the clock is right now. Every agent's grant ends with it, since
+// a grant made while the clock ran ahead would end years late.
+func (b boxPageAgents) ResetClock(by string) error {
+	if !cloudlink.ClockSynced() {
+		err := protocol.Refuse(protocol.ErrUnavailable, map[string]any{"subsystem": "clock"})
+		b.record(by, "agents.clock.reset", "", err)
+		return err
+	}
+	for _, row := range b.p.access.Agents() {
+		if err := b.RevokeAgent(by, row.ID); err != nil {
+			return err
+		}
+	}
+	err := agentWall.reset(b.p.st, time.Now().UnixMilli())
+	b.record(by, "agents.clock.reset", "", err)
 	return err
 }
 
