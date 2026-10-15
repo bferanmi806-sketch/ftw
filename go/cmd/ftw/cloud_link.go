@@ -392,10 +392,16 @@ func (c *cloudSession) load() *cloudlink.Link {
 }
 
 // caps adds cloud.link to an app session's capabilities when this build can
-// run the uplink. A build that names no service says nothing.
+// run the uplink, and cloud.tun when the link also carries the phones' own
+// sessions. A build that names no service says nothing.
 func (c *cloudSession) caps(caps []string) []string {
-	if link := c.load(); link != nil && link.Available() {
-		return append(slices.Clip(caps), appproto.CapCloudLink)
+	link := c.load()
+	if link == nil || !link.Available() {
+		return caps
+	}
+	caps = append(slices.Clip(caps), appproto.CapCloudLink)
+	if link.TakesTun() {
+		caps = append(caps, appproto.CapCloudTun)
 	}
 	return caps
 }
