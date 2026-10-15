@@ -91,6 +91,8 @@ type (
 	PlanReason       = protocol.PlanReason
 	PlanSlot         = protocol.PlanSlot
 	Plan             = protocol.Plan
+	PlanCar          = protocol.PlanCar
+	PlanCarWindow    = protocol.PlanCarWindow
 	PriceGet         = protocol.PriceGet
 	PriceSlot        = protocol.PriceSlot
 	Price            = protocol.Price

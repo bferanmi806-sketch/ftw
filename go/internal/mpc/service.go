@@ -239,6 +239,8 @@ type Service struct {
 	// decisionIDFactory is a test seam. Production uses a random UUID for every
 	// accepted plan. It is read only while mu is held at the publish gate.
 	decisionIDFactory func() string
+	// planChanged is told when what a plan reader sees moves. Guarded by mu.
+	planChanged func()
 
 	// MinArbitrageSpreadOreKwh flows in from config.Planner. Copied into
 	// Params so the DP applies the arbitrage cycle deadband. See
@@ -454,6 +456,18 @@ func (s *Service) UpdatePlannerScalars(p Params, baseLoad float64, horizon, inte
 		s.Interval = interval
 	}
 	s.mu.Unlock()
+}
+
+// OnPlanChange registers fn, called each time what a plan reader sees moves:
+// a plan is published, or the newest replan ends without one. fn runs on the
+// replanning goroutine without the service lock and must not block.
+func (s *Service) OnPlanChange(fn func()) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.planChanged = fn
 }
 
 // Latest returns the most recently computed plan (nil before first run).
@@ -1412,6 +1426,7 @@ func (s *Service) finishReplan(request replanRequest) {
 	defer s.replanWG.Done()
 	contextErr := request.ctx.Err()
 	request.cancel()
+	var changed func()
 	s.mu.Lock()
 	if request.generation == s.latestReplanGeneration {
 		s.activeReplanCancel = nil
@@ -1427,9 +1442,13 @@ func (s *Service) finishReplan(request replanRequest) {
 			// it when the replacement fails. A later retry must publish a new
 			// plan before dispatch resumes; queuing work alone is not enough.
 			s.failedReplanGeneration = request.generation
+			changed = s.planChanged
 		}
 	}
 	s.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
 }
 
 func (s *Service) canceledReplan(request replanRequest, stage string) *Plan {
@@ -2072,7 +2091,11 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	reason := request.reason
 	replanAtMs := s.lastReplanAt.UnixMilli()
 	saveDiag := s.SaveDiag
+	changed := s.planChanged
 	s.mu.Unlock()
+	if changed != nil {
+		changed()
+	}
 	if captured.Record != nil {
 		captured.Record(baseForecastSlots, fallbackSlots, plan.DecisionID, replanAtMs)
 	}

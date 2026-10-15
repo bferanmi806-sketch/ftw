@@ -561,6 +561,41 @@ func (a *appPlans) CeilingW() *int64 {
 	return &ceiling
 }
 
+// appPlanCars is each charger's share of the plan, read from the same plan
+// snapshot and the same windows GET /api/loadpoints serves.
+type appPlanCars struct {
+	planner *mpc.Service
+	mgr     *loadpoint.Manager
+}
+
+func (a *appPlanCars) PlanCars(now time.Time) []appproto.PlanCar {
+	snap := a.planner.PlanSnapshot()
+	states := a.mgr.States()
+	out := make([]appproto.PlanCar, 0, len(states))
+	for _, st := range states {
+		car := appproto.PlanCar{
+			ID: st.ID, PluggedIn: st.PluggedIn,
+			Pending: snap.Pending, Outdated: snap.Outdated,
+			Windows: []appproto.PlanCarWindow{},
+		}
+		windows, totalWh := snap.LoadpointPlanWindows(st.ID, now, api.MaxPlanWindows)
+		for _, w := range windows {
+			car.Windows = append(car.Windows, appproto.PlanCarWindow{
+				StartMs: w.Start.UnixMilli(), EndMs: w.End.UnixMilli(), Wh: int64(math.Round(w.EnergyWh)),
+			})
+		}
+		car.TotalWh = int64(math.Round(totalWh))
+		if snap.Plan != nil && !snap.Pending && !snap.Outdated {
+			if wh, ok := snap.Plan.LoadpointShortfallWh[st.ID]; ok && !math.IsNaN(wh) && !math.IsInf(wh, 0) {
+				short := int64(math.Round(max(0, wh)))
+				car.ShortfallWh = &short
+			}
+		}
+		out = append(out, car)
+	}
+	return out
+}
+
 // startAppLink connects the box to the app relay when its loaded config leaves
 // the link enabled. Config defaults an omitted app_link section on.
 //
@@ -630,6 +665,19 @@ func startAppLink(
 		caps = append(caps, appproto.CapDerEv)
 	}
 
+	// The plan reaches every streaming phone the moment the planner
+	// replaces it, with each car's windows, so a car plugged in shows its
+	// plan without a read.
+	var planCars appproto.PlanCars
+	var planFeed *appproto.PlanFeed
+	if planner != nil {
+		planFeed = appproto.NewPlanFeed(appproto.PlanSettle, func() bool { return planner.PlanSnapshot().Pending })
+		planner.OnPlanChange(planFeed.Changed)
+		if lpMgr != nil {
+			planCars = &appPlanCars{planner: planner, mgr: lpMgr}
+		}
+	}
+
 	// Prices ride on the price service, and only when it has a zone and a
 	// store to have fetched into. With either missing there is nothing to
 	// serve, so the capability stays unsaid rather than advertised and empty.
@@ -682,6 +730,8 @@ func startAppLink(
 				History:      history,
 				Prices:       priceReader,
 				Loadpoints:   loadpoints,
+				PlanCars:     planCars,
+				PlanFeed:     planFeed,
 				API:          gateway,
 				Caller:       caller,
 				Grants:       grants,

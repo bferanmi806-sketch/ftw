@@ -54,6 +54,12 @@ type Config struct {
 	// window.
 	PlannerPrefs PlannerPrefs
 
+	// PlanCars puts each charger's share on the plan, or nil on a box with
+	// no chargers. PlanFeed pushes the plan when the box replans, or nil for
+	// a box that pushes it only after a command.
+	PlanCars PlanCars
+	PlanFeed *PlanFeed
+
 	// Caller is whose session this is. Required: a session always belongs to
 	// one enrolled device, and a handler that does not know which one cannot
 	// refuse anything.
@@ -229,7 +235,7 @@ func New(cfg Config) (*Handler, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Handler{
+	h := &Handler{
 		cfg:          cfg,
 		log:          cfg.Logger.With("component", "appproto"),
 		modes:        wireModes(control.ModeCatalog()),
@@ -242,7 +248,13 @@ func New(cfg Config) (*Handler, error) {
 		cadenceEvery: 1,
 		cadenceLeft:  1,
 		lastSent:     map[string]int64{},
-	}, nil
+	}
+	// An exchange sends nothing unasked; a watch reads the plan from FTW
+	// Cloud instead.
+	if cfg.PlanFeed != nil && !cfg.Exchange {
+		cfg.PlanFeed.join(h)
+	}
+	return h, nil
 }
 
 // Close ends the handler's own work when the session goes.
@@ -253,6 +265,9 @@ func New(cfg Config) (*Handler, error) {
 // passthrough.
 func (h *Handler) Close() {
 	h.cancel()
+	if h.cfg.PlanFeed != nil {
+		h.cfg.PlanFeed.leave(h)
+	}
 	h.histMu.Lock()
 	if h.histCancel != nil {
 		h.histCancel()
@@ -1108,6 +1123,9 @@ func (h *Handler) sendPlan(id *uint32) error {
 		h.cfg.Clock.UptimeMs(),
 		h.cfg.Clock.Now(),
 	)
+	if h.cfg.PlanCars != nil {
+		body.Cars = h.cfg.PlanCars.PlanCars(h.cfg.Clock.Now())
+	}
 
 	// The optimizer plans further than the wire carries: 193 fifteen-minute
 	// slots encode to ~17 kB and the largest bulk bucket is 16 kB. Send the

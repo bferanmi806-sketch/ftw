@@ -492,6 +492,36 @@ type Plan struct {
 	Stale bool `cbor:"stale"`
 	// CeilingW is the import ceiling being defended, nil when there is none.
 	CeilingW *int64 `cbor:"ceilingW"`
+	// Cars is each charger's share of this plan, as GET /api/loadpoints
+	// reports it, so a plan the box pushes redraws the car without a read.
+	// Absent on a box with no chargers or no planner. An older app ignores
+	// it.
+	Cars []PlanCar `cbor:"cars,omitempty"`
+}
+
+// PlanCar is one charger's share of the plan.
+type PlanCar struct {
+	ID        string `cbor:"id"`
+	PluggedIn bool   `cbor:"pluggedIn"`
+	// Pending is set while a newer plan is being made, Outdated while the
+	// plan is not one the box acts on. Windows are empty in either case,
+	// as plan_pending and plan_outdated leave them on the HTTP route.
+	Pending  bool `cbor:"pending"`
+	Outdated bool `cbor:"outdated"`
+	// Windows are the charging windows still ahead, the next one first.
+	Windows []PlanCarWindow `cbor:"windows"`
+	// TotalWh is what the plan still means to deliver across its horizon.
+	TotalWh int64 `cbor:"totalWh"`
+	// ShortfallWh is how far short of the goal the plan leaves the car, in
+	// battery watt-hours. Absent when the plan has no goal for it.
+	ShortfallWh *int64 `cbor:"shortfallWh,omitempty"`
+}
+
+// PlanCarWindow is one stretch the plan charges the car. Wall clock.
+type PlanCarWindow struct {
+	StartMs int64 `cbor:"startMs"`
+	EndMs   int64 `cbor:"endMs"`
+	Wh      int64 `cbor:"wh"`
 }
 
 // --------------------------------------------------------------------------
