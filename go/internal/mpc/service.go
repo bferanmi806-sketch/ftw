@@ -1636,9 +1636,8 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		slog.Error("mpc: invalid current planning input; keeping previous plan", "err", inputErr)
 		return fail("inputs", inputErr.Error())
 	}
-	// Keep the point forecast and a downside-PV copy. The Core DP and the
-	// Energyplan worker both plan against the downside copy; the point
-	// forecast stays for diagnostics and forecast calibration.
+	// Keep point and caution inputs separate. Both planners retain a valid
+	// point plan before trying caution; calibration still uses point errors.
 	fallbackSlots := append([]Slot(nil), slots...)
 	var pvUncertaintyW, pvRelativeUncertainty float64
 	pvUncertainty := s.PVUncertaintyW
@@ -1727,10 +1726,18 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	if pvRelative != nil || s.ForecastSnapshot != nil {
 		p.PVRelativeUncertainty = pvRelativeUncertainty
 	}
-	applyPVDownsidePerSlot(fallbackSlots, p.PVForecastSafetyK,
-		p.PVRelativeUncertainty, p.PVUncertaintyW)
-	if captured.Risk != nil {
-		captured.Risk(slots, fallbackSlots, p.PVForecastSafetyK)
+	if cautionErr := validateForecastCaution(p); cautionErr != nil {
+		// Preserve the raw optional model/preference before disabling caution.
+		// Hardware, telemetry, prices and goals still pass their strict gates.
+		s.recordPlanningFailure(request, "risk_inputs", cautionErr.Error(), fallbackSlots, p, nil)
+		forecastWarnings = append(forecastWarnings, "Forecast caution is invalid; using the point forecast: "+cautionErr.Error())
+		p.PVForecastSafetyK, p.PVUncertaintyW, p.PVRelativeUncertainty = 0, 0, 0
+	} else {
+		applyPVDownsidePerSlot(fallbackSlots, p.PVForecastSafetyK,
+			p.PVRelativeUncertainty, p.PVUncertaintyW)
+		if captured.Risk != nil {
+			captured.Risk(slots, fallbackSlots, p.PVForecastSafetyK)
+		}
 	}
 	if recovered, err := recoverInvalidForecastLoads(fallbackSlots, slots, baseLoad); err != nil {
 		s.recordPlanningFailure(request, "risk_inputs", err.Error(), fallbackSlots, p, nil)
@@ -1820,21 +1827,23 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		}
 	}
 
-	for _, inputs := range [][]Slot{slots, fallbackSlots} {
-		prefix, err := planningInputPrefix(inputs)
-		if err != nil {
-			s.recordPlanningFailure(request, "risk_inputs", err.Error(), inputs, p, nil)
-		}
-		if len(prefix) == 0 {
-			slog.Error("mpc: invalid current planning input; keeping previous plan", "err", err)
-			// Keep the rejected risk inputs captured above, rather than replacing
-			// them with the base forecast selected by the generic failure path.
-			return s.failedReplan(request, err.Error())
-		}
-		if len(prefix) < len(slots) {
-			slots, fallbackSlots = slots[:len(prefix)], fallbackSlots[:len(prefix)]
-			inputErr = err
-		}
+	prefix, slotErr := planningInputPrefix(slots)
+	if slotErr != nil {
+		s.recordPlanningFailure(request, "forecast_inputs", slotErr.Error(), slots, p, nil)
+	}
+	if len(prefix) == 0 {
+		return s.failedReplan(request, slotErr.Error())
+	}
+	if len(prefix) < len(slots) {
+		slots, fallbackSlots = slots[:len(prefix)], fallbackSlots[:len(prefix)]
+		baseForecastSlots = baseForecastSlots[:len(prefix)]
+		inputErr = slotErr
+	}
+	// Optional risk inputs cannot invalidate or shorten a valid point forecast.
+	if riskErr := validatePlanningSlots(fallbackSlots); riskErr != nil {
+		s.recordPlanningFailure(request, "risk_inputs", riskErr.Error(), fallbackSlots, p, nil)
+		warnings = append(warnings, "Forecast caution inputs are invalid; using the point forecast: "+riskErr.Error())
+		fallbackSlots = append([]Slot(nil), slots...)
 	}
 	if err := validatePlanningParams(p); err != nil {
 		slog.Error("mpc: invalid optimization parameters; keeping previous plan", "err", err)
@@ -1889,21 +1898,21 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		slots = fallbackSlots
 	}
 	if coreChampion {
-		// Core is the planner. It solves the downside-PV slots — forecast
-		// minus k·σ per slot — so the plan it publishes is the one that does
-		// not bet on sun that may not arrive.
+		// Keep a point plan before trying optional forecast caution.
 		slots = fallbackSlots
-		solverInputs = slots
+		solverInputs = baseForecastSlots
 		solveStart := time.Now()
 		var err error
 		var forecastWarning string
-		plan, slots, err, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, p, baseLoad, liveLoadOK)
+		plan, slots, err, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, baseForecastSlots, p, baseLoad, liveLoadOK, s.planningNow)
 		if forecastWarning != "" {
-			s.recordPlanningFailure(request, "forecast_recovery", forecastWarning, solverInputs, p, nil)
+			s.recordPlanningFailure(request, "forecast_recovery", forecastWarning, fallbackSlots, p, nil)
 			warnings = append(warnings, forecastWarning)
-			baseForecastSlots = append([]Slot(nil), slots...)
-			fallbackSlots = append([]Slot(nil), slots...)
+			if forecastWarning == forecastPriorWarning {
+				baseForecastSlots = append([]Slot(nil), slots...)
+			}
 		}
+		fallbackSlots = append([]Slot(nil), slots...)
 		if request.wasCanceledByService() {
 			return s.canceledReplan(request, "core-recovery")
 		}
@@ -1913,7 +1922,26 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		setCoreReserveSolver(&plan, p, msSince(solveStart))
 	} else {
 		solverInputs = slots
-		candidate, err := s.Optimizer.Optimize(ctx, slots, p)
+		var candidate Plan
+		var err error
+		if downsidePrimary {
+			choice, solveErr := planWithForecastMargin(ctx, baseForecastSlots, fallbackSlots, p, s.planningNow,
+				func(ctx context.Context, inputs []Slot, p Params) (Plan, []Slot, error) {
+					plan, err := s.Optimizer.Optimize(ctx, inputs, p)
+					return plan, inputs, err
+				})
+			candidate, slots, err = choice.plan, choice.slots, solveErr
+			if choice.warning != "" {
+				s.recordPlanningFailure(request, "forecast_caution", choice.warning, fallbackSlots, p, choice.marginErr)
+				warnings = append(warnings, choice.warning)
+			}
+			if err == nil {
+				fallbackSlots = append([]Slot(nil), slots...)
+			}
+		} else {
+			candidate, err = s.Optimizer.Optimize(ctx, slots, p)
+		}
+		solverInputs = slots
 		optimizerErr = err
 		if forecastInfeasible(err) && !request.wasCanceledByService() {
 			// Preserve the original failed exchange even when a simpler forecast
@@ -2018,16 +2046,18 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			s.recordPlanningFailure(request, "primary_optimizer", err.Error(), slots, p, optimizerErr)
 			slog.Error("mpc: primary optimizer failed; using Core DP fallback", "err", err)
 			slots = fallbackSlots
-			solverInputs = slots
+			solverInputs = baseForecastSlots
 			solveStart := time.Now()
 			var fallbackErr error
 			var forecastWarning string
-			plan, slots, fallbackErr, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, p, baseLoad, liveLoadOK)
+			plan, slots, fallbackErr, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, baseForecastSlots, p, baseLoad, liveLoadOK, s.planningNow)
 			if forecastWarning != "" {
 				warnings = append(warnings, forecastWarning)
-				baseForecastSlots = append([]Slot(nil), slots...)
-				fallbackSlots = append([]Slot(nil), slots...)
+				if forecastWarning == forecastPriorWarning {
+					baseForecastSlots = append([]Slot(nil), slots...)
+				}
 			}
+			fallbackSlots = append([]Slot(nil), slots...)
 			if request.wasCanceledByService() {
 				return s.canceledReplan(request, "core-recovery")
 			}

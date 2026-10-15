@@ -24,18 +24,19 @@ func TestFailureEvidenceKeepsRejectedDownsideInputs(t *testing.T) {
 	svc.PV = func(time.Time, float64) float64 { return 1000 }
 	svc.PVForecastSafetyK = 1
 	svc.PVUncertaintyW = func() float64 { return math.NaN() }
-	if svc.Replan(context.Background()) != nil {
-		t.Fatal("invalid current downside forecast became a plan")
+	plan := svc.Replan(context.Background())
+	if plan == nil || len(plan.Actions) != 4 {
+		t.Fatal("invalid optional downside forecast blocked a valid point plan")
 	}
 	failure := svc.PlanningFailureSnapshot()
 	if failure == nil || failure.Stage != "risk_inputs" {
 		t.Fatalf("rejected downside evidence was overwritten: %+v", failure)
 	}
 	var inputs struct {
-		Slots []map[string]any `json:"slots"`
+		Params map[string]any `json:"params"`
 	}
-	if err := json.Unmarshal(failure.Inputs, &inputs); err != nil || len(inputs.Slots) == 0 || inputs.Slots[0]["PVW"] != "NaN" {
-		t.Fatalf("failure reports the valid base forecast instead of rejected risk inputs: %s %v", failure.Inputs, err)
+	if err := json.Unmarshal(failure.Inputs, &inputs); err != nil || inputs.Params["PVUncertaintyW"] != "NaN" {
+		t.Fatalf("failure lost the raw uncertainty before caution was disabled: %s %v", failure.Inputs, err)
 	}
 	restored := New(svc.Store, nil, svc.Zone, svc.Defaults).PlanningFailureSnapshot()
 	if restored == nil || !bytes.Equal(restored.Inputs, failure.Inputs) || restored.Stage != "risk_inputs" {

@@ -10,6 +10,8 @@ import (
 // Two bounded worker passes may each need the fleet budget.
 const forecastRecoveryBudget = 12 * time.Second
 
+const forecastPriorWarning = "Load forecast cannot be served within site limits; using the configured load prior"
+
 // Only a well-formed infeasibility result justifies changing forecast
 // assumptions. Timeouts, broken replies and invalid hardware settings do not.
 func forecastInfeasible(err error) bool {
@@ -62,7 +64,7 @@ func forecastRecoveryAttempts(planning, base []Slot, priorW float64, currentMeas
 	}
 	prior := priorForecast(base, priorW, currentMeasured)
 	if prior != nil && !sameForecast(planning, prior) && !sameForecast(base, prior) {
-		attempts = append(attempts, forecastAttempt{prior, prior, "Load forecast cannot be served within site limits; using the configured load prior"})
+		attempts = append(attempts, forecastAttempt{prior, prior, forecastPriorWarning})
 	}
 	return attempts
 }
@@ -91,20 +93,20 @@ func recoverInvalidForecastLoads(slots, legacy []Slot, priorW float64) ([]Slot, 
 	return out, nil
 }
 
-// Core uses the same bounded recovery when it owns planning or the optional
-// worker is unavailable. Keep its valid prefix if the prior does not improve it.
-func corePlanWithForecastRecovery(ctx context.Context, slots []Slot, p Params, priorW float64, currentMeasured bool) (Plan, []Slot, error, string) {
-	plan, used, err := corePlanWithRecovery(ctx, slots, p)
-	if err == nil && len(used) == len(slots) {
-		return plan, used, nil, ""
+// Core keeps the point plan before optional caution or a degraded load prior.
+// A prior may extend a safe prefix, but cannot replace a complete point plan.
+func corePlanWithForecastRecovery(ctx context.Context, risk, point []Slot, p Params, priorW float64, currentMeasured bool, now func() time.Time) (Plan, []Slot, error, string) {
+	choice, err := planWithForecastMargin(ctx, point, risk, p, now, corePlanWithRecovery)
+	if err == nil && len(choice.slots) == len(point) {
+		return choice.plan, choice.slots, nil, choice.warning
 	}
-	prior := priorForecast(slots, priorW, currentMeasured)
-	if prior == nil || sameForecast(slots, prior) || ctx.Err() != nil {
-		return plan, used, err, ""
+	prior := priorForecast(point, priorW, currentMeasured)
+	if prior == nil || sameForecast(point, prior) || ctx.Err() != nil {
+		return choice.plan, choice.slots, err, choice.warning
 	}
 	candidate, accepted, retryErr := corePlanWithRecovery(ctx, prior, p)
-	if retryErr == nil && len(accepted) > len(used) {
-		return candidate, accepted, nil, "Load forecast cannot be served within site limits; using the configured load prior"
+	if retryErr == nil && len(accepted) > len(choice.slots) {
+		return candidate, accepted, nil, forecastPriorWarning
 	}
-	return plan, used, err, ""
+	return choice.plan, choice.slots, err, choice.warning
 }

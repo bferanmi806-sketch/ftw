@@ -141,7 +141,7 @@ func TestForecastRecoveryCannotChangeMeasuredOverload(t *testing.T) {
 	if prior[0].LoadW != 55700 || prior[1].LoadW != 800 || slots[1].LoadW != 2000 {
 		t.Fatal("lost actual overload or mutated raw inputs")
 	}
-	plan, used, err, _ := corePlanWithForecastRecovery(context.Background(), slots, p, 800, true)
+	plan, used, err, _ := corePlanWithForecastRecovery(context.Background(), slots, slots, p, 800, true, time.Now)
 	if err == nil || len(used) != 0 || len(plan.Actions) != 0 {
 		t.Fatal("forecast prior hid a real current overload")
 	}
@@ -164,7 +164,7 @@ func TestForecastRecoveryKeepsValidBatteryAndPVPeaks(t *testing.T) {
 				slots[12].PVW = -16000
 				p.Mode = ModeSelfConsumption
 			}
-			plan, used, err, warning := corePlanWithForecastRecovery(context.Background(), slots, p, 800, false)
+			plan, used, err, warning := corePlanWithForecastRecovery(context.Background(), slots, slots, p, 800, false, time.Now)
 			if err != nil || warning != "" || len(used) != len(slots) || used[12].LoadW != slots[12].LoadW {
 				t.Fatalf("valid peak was replaced: %v %s", err, warning)
 			}
