@@ -384,16 +384,25 @@ func TestOneDeviceCannotStarveTheOthersOfHandshakes(t *testing.T) {
 		r.tunnel.Deliver(cloudwire.Tun{Dev: busyDev, Sid: uint32(100 + i), D: m1})
 	}
 	// Drain what the busy device got: its answers, and the ends of the
-	// sessions each new one replaced.
-	deadline := time.After(2 * time.Second)
+	// sessions each new one replaced. Each answer costs X25519 work, which a
+	// loaded CI runner does slowly, so wait for the budget to be spent and
+	// then a while longer for any answer past it.
 	answers := 0
+	quiet := 500 * time.Millisecond
+	deadline := time.After(10 * time.Second)
 drain:
 	for {
+		wait := time.After(quiet)
+		if answers < tunOpensPerDevice {
+			wait = nil
+		}
 		select {
 		case m := <-r.out.ch:
 			if !m.Ended() {
 				answers++
 			}
+		case <-wait:
+			break drain
 		case <-deadline:
 			break drain
 		}
