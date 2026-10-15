@@ -179,3 +179,18 @@ func TestTheAppTargetNamesTheHome(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// Bulk says how a tun travels and never reaches the wire: a tun with it
+// set encodes to the same bytes as one without.
+func TestBulkIsNotOnTheWire(t *testing.T) {
+	plain, _ := Marshal(Tun{Dev: "phone", Sid: 7, D: []byte{1, 2}})
+	bulk, _ := Marshal(Tun{Dev: "phone", Sid: 7, D: []byte{1, 2}, Bulk: true})
+	if !bytes.Equal(plain, bulk) {
+		t.Fatal("Bulk changed the bytes of a tun")
+	}
+	plain, _ = Marshal(AppTun{Sid: 7, D: []byte{1}})
+	bulk, _ = Marshal(AppTun{Sid: 7, D: []byte{1}, Bulk: true})
+	if !bytes.Equal(plain, bulk) {
+		t.Fatal("Bulk changed the bytes of an app tun")
+	}
+}
