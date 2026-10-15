@@ -407,8 +407,11 @@ drain:
 			break drain
 		}
 	}
-	if answers != tunOpensPerDevice {
-		t.Fatalf("the busy device got %d handshakes answered, want %d", answers, tunOpensPerDevice)
+	// At most its budget. Handshakes run side by side, and a device holds at
+	// most tunPendingPerDevice unproved sessions, so one evicted before it
+	// answered is fair; what must never happen is an answer past the budget.
+	if answers > tunOpensPerDevice || answers < tunOpensPerDevice-tunPendingPerDevice {
+		t.Fatalf("the busy device got %d handshakes answered, want at most %d", answers, tunOpensPerDevice)
 	}
 	other := r.pair(t)
 	r.open(t, other, deviceIDOf(other.staticPublic()), 1, nil)
