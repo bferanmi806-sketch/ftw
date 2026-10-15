@@ -941,6 +941,23 @@ func opArgsOf(t *testing.T, r *agentRig, op string, args map[string]any) *ErrorB
 	return h.opArgs(op, args)
 }
 
+// An agent never streams, not even through a sub folded into its hello: a
+// snapshot's source table names the devices.
+func TestAnAgentGetsNoSubThroughHello(t *testing.T) {
+	r := newAgentRig(t)
+	row, _ := r.grant(apiauth.RoleAgent, []string{protocol.ScopeLiveRead}, nil, protocol.Caps{}, time.Hour, protocol.Principal{})
+	h, rec := r.agentSession(row)
+	deliver(t, h, MsgHello, nil, Hello{
+		Proto: ProtoRange{Min: 0, Max: ProtoMax},
+		App:   AppInfo{Build: "test", UA: "agent"},
+		Sub:   &Sub{Bucket: 512, Hz: 1},
+	})
+	ok := body[HelloOK](t, rec.last(t, MsgHelloOK))
+	if ok.Subscribed || h.Subscribed() || rec.has(MsgSnap) {
+		t.Fatal("an agent's hello started a stream")
+	}
+}
+
 // Approving needs a clock to trust; declining does not.
 func TestApprovingNeedsAClock(t *testing.T) {
 	r := newAgentRig(t)
