@@ -85,6 +85,123 @@ data. The network sees when messages go and how large they are, which shows
 which class changed and when. The privacy notice says so (ADR 0008,
 decision 5).
 
+## QUIC
+
+The uplink and the app session also run over QUIC (RFC 9000) on UDP 443 at
+`cloud.ftw.energy`, with the same certificate as TCP. The messages and every
+rule in this document stay the same; only the framing below changes. The
+WebSocket stays too, and a client falls back to it when UDP does not get
+through. The one-shot read and the extension read are plain HTTPS, which the
+service also serves over HTTP/3 (RFC 9114); they need nothing here.
+`go/protocol/cloudwire/quic.go` holds the names and the codec, and
+`cloud-quic-vectors.json` the bytes.
+
+| ALPN | Connection | WebSocket it stands for |
+|---|---|---|
+| `ftw-cloud-box/1` | Uplink | `/v1/box` |
+| `ftw-cloud-app/1` | App session | `/v1/app?home=<id>` |
+| `h3` | HTTP/3 | — |
+
+- **TLS 1.3 inside QUIC.** `ekm` is the exporter of that TLS session, with the
+  label and length of [Handshake](#handshake), and a box binds `hello` to it
+  as it does over TCP. Nothing may end QUIC in front of the service; a load
+  balancer that forwards UDP packets is fine.
+- **Message.** One WebSocket binary message becomes one message: its length
+  as a QUIC variable-length integer (RFC 9000 §16), then its bytes. The size
+  limits of the WebSocket apply. A length over them closes the connection
+  with 4400.
+- **Control stream.** The client opens bidirectional stream 0 and sends the
+  *target* first, as one message: the path and query the WebSocket would name,
+  such as `/v1/app?home=<id>`, in ASCII. The service checks it as it checks
+  the WebSocket's URL. After it, every message of the connection goes on this
+  stream, both ways, except those below.
+- **Bulk stream.** A sender may open one unidirectional stream and send on it,
+  in order, the `tun` messages whose `d` carries a lane 1 frame of the
+  phone's session: snapshots, history and answers too large for lane 0. It
+  opens it the first time it has bulk to send. The box already tells bulk
+  from lane 0 for its pacing (see [Backpressure](#backpressure-and-limits)).
+  The service sends a `tun` that came on the box's bulk stream on the phone's
+  bulk stream. A lost bulk packet then never holds up a command, its answer
+  or a tick. A phone sends everything on the control stream.
+- **Datagrams (RFC 9221).** The box sends `hb`, and `live` without `sources`,
+  as one QUIC DATAGRAM each when it fits, and otherwise on the control stream.
+  The service sends those same envelopes to a phone the same way, each as one
+  Noise transport message. A datagram is never sent again, and the newest
+  wins. The [freshness](#freshness) rules already cover one that is lost or
+  late: a phone sees the gap through `hb.liveSeq` and ages what it holds
+  instead of showing it as live. A `live` that carries `sources` goes on the
+  control stream, because a lost table would leave sources stale until the
+  next full `live`. Nothing else goes as a datagram, and tunnel traffic never
+  does: lane 0 carries commands, their answers and deltas that must arrive,
+  and two paths for lane 0 would show the service which frames are which.
+  - The service closes the uplink with 4400 on a datagram that is not `hb`
+    or a `live` without `sources`. It keeps one only when its `seq` is above
+    the newest of its type on this connection, and drops a late one.
+  - Each end offers datagrams in its transport parameters. A sender whose
+    peer does not uses the control stream.
+- **Order.** Messages on one stream arrive in order; across streams and
+  datagrams they may not. Noise transport carries its own counter and a
+  window of 64 (`appwire.ReplayWindow`), so the app session and the tunnel
+  take messages out of order. The service's rule to forward a home's messages
+  in the order it received them holds per stream.
+- **Streams.** A peer that opens a second bidirectional stream, or a second
+  unidirectional one, breaks the protocol. The service grants one of each.
+- **Closing.** A close code becomes the QUIC application error code, with
+  the WebSocket close reason as the reason phrase. 1000 closes normally.
+- **Liveness.** QUIC stands in for the WebSocket ping. The client sends a QUIC
+  PING after 15 s with nothing to send, which keeps a NAT's UDP mapping
+  open; many drop one after 30 s. Both ends close a connection silent for
+  45 s, as the WebSocket's read deadline does.
+- **Migration.** A client may move its connection to a new address (RFC 9000
+  §9): a phone from Wi-Fi to cellular, or a box whose NAT rebinds. The
+  service validates the new path and follows it. The Noise sessions inside
+  never notice: no handshake, no new `sid`.
+
+### Racing the WebSocket
+
+A client starts QUIC first. If the QUIC handshake has not finished after
+250 ms, it also dials the WebSocket, takes the first that opens and closes
+the other. It remembers which won on each network and starts the next time
+with that one, giving the other the same 250 ms. A box names its network by
+its local address; a phone by the interface and the path it has. A client
+says which carries it, by the registry's `cloud_transports`: `quic` or
+`websocket`. Core shows it in `GET /api/cloud`; the app shows it beside the
+carrier. The carrier stays `tunnel` or `cloud` over both.
+
+### Early data
+
+A client that holds a session ticket from the service may send 0-RTT data. It
+may put there only the target and, on the app session, Noise message 1, with
+`now` and the box session's message 1 in `now.tun`. Nothing else can go
+there: every later message is a Noise transport message, which the client
+can encrypt only once message 2 has come back. So no `cmd` or `api.req` ever
+rides in early data.
+
+The network can replay early data. These rules make a replay change nothing:
+
+- **Each message 1 once.** The service accepts message 1 in early data only
+  once for each initiator ephemeral key (its first 32 bytes) for as long as
+  a ticket allows early data, at most 24 hours. It never answers a second
+  copy. A replay then gets no `now.tun` forwarded, no message 2 and no
+  session; the connection waits for a handshake the replayer cannot finish,
+  and times out.
+- **Nothing before the handshake.** For a first copy, the service checks
+  admission, forwards `now.tun` to the box and sends message 2 with the
+  snapshot at once, so the session is up one round trip sooner. It opens the
+  device's session, ends an older one with 4408, spends a pairing hash and
+  starts `watch` only once the QUIC handshake has completed, which proves
+  the client holds the ticket's keys. Envelopes that changed in between follow
+  message 2 as ordinary frames.
+- **The box holds a tunnel session as pending** until its first transport
+  message decrypts (see [Tunnel](#tunnel)), so a `now.tun` that reached it
+  takes no slot and spends no code.
+- A box sends only its target in early data. The service's `challenge` then
+  goes in the first flight back, and `hello` waits for it as before.
+
+The service gives tickets that allow early data for 24 hours, and resumption
+without early data after that. A restart draws new ticket keys, so every
+client makes a full handshake once.
+
 ## Envelope and signature
 
 ```
