@@ -607,7 +607,9 @@ What the sign-in is worth today:
   address.
 
 Narrowing stays open to any LAN client, as `DELETE /api/cloud/grant` does,
-because removing access is safe.
+because removing access is safe. With `api.lan_auth` on, every route here,
+the reads and the narrowing ones too, needs the sign-in, as every protected
+route on the box does.
 
 ## The grant offer
 

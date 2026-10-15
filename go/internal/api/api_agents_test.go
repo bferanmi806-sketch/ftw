@@ -286,3 +286,23 @@ func TestAgentRoutesAreLocal(t *testing.T) {
 		}
 	}
 }
+
+// With the house password on, a LAN client that has not signed in reads
+// neither the agents nor their audit log, and changes nothing.
+func TestTheAgentRoutesNeedSignInWithLANAuthOn(t *testing.T) {
+	resetLANGuesses(t)
+	policy := lanAuthPolicy(testHousePassword)
+	for _, c := range []struct{ method, path string }{
+		{http.MethodGet, "/api/agents"},
+		{http.MethodGet, "/api/agents/audit"},
+		{http.MethodDelete, "/api/agents/agent001"},
+		{http.MethodPost, "/api/agent-requests/r1"},
+	} {
+		if rr := serveLANAuth(policy, lanAuthRequest(c.method, "http://ftw.local:8080"+c.path, "192.168.1.5:1234", ""), nil); rr.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s without sign-in: %d", c.method, c.path, rr.Code)
+		}
+	}
+	if rr := serveLANAuth(policy, lanAuthRequest(http.MethodGet, "http://ftw.local:8080/api/agents", "192.168.1.5:1234", "Bearer "+testHousePassword), nil); rr.Code != http.StatusNoContent {
+		t.Errorf("signed in: %d", rr.Code)
+	}
+}
