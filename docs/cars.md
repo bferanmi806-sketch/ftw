@@ -108,8 +108,9 @@ At each plug-in the box asks, in this order (`carIdentifiedBy`):
    on another charger, and it has not said it is somewhere else. The car's
    usual charger counts the same way: a car the box made from a charger's
    old settings has that charger as its usual one, and a plug-in there names
-   it when no other car is on it as its usual charger and the car is not on
-   another charger. If the car's source says, within a minute of the
+   it when no other car that could be here claims the charger, that is when
+   each of them has a usual charger elsewhere. A car with none, as one an
+   owner added since, could be on any charger, and the box asks. If the car's source says, within a minute of the
    plug-in, `at_site` false or that its cable is out, the session is a
    visitor's (`none`). One car is on one charger at a time: rules 2 and 3
    skip a car another session has.
@@ -185,12 +186,16 @@ for what the op acts on, a level as a fraction from 0 to 1.
 the box holds them after the op, or `charger`, the charger's car after
 `session.car.set`; `car.soc.set` also reads the level back in `observed`, as
 a fraction. A result rides lane 0, so the app reads the rest of a car from
-`GET /api/cars`. A car has at most eight identifiers and eight sources, of at
-most 64 characters each. Refusals after the ack:
-`E_NOT_FOUND` for an unknown car or charger, `E_PRECONDITION` with reason
-`session` for a plug-in that has ended, `E_UNAVAILABLE` with reason
-`unplugged` when nothing is plugged in, and `E_DUPLICATE`. A box without cars
-answers `E_UNAVAILABLE` with `subsystem: cars`.
+`GET /api/cars`; in a session whose lane 0 is 256 B a full car does not fit,
+and the result comes without `car` or `charger`. A box keeps at most 32
+cars and remembers the last 64 it removed. A car has at most eight
+identifiers and eight sources, of at most 64 characters each. Refusals after
+the ack: `E_NOT_FOUND` for an unknown car or charger, `E_PRECONDITION` with
+reason `session` for a plug-in that has ended or `elsewhere` for a tap
+naming a car another charger has, `E_UNAVAILABLE` with reason `unplugged`
+when nothing is plugged in, `E_DUPLICATE`, and `E_CAP_EXCEEDED` with reason
+`cars` for a car past the 32. A box without cars answers `E_UNAVAILABLE`
+with `subsystem: cars`.
 
 ## car.which
 
