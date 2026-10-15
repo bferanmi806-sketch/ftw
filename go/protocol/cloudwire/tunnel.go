@@ -62,11 +62,6 @@ type Tun struct {
 	Sid uint32 `cbor:"sid"`
 	// D is one message of that session, or empty to end it.
 	D []byte `cbor:"d"`
-	// Bulk says how the message travels over QUIC, and is never on the
-	// wire: true for a lane 1 frame of the phone's session, which goes on
-	// the bulk stream so it never holds up lane 0. The service sets it from
-	// the stream a message came on, and keeps it on the way to the phone.
-	Bulk bool `cbor:"-"`
 }
 
 // AppTun is the tunnel message on /v1/app, both ways. It has no device id:
@@ -75,8 +70,6 @@ type Tun struct {
 type AppTun struct {
 	Sid uint32 `cbor:"sid"`
 	D   []byte `cbor:"d"`
-	// Bulk is Tun's: how the message travels, never on the wire.
-	Bulk bool `cbor:"-"`
 }
 
 // Ended reports whether the message ends its session.
