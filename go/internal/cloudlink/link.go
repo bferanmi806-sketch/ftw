@@ -164,7 +164,12 @@ type Options struct {
 	Tunnel Tunnel
 	Logger *slog.Logger
 
-	// Seams for tests. Production leaves them zero.
+	// Seams for tests. Production leaves them zero, and races QUIC against
+	// the WebSocket. A test that names its Endpoint gets the WebSocket alone
+	// unless it sets QUIC; QUICAddr names the service's UDP address when it
+	// is not the Endpoint's host and port.
+	QUIC        bool
+	QUICAddr    string
 	Endpoint    string
 	ServiceKeys []*ecdsa.PublicKey
 	RootCAs     *x509.CertPool
@@ -190,6 +195,12 @@ type Link struct {
 	grant     *grantRecord
 	notice    string
 	connected bool
+	// transport is how the uplink travels, or last travelled: quic or
+	// websocket. winners is the race's memory, the transport that opened
+	// first on each network.
+	transport string
+	quicOn    bool
+	winners   map[string]string
 	lastSend  time.Time
 	budget    budget
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
@@ -229,6 +240,7 @@ func New(opts Options) (*Link, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	quicOn := opts.QUIC || opts.Endpoint == ""
 	if opts.Endpoint == "" {
 		opts.Endpoint = Endpoint
 	}
@@ -265,7 +277,7 @@ func New(opts Options) (*Link, error) {
 	}
 	l := &Link{
 		opts: opts, log: opts.Logger.With("component", "cloudlink"), boot: boot,
-		wake: make(chan struct{}, 1), sent: map[string]sentFrame{},
+		wake: make(chan struct{}, 1), sent: map[string]sentFrame{}, quicOn: quicOn,
 	}
 	if err := l.load(); err != nil {
 		return nil, err
@@ -736,6 +748,9 @@ type Status struct {
 	GrantedBy   string   `json:"grantedBy,omitempty"`
 	Policy      string   `json:"policy,omitempty"`
 	Connected   bool     `json:"connected"`
+	// Transport is how the uplink travels, the registry's cloud_transports:
+	// quic or websocket. Empty before the first connection.
+	Transport string `json:"transport,omitempty"`
 	// LastSendAgeMs is how long ago the box last sent anything, -1 never.
 	LastSendAgeMs int64 `json:"lastSendAgeMs"`
 	// BytesLast24h counts what the box sent in the last 24 hours of uptime.
@@ -762,7 +777,7 @@ func (l *Link) Status() Status {
 	defer l.mu.Unlock()
 	s := Status{
 		State: "off", Notice: l.notice, Available: len(l.opts.ServiceKeys) > 0,
-		Scopes: []string{}, Purposes: []string{}, Connected: l.connected,
+		Scopes: []string{}, Purposes: []string{}, Connected: l.connected, Transport: l.transport,
 		LastSendAgeMs: -1, PurgedAtMs: l.purgedAt, EventsDropped: l.eventsDropped,
 		BytesLast24h: l.budget.total(l.uptimeMs()), BudgetBytes: budgetBytes,
 		Link: "off", TunBytesLast24h: l.tunBudget.total(l.uptimeMs()), TunBudgetBytes: tunBudgetBytes,

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"math/big"
@@ -51,11 +50,8 @@ func (l *Link) dialer() *websocket.Dialer {
 // once dials, serves until the connection ends and says how long to wait.
 func (l *Link) once(ctx context.Context, snap grantSnapshot) (time.Duration, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	conn, resp, err := l.dialer().DialContext(dialCtx, l.opts.Endpoint, nil)
+	conn, err := l.dial(dialCtx)
 	cancel()
-	if resp != nil && resp.Body != nil {
-		_ = resp.Body.Close()
-	}
 	if err != nil {
 		return l.backoff(), fmt.Errorf("dialling FTW Cloud: %w", err)
 	}
@@ -107,7 +103,7 @@ const (
 
 // serve runs one connection: the handshake, then the reader here and the
 // sender on its own goroutine.
-func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapshot) error {
+func (l *Link) serve(ctx context.Context, conn uplinkConn, snap grantSnapshot) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() {
@@ -172,11 +168,12 @@ func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapsh
 	tunOut, tunBulk := make(chan []byte, tunQueue), make(chan []byte, tunBulkQueue)
 	l.mu.Lock()
 	l.connected = true
+	l.transport = transportOf(conn)
 	if l.opts.Tunnel != nil {
 		l.tunOut, l.tunBulk = tunOut, tunBulk
 	}
 	l.mu.Unlock()
-	l.log.Info("FTW Cloud uplink connected", "home", snap.home)
+	l.log.Info("FTW Cloud uplink connected", "home", snap.home, "transport", transportOf(conn))
 	defer func() {
 		l.mu.Lock()
 		l.tunOut, l.tunBulk = nil, nil
@@ -220,19 +217,6 @@ func (l *Link) serve(ctx context.Context, conn *websocket.Conn, snap grantSnapsh
 	return err
 }
 
-// exporterValue is the TLS 1.3 exporter value both ends bind the handshake to.
-func exporterValue(conn *websocket.Conn) ([]byte, error) {
-	tc, ok := conn.NetConn().(*tls.Conn)
-	if !ok {
-		return nil, errors.New("cloudlink: the uplink is not TLS")
-	}
-	cs := tc.ConnectionState()
-	if cs.Version != tls.VersionTLS13 {
-		return nil, errors.New("cloudlink: the uplink is not TLS 1.3")
-	}
-	return cs.ExportKeyingMaterial(cloudwire.EKMLabel, nil, cloudwire.EKMBytes)
-}
-
 func (l *Link) verifiedByService(home string, env cloudwire.Envelope) bool {
 	for _, k := range l.opts.ServiceKeys {
 		if cloudwire.Verify(k, home, env) == nil {
@@ -252,7 +236,7 @@ func (l *Link) clockName() string {
 // readEnvelope reads one binary frame. A text message, a lane 0 frame, a tun
 // frame over MaxTunFrame or any other over 4 KiB is the service breaking the
 // protocol.
-func readEnvelope(conn *websocket.Conn) (cloudwire.Envelope, error) {
+func readEnvelope(conn uplinkConn) (cloudwire.Envelope, error) {
 	kind, msg, err := conn.ReadMessage()
 	if err != nil {
 		return cloudwire.Envelope{}, err
@@ -261,8 +245,9 @@ func readEnvelope(conn *websocket.Conn) (cloudwire.Envelope, error) {
 }
 
 func parseDownlink(kind int, msg []byte) (cloudwire.Envelope, error) {
-	if kind != websocket.BinaryMessage {
-		return cloudwire.Envelope{}, fmt.Errorf("%w: a text message", errService)
+	if kind != websocket.BinaryMessage && kind != msgBulk {
+		// A text message, or a datagram: the service sends the box none.
+		return cloudwire.Envelope{}, fmt.Errorf("%w: a message of type %d", errService, kind)
 	}
 	if len(msg) > cloudwire.MaxTunFrame {
 		return cloudwire.Envelope{}, fmt.Errorf("%w: %d bytes", errService, len(msg))
@@ -278,6 +263,9 @@ func parseDownlink(kind int, msg []byte) (cloudwire.Envelope, error) {
 	if !slices.Contains(cloudwire.Downlink, env.T) {
 		return cloudwire.Envelope{}, fmt.Errorf("%w: %q is not a message the service may send", errService, env.T)
 	}
+	if kind == msgBulk && env.T != cloudwire.MsgTun {
+		return cloudwire.Envelope{}, fmt.Errorf("%w: a %s on the bulk stream", errService, env.T)
+	}
 	if env.T != cloudwire.MsgTun && len(msg) > cloudwire.MaxServiceFrame {
 		return cloudwire.Envelope{}, fmt.Errorf("%w: a %d-byte %s", errService, len(msg), env.T)
 	}
@@ -289,7 +277,7 @@ func parseDownlink(kind int, msg []byte) (cloudwire.Envelope, error) {
 // like any stranger. watch and resync go to the sender, which owns the
 // cadence. A purge receipt is taken here, before the service hangs up, so the
 // box never misses one it was sent. A tun goes to the Tunnel unread.
-func (l *Link) read(conn *websocket.Conn, snap grantSnapshot, events chan<- cloudwire.Envelope) error {
+func (l *Link) read(conn uplinkConn, snap grantSnapshot, events chan<- cloudwire.Envelope) error {
 	_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 	conn.SetPingHandler(func(data string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
@@ -324,7 +312,7 @@ func (l *Link) read(conn *websocket.Conn, snap grantSnapshot, events chan<- clou
 
 // writer is the one goroutine that writes data frames on a connection.
 type writer struct {
-	conn *websocket.Conn
+	conn uplinkConn
 	link *Link
 	mu   sync.Mutex
 }
@@ -349,7 +337,13 @@ func (w *writer) send(snap grantSnapshot, t string, body any) error {
 		return err
 	}
 
-	if err := w.write(frame); err != nil {
+	// Over QUIC an hb, or a live without its table, goes as a datagram: the
+	// newest wins, and a lost one shows as a gap on the phone.
+	kind := websocket.BinaryMessage
+	if cloudwire.Datagram(env) {
+		kind = msgDatagram
+	}
+	if err := w.writeAs(kind, frame); err != nil {
 		return err
 	}
 	l := w.link
@@ -366,7 +360,7 @@ func (w *writer) send(snap grantSnapshot, t string, body any) error {
 // tunnel's own budget, and was counted. Noise transport survives a lost
 // message, so a session goes on after ErrTunDropped.
 var (
-	ErrNoUplink   = errors.New("cloudlink: no uplink to FTW Cloud")
+	ErrNoUplink         = errors.New("cloudlink: no uplink to FTW Cloud")
 	ErrTunDropped error = tunDropped{}
 )
 
@@ -447,17 +441,11 @@ func (p *pacer) take(n int, now time.Time) time.Duration {
 // first and at once, even while bulk waits for the pacer. It counts both
 // against the tunnel's budget, never the copy's.
 func (w *writer) tunnel(ctx context.Context, out, bulk <-chan []byte) error {
-	l := w.link
 	pace := newPacer(time.Now())
-	send := func(frame []byte) error {
-		if err := w.write(frame); err != nil {
-			return err
-		}
-		l.mu.Lock()
-		l.tunBudget.add(l.uptimeMs(), int64(len(frame)))
-		l.mu.Unlock()
-		return nil
-	}
+	// Lane 0 goes on the control stream, bulk on the bulk stream over QUIC,
+	// so a lost bulk packet never holds up a command or its answer.
+	send := func(frame []byte) error { return w.tunAs(websocket.BinaryMessage, frame) }
+	sendBulk := func(frame []byte) error { return w.tunAs(msgBulk, frame) }
 	for {
 		select {
 		case frame := <-out:
@@ -495,19 +483,37 @@ func (w *writer) tunnel(ctx context.Context, out, bulk <-chan []byte) error {
 					}
 				}
 			}
-			if err := send(frame); err != nil {
+			if err := sendBulk(frame); err != nil {
 				return err
 			}
 		}
 	}
 }
 
+// tunAs writes one tun frame the way kind says and counts it against the
+// tunnel's budget, never the copy's.
+func (w *writer) tunAs(kind int, frame []byte) error {
+	if err := w.writeAs(kind, frame); err != nil {
+		return err
+	}
+	l := w.link
+	l.mu.Lock()
+	l.tunBudget.add(l.uptimeMs(), int64(len(frame)))
+	l.mu.Unlock()
+	return nil
+}
+
 // write sends one frame under the socket's one write lock.
-func (w *writer) write(frame []byte) error {
+func (w *writer) write(frame []byte) error { return w.writeAs(websocket.BinaryMessage, frame) }
+
+// writeAs sends one frame the way kind says where the connection carries
+// it: over QUIC, on the bulk stream or as a datagram. A WebSocket carries
+// every kind as a binary message.
+func (w *writer) writeAs(kind int, frame []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := w.conn.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil {
 		return err
 	}
-	return w.conn.WriteMessage(websocket.BinaryMessage, frame)
+	return w.conn.WriteMessage(kindFor(w.conn, kind), frame)
 }

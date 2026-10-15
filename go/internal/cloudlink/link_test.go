@@ -179,7 +179,7 @@ type fakeService struct {
 	badEKM      bool
 	wrongKey    bool
 	purge       bool
-	afterHello  func(conn *websocket.Conn, home string)
+	afterHello  func(conn uplinkConn, home string)
 	rosterSeqOK uint64
 
 	wmu   sync.Mutex
@@ -191,11 +191,17 @@ type fakeService struct {
 	ch    chan cloudwire.Envelope
 	home  string
 	pub   *ecdsa.PublicKey
+	// kinds is how each message from the box came: by the control
+	// stream, the bulk stream or as a datagram over QUIC.
+	kinds map[string][]int
+	// transports counts the connections each transport carried.
+	transports map[string]int
 }
 
 func newFakeService(t *testing.T) *fakeService {
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	s := &fakeService{t: t, key: key, ch: make(chan cloudwire.Envelope, 256)}
+	s := &fakeService{t: t, key: key, ch: make(chan cloudwire.Envelope, 256), kinds: map[string][]int{},
+		transports: map[string]int{}}
 	s.srv = httptest.NewUnstartedServer(http.HandlerFunc(s.handle))
 	s.srv.TLS = &tls.Config{MinVersion: tls.VersionTLS13}
 	s.srv.StartTLS()
@@ -213,7 +219,7 @@ func (s *fakeService) roots() *x509.CertPool {
 	return pool
 }
 
-func (s *fakeService) write(conn *websocket.Conn, key *ecdsa.PrivateKey, home, t string, body any) {
+func (s *fakeService) write(conn uplinkConn, key *ecdsa.PrivateKey, home, t string, body any) {
 	env, err := cloudwire.Seal(key, home, t, body)
 	if err != nil {
 		s.t.Error(err)
@@ -231,11 +237,17 @@ func (s *fakeService) handle(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	ekm, _ := r.TLS.ExportKeyingMaterial(cloudwire.EKMLabel, nil, cloudwire.EKMBytes)
+	s.serve(conn, ekm)
+}
+
+// serve is the service's side of one uplink, over either transport.
+func (s *fakeService) serve(conn uplinkConn, ekm []byte) {
 	defer conn.Close()
 	s.mu.Lock()
 	s.conns++
+	s.transports[transportOf(conn)]++
 	s.mu.Unlock()
-	ekm, _ := r.TLS.ExportKeyingMaterial(cloudwire.EKMLabel, nil, cloudwire.EKMBytes)
 	nonce := bytes.Repeat([]byte{7}, cloudwire.NonceBytes)
 	s.write(conn, nil, "", cloudwire.MsgChallenge, cloudwire.Challenge{V: 1, Nonce: nonce})
 
@@ -283,7 +295,7 @@ func (s *fakeService) handle(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if kind != websocket.BinaryMessage {
+		if kind != websocket.BinaryMessage && kind != msgBulk && kind != msgDatagram {
 			s.t.Errorf("the box sent a text message")
 			return
 		}
@@ -309,6 +321,7 @@ func (s *fakeService) handle(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.got = append(s.got, env)
 		s.raw = append(s.raw, msg)
+		s.kinds[env.T] = append(s.kinds[env.T], kind)
 		s.mu.Unlock()
 		s.ch <- env
 		if !s.purge {
@@ -595,7 +608,7 @@ func TestAReleaseBuildTrustsOnlyTheServicesKey(t *testing.T) {
 
 func TestUnknownDownlinkClosesTheUplink(t *testing.T) {
 	svc := newFakeService(t)
-	svc.afterHello = func(conn *websocket.Conn, home string) {
+	svc.afterHello = func(conn uplinkConn, home string) {
 		time.Sleep(200 * time.Millisecond)
 		svc.write(conn, nil, home, "cmd", map[string]any{"op": "site.mode.set"})
 	}
@@ -613,7 +626,7 @@ func TestUnknownDownlinkClosesTheUplink(t *testing.T) {
 
 func TestWatchRaisesTheCadence(t *testing.T) {
 	svc := newFakeService(t)
-	svc.afterHello = func(conn *websocket.Conn, home string) {
+	svc.afterHello = func(conn uplinkConn, home string) {
 		svc.write(conn, nil, home, cloudwire.MsgWatch, cloudwire.Watch{Hz: 1})
 	}
 	h := newHarness(t, svc)
