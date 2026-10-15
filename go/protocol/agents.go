@@ -86,8 +86,8 @@ const (
 	ApprovalSkewMs   int64 = 10 * 60 * 1000
 	ApprovalReplayMs int64 = 20 * 60 * 1000
 
+	// LogsLinesMax bounds logs.get; the answer also fits one bulk frame.
 	LogsLinesMax  = 200
-	LogsBytesMax  = 32 * 1024
 	EventsMax     = 50
 	AuditPageMax  = 200
 	AuditRowsKept = 10_000
@@ -101,35 +101,35 @@ const (
 // Caps bound what one grant may do.
 type Caps struct {
 	// HoldS is the longest hold, in seconds.
-	HoldS uint64 `cbor:"holdS"`
+	HoldS uint64 `cbor:"holdS" json:"holdS"`
 	// MaxW is the largest power a hold may set, in W.
-	MaxW uint64 `cbor:"maxW"`
+	MaxW uint64 `cbor:"maxW" json:"maxW"`
 	// PerMin is cmd and agent.request per rolling minute.
-	PerMin uint64 `cbor:"perMin"`
+	PerMin uint64 `cbor:"perMin" json:"perMin"`
 }
 
 // Principal says who an agent row is for. Display and audit only: the role
 // decides what it may do.
 type Principal struct {
-	Client   string `cbor:"client"`
-	ClientID string `cbor:"clientId"`
-	Ticket   string `cbor:"ticket"`
+	Client   string `cbor:"client" json:"client"`
+	ClientID string `cbor:"clientId" json:"clientId"`
+	Ticket   string `cbor:"ticket" json:"ticket"`
 }
 
 // AgentRow is one agent grant as the box holds it.
 type AgentRow struct {
-	ID          string    `cbor:"id"`
-	Key         []byte    `cbor:"key"`
-	Role        string    `cbor:"role"`
-	Scopes      []string  `cbor:"scopes"`
-	Ops         []string  `cbor:"ops"`
-	Caps        Caps      `cbor:"caps"`
-	ExpiresAtMs int64     `cbor:"expiresAtMs"`
-	Principal   Principal `cbor:"principal"`
-	ApprovedBy  string    `cbor:"approvedBy"`
-	AddedAtMs   int64     `cbor:"addedAtMs"`
-	LastSeenMs  int64     `cbor:"lastSeenMs"`
-	Epoch       uint64    `cbor:"epoch"`
+	ID          string    `cbor:"id" json:"id"`
+	Key         []byte    `cbor:"key" json:"key"`
+	Role        string    `cbor:"role" json:"role"`
+	Scopes      []string  `cbor:"scopes" json:"scopes"`
+	Ops         []string  `cbor:"ops" json:"ops"`
+	Caps        Caps      `cbor:"caps" json:"caps"`
+	ExpiresAtMs int64     `cbor:"expiresAtMs" json:"expiresAtMs"`
+	Principal   Principal `cbor:"principal" json:"principal"`
+	ApprovedBy  string    `cbor:"approvedBy" json:"approvedBy"`
+	AddedAtMs   int64     `cbor:"addedAtMs" json:"addedAtMs"`
+	LastSeenMs  int64     `cbor:"lastSeenMs" json:"lastSeenMs"`
+	Epoch       uint64    `cbor:"epoch" json:"epoch"`
 }
 
 // ApprovalKeySet registers an owner phone's approval key.
@@ -164,6 +164,28 @@ type AgentWiden struct {
 	Sig         []byte   `cbor:"sig"`
 }
 
+// GrantOffer is what FTW Cloud's consent page offers the owner: the agent's
+// key and the rights its client asks for (docs/agents.md, The grant offer).
+// It travels as CBOR, base64url without padding, in a link's fragment. The
+// owner may grant less than it asks.
+type GrantOffer struct {
+	V        uint64   `cbor:"v"`
+	Home     string   `cbor:"home"`
+	Key      []byte   `cbor:"key"`
+	Role     string   `cbor:"role"`
+	Client   string   `cbor:"client"`
+	ClientID string   `cbor:"clientId"`
+	Scopes   []string `cbor:"scopes"`
+	Ops      []string `cbor:"ops"`
+	Caps     Caps     `cbor:"caps"`
+	TTLS     uint64   `cbor:"ttlS"`
+	Ticket   string   `cbor:"ticket,omitempty"`
+	Code     string   `cbor:"code"`
+}
+
+// GrantOfferVersion is GrantOffer.V.
+const GrantOfferVersion = 1
+
 // AgentRevoke removes a grant. No signature.
 type AgentRevoke struct {
 	ID string `cbor:"id"`
@@ -186,27 +208,27 @@ type AgentConfirm struct {
 
 // Request is one durable change an agent asked for.
 type Request struct {
-	ReqID       string         `cbor:"reqId"`
-	Agent       string         `cbor:"agent"`
-	Op          string         `cbor:"op"`
-	Args        map[string]any `cbor:"args"`
-	Why         string         `cbor:"why"`
-	AtMs        int64          `cbor:"atMs"`
-	ExpiresAtMs int64          `cbor:"expiresAtMs"`
-	State       string         `cbor:"state"`
+	ReqID       string         `cbor:"reqId" json:"reqId"`
+	Agent       string         `cbor:"agent" json:"agent"`
+	Op          string         `cbor:"op" json:"op"`
+	Args        map[string]any `cbor:"args" json:"args"`
+	Why         string         `cbor:"why" json:"why"`
+	AtMs        int64          `cbor:"atMs" json:"atMs"`
+	ExpiresAtMs int64          `cbor:"expiresAtMs" json:"expiresAtMs"`
+	State       string         `cbor:"state" json:"state"`
 }
 
 // ApprovalKeyInfo is one owner phone's registered approval key.
 type ApprovalKeyInfo struct {
-	DeviceID string `cbor:"deviceId"`
-	SetAtMs  int64  `cbor:"setAtMs"`
+	DeviceID string `cbor:"deviceId" json:"deviceId"`
+	SetAtMs  int64  `cbor:"setAtMs" json:"setAtMs"`
 }
 
 // AgentList is agent.ok's body for agent.list. An agent sees its own row.
 type AgentList struct {
-	Agents   []AgentRow        `cbor:"agents"`
-	Requests []Request         `cbor:"requests"`
-	Keys     []ApprovalKeyInfo `cbor:"keys"`
+	Agents   []AgentRow        `cbor:"agents" json:"agents"`
+	Requests []Request         `cbor:"requests" json:"requests"`
+	Keys     []ApprovalKeyInfo `cbor:"keys" json:"keys"`
 }
 
 // AuditGet pages through the audit log, newest first.
@@ -217,21 +239,21 @@ type AuditGet struct {
 
 // AuditRow is one line of the box's audit log.
 type AuditRow struct {
-	Seq       uint64 `cbor:"seq"`
-	AtMs      int64  `cbor:"atMs"`
-	Actor     string `cbor:"actor"`
-	Role      string `cbor:"role"`
-	Principal string `cbor:"principal"`
-	By        string `cbor:"by"`
-	What      string `cbor:"what"`
-	Target    string `cbor:"target"`
-	Result    string `cbor:"result"`
+	Seq       uint64 `cbor:"seq" json:"seq"`
+	AtMs      int64  `cbor:"atMs" json:"atMs"`
+	Actor     string `cbor:"actor" json:"actor"`
+	Role      string `cbor:"role" json:"role"`
+	Principal string `cbor:"principal" json:"principal"`
+	By        string `cbor:"by" json:"by"`
+	What      string `cbor:"what" json:"what"`
+	Target    string `cbor:"target" json:"target"`
+	Result    string `cbor:"result" json:"result"`
 }
 
 // AuditPage is agent.ok's body for audit.get.
 type AuditPage struct {
-	Rows []AuditRow `cbor:"rows"`
-	More bool       `cbor:"more"`
+	Rows []AuditRow `cbor:"rows" json:"rows"`
+	More bool       `cbor:"more" json:"more"`
 }
 
 // LogsGet asks for a redacted log excerpt.
@@ -369,3 +391,16 @@ func VerifyApproval(pub []byte, msg, sig []byte) error {
 func sortedUnique(list []string) bool {
 	return slices.IsSorted(list) && len(slices.Compact(slices.Clone(list))) == len(list)
 }
+
+// Refusal is a refusal on its way to the wire: a registry code and its
+// machine-readable args. The box's layers return it so the one that answers
+// the caller need not translate.
+type Refusal struct {
+	Code string
+	Args map[string]any
+}
+
+func (r *Refusal) Error() string { return fmt.Sprintf("protocol: refused %s %v", r.Code, r.Args) }
+
+// Refuse builds a Refusal.
+func Refuse(code string, args map[string]any) *Refusal { return &Refusal{Code: code, Args: args} }

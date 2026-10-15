@@ -46,7 +46,8 @@ call whatever the cloud does.
   tooling sends `agent.revoke` for its own row. An agent may always revoke
   itself. The expiry is the backstop.
 - **The release check reads one thing.** Its role carries `ftw.health.read`
-  and nothing else, and it answers only `hello` and `health.get`.
+  and nothing else. Beyond `hello` and `health.get` it may only list and
+  revoke its own row.
 
 ## Scopes
 
@@ -139,7 +140,8 @@ open to an agent.
 - A command past `holdS` or `maxW` gets `E_CAP_EXCEEDED`, with
   `{cap, max}`. The box never clips an argument; it refuses, so the agent
   knows what happened.
-- A command past `perMin` gets `E_RATE_LIMITED`, with `{retryAfterMs}`.
+- A command past `perMin` gets `E_RATE_LIMITED`, with `retryAfterMs` in the
+  error body.
 - Reads are limited to 60 a minute per agent, by the box, whatever the caps
   say.
 
@@ -287,14 +289,21 @@ the caller subject (`agent:<id>`, `app:<id>`, `lan:<address>` or `box`);
 
 | Message | Request | Answer |
 |---|---|---|
-| `health.get` | `{}` | `health {version, uptimeS, clock, drivers: {ok, degraded, faulted, offline}, meter: {srcState, ageMs}, dispatchBlockedBy, planner: {solveMs, fallbacks}, refusals}` |
+| `health.get` | `{}` | `health {version, uptimeS, clock, drivers: {ok, degraded, faulted, offline}, meter: {srcState, ageMs}, dispatchBlockedBy}` |
 | `events.get` | `{n}`, at most 50 | `events {events}`, each the FTW Cloud `event` body |
-| `logs.get` | `{n, level}`; `n` at most 200, `level` `warn` by default | `logs {lines: [{ts, level, src, msg}], dropped}` |
-| `config.get` | `{}` | `config {doc}` |
+| `logs.get` | `{n, level}`; `n` at most 200, `level` `WARN` by default | `logs {lines: [{ts, level, src, msg}], dropped}` |
+| `config.get` | `{section}` | `config {sections}` without a section; `config {section, doc}` with one |
 | `diag.run` | `{check, src}`; `check` is `clock`, `link`, `meter`, `planner` or `driver` | `diag {check, ok, facts}` |
 
-A health field the box cannot fill is absent. `health` carries no readings
-and no names: drivers are counted, and `src` is an opaque source id.
+- Each answer fits one bulk frame (16 KiB). `logs.get` drops its oldest
+  lines to fit and counts them in `dropped`. A config section that does not
+  fit gets `E_RANGE_TOO_LARGE`; an unknown one `E_NOT_FOUND`.
+- `health` carries no readings and no names: drivers are counted, and a
+  source that blocks dispatch goes by an opaque id. Planner solve times,
+  fallbacks, refusals and plan against actual join it when the box keeps
+  them; a field the box cannot fill is absent.
+- The box answers `events.get` and `diag.run` with `E_UNKNOWN_OP` until it
+  builds them.
 
 ## Redaction on the box
 
@@ -310,7 +319,7 @@ unredacted, and nothing is stored in the cloud.
   credential: bearer and basic headers, secret-named keys and long tokens. A
   line's attributes keep their keys; a value stays only when it is a number,
   a boolean, a duration or a short lowercase word, and is otherwise replaced
-  by `[omitted]`. At most 200 lines and 32 KiB.
+  by `[omitted]`. At most 200 lines, in one bulk frame.
 - **Config.** Every secret-named key is replaced by `***`. Names become
   opaque ids. Location, addresses, host names, URLs, serials, MAC addresses,
   vehicle ids, e-mail addresses and notification targets are removed.
@@ -418,11 +427,15 @@ above and its approval key, and an agent can never reach them.
 |---|---|
 | `GET /api/agents` | A client on the LAN. Rows, requests and keys |
 | `GET /api/agents/audit?before=&n=` | A client on the LAN |
-| `POST /api/agents {grant offer}` | The box itself, or a LAN client signed in with the house password |
-| `POST /api/agents/{id}/widen` | The same |
-| `POST /api/agents/requests/{reqId} {approve: true}` | The same |
-| `POST /api/agents/requests/{reqId} {approve: false}` | A client on the LAN |
+| `POST /api/agents {offer, scopes, ops, caps, ttlS}` | The box itself, or a LAN client signed in with the house password |
+| `POST /api/agents/{id}/widen {epoch, scopes, ops, caps, ttlS}` | The same |
+| `POST /api/agent-requests/{reqId} {approve: true}` | The same |
+| `POST /api/agent-requests/{reqId} {approve: false}` | A client on the LAN |
 | `DELETE /api/agents/{id}` | A client on the LAN |
+
+`offer` is the [grant offer](#the-grant-offer) as the consent page shows
+it. The owner may grant less: `scopes`, `ops`, `caps` and `ttlS` replace the
+offer's when given. The box refuses an offer for another home id.
 
 Widening needs the house password because the LAN sign-in is otherwise
 nothing at all. What the box has today:
@@ -502,7 +515,7 @@ forwarded; neither replaces the other.
 | `agent.request` args, `why` | 1 KiB, 280 bytes |
 | Approval `atMs` window | 10 minutes either way |
 | Signature replay memory | 20 minutes |
-| `logs.get` | 200 lines, 32 KiB |
+| `logs.get` | 200 lines, one 16 KiB frame |
 | `events.get` | 50 events |
 | `audit.get` | 200 rows a page; 10,000 rows and 90 days kept |
 | `by` on a support call | 64 bytes |
