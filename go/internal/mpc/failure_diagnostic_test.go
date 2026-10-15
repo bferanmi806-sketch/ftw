@@ -343,13 +343,19 @@ func TestNativeSupportFailureEvidenceMatchesRejectedWorkerRequest(t *testing.T) 
 	svc.Optimizer = &EnergyplanOptimizer{ExternalOptimizer: worker}
 	plan := svc.Replan(context.Background())
 	failure := svc.PlanningFailureSnapshot()
-	if plan == nil || len(plan.Actions) != 2 || failure == nil || failure.OptimizerRequest == nil || failure.OptimizerResponse == nil {
+	if plan == nil || len(plan.Actions) != 4 || failure == nil || failure.OptimizerRequest == nil || failure.OptimizerResponse == nil {
 		t.Fatalf("native failure or safe recovery missing: plan=%v failure=%+v", plan != nil, failure)
 	}
 	var request externalRequest
 	var response externalResponse
 	if json.Unmarshal(failure.OptimizerRequest.JSON, &request) != nil || json.Unmarshal(failure.OptimizerResponse.JSON, &response) != nil ||
-		request.RequestID != response.RequestID || response.OK || len(request.Slots) != 4 || !strings.Contains(failure.Error, "infeasible") {
+		request.RequestID != response.RequestID || response.OK || len(request.Slots) != 4 || request.Slots[2].LoadW != 40000 || !strings.Contains(failure.Error, "infeasible") {
 		t.Fatal("captured exchange does not reproduce the rejected native request")
+	}
+	if plan.Solver.Engine != "native" || plan.Solver.Fallback || failure.RecoveredDecisionID != plan.DecisionID {
+		t.Fatal("simpler forecast did not recover native price planning")
+	}
+	if err := ValidatePlan(svc.lastSlots, svc.lastParams, plan); err != nil {
+		t.Fatal(err)
 	}
 }

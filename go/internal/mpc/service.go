@@ -1586,7 +1586,7 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	slots = buildSlots(prices, forecasts, baseLoad, now.UnixMilli(), pv, correct, load, captured.PVWeight)
 	// Resolve receives the complete legacy forecast, so its frozen shadow
 	// matches what the previous pipeline would have used.
-	sanitizeSlotLoads(slots)
+	legacySlots := append([]Slot(nil), slots...)
 	if captured.Resolve != nil && len(slots) > 0 {
 		if request.wasCanceledByService() {
 			return s.canceledReplan(request, "forecast-start")
@@ -1610,12 +1610,17 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			slots[i].PVW, slots[i].LoadW = resolved[i].PVW, resolved[i].LoadW
 		}
 	}
-	sanitizeSlotLoads(slots)
-	forecastInputs = slots
-	{
-		loadW, ok := s.liveHouseLoadW()
-		overlayLiveHouseLoad(slots, loadW, ok)
+	forecastInputs = append([]Slot(nil), slots...)
+	liveLoadW, liveLoadOK := s.liveHouseLoadW()
+	liveLoadOK = liveLoadOK && finite(liveLoadW) && liveLoadW >= 0
+	overlayLiveHouseLoad(slots, liveLoadW, liveLoadOK)
+	var forecastWarnings []string
+	admitted, forecastErr := recoverInvalidForecastLoads(slots, legacySlots, baseLoad)
+	if forecastErr != nil {
+		s.recordPlanningFailure(request, "forecast_inputs", forecastErr.Error(), slots, p, nil)
+		forecastWarnings = append(forecastWarnings, forecastErr.Error())
 	}
+	slots = admitted
 	// Qualified load models own their level. Unqualified historic daily
 	// totals must not impose a floor on a changed or low-load household.
 	if len(slots) == 0 {
@@ -1727,6 +1732,11 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	if captured.Risk != nil {
 		captured.Risk(slots, fallbackSlots, p.PVForecastSafetyK)
 	}
+	if recovered, err := recoverInvalidForecastLoads(fallbackSlots, slots, baseLoad); err != nil {
+		s.recordPlanningFailure(request, "risk_inputs", err.Error(), fallbackSlots, p, nil)
+		forecastWarnings = append(forecastWarnings, err.Error())
+		fallbackSlots = recovered
+	}
 	// Keep the point forecast distinct from the downside inputs passed to the
 	// solver. Calibrating point errors against the risk adjustment biases them.
 	baseForecastSlots := append([]Slot(nil), slots...)
@@ -1789,7 +1799,7 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			}
 		}
 	}
-	warnings := limitPlanningLoadpointSteps(&p)
+	warnings := append(forecastWarnings, limitPlanningLoadpointSteps(&p)...)
 	s.mu.Lock()
 	if request.generation == s.latestReplanGeneration {
 		s.planningWarnings = warnings
@@ -1886,7 +1896,14 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		solverInputs = slots
 		solveStart := time.Now()
 		var err error
-		plan, slots, err = corePlanWithRecovery(context.WithoutCancel(ctx), slots, p)
+		var forecastWarning string
+		plan, slots, err, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, p, baseLoad, liveLoadOK)
+		if forecastWarning != "" {
+			s.recordPlanningFailure(request, "forecast_recovery", forecastWarning, solverInputs, p, nil)
+			warnings = append(warnings, forecastWarning)
+			baseForecastSlots = append([]Slot(nil), slots...)
+			fallbackSlots = append([]Slot(nil), slots...)
+		}
 		if request.wasCanceledByService() {
 			return s.canceledReplan(request, "core-recovery")
 		}
@@ -1898,6 +1915,33 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 		solverInputs = slots
 		candidate, err := s.Optimizer.Optimize(ctx, slots, p)
 		optimizerErr = err
+		if forecastInfeasible(err) && !request.wasCanceledByService() {
+			// Preserve the original failed exchange even when a simpler forecast
+			// lets this same optimiser recover. Goals and limits stay unchanged.
+			s.recordPlanningFailure(request, "primary_optimizer", err.Error(), slots, p, err)
+			retryCtx, cancelRetry := context.WithTimeout(ctx, forecastRecoveryBudget)
+			for _, attempt := range forecastRecoveryAttempts(slots, baseForecastSlots, baseLoad, liveLoadOK) {
+				if retryCtx.Err() != nil {
+					break
+				}
+				recovered, retryErr := s.Optimizer.Optimize(retryCtx, attempt.slots, p)
+				if request.wasCanceledByService() {
+					break
+				}
+				if retryErr == nil {
+					candidate, slots, err = recovered, attempt.slots, nil
+					baseForecastSlots = append([]Slot(nil), attempt.base...)
+					fallbackSlots = append([]Slot(nil), attempt.slots...)
+					warnings = append(warnings, attempt.reason)
+					slog.Warn("mpc: optimiser recovered with a simpler forecast", "reason", attempt.reason)
+					break
+				}
+				if !forecastInfeasible(retryErr) {
+					break
+				}
+			}
+			cancelRetry()
+		}
 		if request.wasCanceledByService() {
 			return s.canceledReplan(request, "primary-solve")
 		}
@@ -1977,7 +2021,13 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			solverInputs = slots
 			solveStart := time.Now()
 			var fallbackErr error
-			plan, slots, fallbackErr = corePlanWithRecovery(context.WithoutCancel(ctx), slots, p)
+			var forecastWarning string
+			plan, slots, fallbackErr, forecastWarning = corePlanWithForecastRecovery(context.WithoutCancel(ctx), slots, p, baseLoad, liveLoadOK)
+			if forecastWarning != "" {
+				warnings = append(warnings, forecastWarning)
+				baseForecastSlots = append([]Slot(nil), slots...)
+				fallbackSlots = append([]Slot(nil), slots...)
+			}
 			if request.wasCanceledByService() {
 				return s.canceledReplan(request, "core-recovery")
 			}
@@ -1996,6 +2046,7 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			}
 		}
 	}
+	solverInputs = slots
 	var horizonWarning string
 	if inputErr != nil {
 		horizonWarning = markShortenedPlan(&plan, slots, "Later planning inputs are invalid: "+inputErr.Error()+".")
