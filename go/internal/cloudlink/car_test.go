@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/srcfl/ftw/go/protocol"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
@@ -105,7 +104,7 @@ func TestTheCarClassNeedsLive(t *testing.T) {
 // does not send the class at every reading.
 func TestTheCarClassGoesOnAChangeAndNotOnEveryReading(t *testing.T) {
 	svc := newFakeService(t)
-	svc.afterHello = func(conn *websocket.Conn, home string) {
+	svc.afterHello = func(conn uplinkConn, home string) {
 		svc.write(conn, nil, home, cloudwire.MsgWatch, cloudwire.Watch{Hz: 1})
 	}
 	h, cs := newCarHarness(t, svc)
@@ -167,7 +166,7 @@ func TestTheCarChangeTestIgnoresAgesAndCountsEnergyAsLPDoes(t *testing.T) {
 // A resync for full sends the car class again, unchanged, as it sends lp.
 func TestAResyncSendsTheCarClassAgain(t *testing.T) {
 	svc := newFakeService(t)
-	svc.afterHello = func(conn *websocket.Conn, home string) {
+	svc.afterHello = func(conn uplinkConn, home string) {
 		go func() {
 			time.Sleep(700 * time.Millisecond)
 			svc.write(conn, nil, home, cloudwire.MsgResync, cloudwire.Resync{What: []string{cloudwire.ResyncFull}})
