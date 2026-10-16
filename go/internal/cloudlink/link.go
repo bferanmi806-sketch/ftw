@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -57,7 +58,34 @@ var (
 	// DevRootCA is a PEM file of extra roots, for a local service with its
 	// own certificate. Empty in every release build.
 	DevRootCA = ""
+	// OfferKeys are FTW Cloud's offer keys (docs/agents.md, The grant
+	// offer): kid:base64url of the 65-byte P-256 point, comma separated, as
+	// https://cloud.ftw.energy/.well-known/ftw-offer-key publishes them.
+	// An entry whose kid is not protocol.OfferKid of its key is dropped.
+	// Empty means this build opens no offer on the box page.
+	OfferKeys = ""
 )
+
+// ParseOfferKeys reads OfferKeys into kid → SEC1 point. A malformed entry is
+// left out, so a typo opens nothing rather than everything.
+func ParseOfferKeys(list string) map[string][]byte {
+	out := map[string][]byte{}
+	for _, entry := range strings.Split(list, ",") {
+		kid, b64, ok := strings.Cut(strings.TrimSpace(entry), ":")
+		if !ok || kid == "" {
+			continue
+		}
+		pub, err := base64.RawURLEncoding.DecodeString(b64)
+		if err != nil {
+			continue
+		}
+		if _, err := protocol.ParseApprovalKey(pub); err != nil || kid != protocol.OfferKid(pub) {
+			continue
+		}
+		out[kid] = pub
+	}
+	return out
+}
 
 // ErrNoService is a grant on a build that names no service key.
 var ErrNoService = errors.New("cloudlink: this build has no FTW Cloud service")
@@ -122,6 +150,8 @@ type RosterDevice struct {
 	Scopes []string
 	// Tun says the device may open a session to the box through FTW Cloud.
 	Tun bool
+	// Agent is an agent row's grant, nil for a phone or a watch.
+	Agent *cloudwire.Agent
 }
 
 // Roster lists the paired phones and the pairing code on the box's screen.
@@ -131,6 +161,8 @@ type Roster interface {
 	// working. ok is false when none is shown. A spoken code is never
 	// listed: its hash would let the service find it.
 	Pending() (code []byte, expires time.Time, ok bool)
+	// Noise is the box's Noise static key, for FTW Cloud's keys part.
+	Noise() []byte
 }
 
 // Tunnel serves the phones' sessions that FTW Cloud carries. The box's app
@@ -174,6 +206,8 @@ type Options struct {
 	ServiceKeys []*ecdsa.PublicKey
 	RootCAs     *x509.CertPool
 	Tick        time.Duration
+	NetDial     func(ctx context.Context, network, addr string) (net.Conn, error)
+	Now         func() time.Time
 }
 
 // Link is the box's one uplink to FTW Cloud.
@@ -221,17 +255,25 @@ type Link struct {
 	lpSeq      uint64
 	resyncAt   time.Time
 	attempt    int
-	purgedAt   int64
-	rosterDue  bool
+	// shardHops counts wrong-shard closes since the box was last
+	// connected, and hostFails dials in a row that failed at the kept
+	// host (linkRecord.Host), since hostFailedSince.
+	shardHops       int
+	hostFails       int
+	hostFailedSince time.Time
+	purgedAt        int64
+	rosterDue       bool
 
 	// events wait for the writer; eventsDropped counts those that never
 	// left. closing is set by Bye, after which the link does not dial
 	// again.
 	events        []EventIn
 	eventsDropped int64
-	closing       bool
-	byeWhy        string
-	byeDone       chan struct{}
+	// notices wait for the uplink; see Notice.
+	notices []string
+	closing bool
+	byeWhy  string
+	byeDone chan struct{}
 }
 
 // New loads the grant and the key and returns a link that runs once Run is
@@ -270,6 +312,9 @@ func New(opts Options) (*Link, error) {
 	}
 	if opts.Started.IsZero() {
 		opts.Started = time.Now()
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
 	}
 	if opts.Tick <= 0 {
 		opts.Tick = 250 * time.Millisecond
@@ -981,11 +1026,11 @@ func (l *Link) caps(snap grantSnapshot) []string {
 			out = append(out, c)
 		}
 	}
-	out = append(out, cloudwire.MsgRoster)
+	out = append(out, cloudwire.MsgRoster, cloudwire.MsgNotice)
 	if l.opts.Tunnel != nil {
 		out = append(out, cloudwire.CapTun)
 	}
-	return out
+	return append(out, cloudwire.CapShard)
 }
 
 // tlsConfig is TLS 1.3 only, with the system roots unless a test or a dev
@@ -993,3 +1038,6 @@ func (l *Link) caps(snap grantSnapshot) []string {
 func (l *Link) tlsConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: l.opts.RootCAs, ClientSessionCache: l.tickets}
 }
+
+// now is the wall clock, or a test's.
+func (l *Link) now() time.Time { return l.opts.Now() }

@@ -33,12 +33,20 @@ var Fields = map[string][]string{
 
 	MsgEvent: {"eventId", "ts", "kind", "severity", "args", "src", "lp"},
 
-	MsgRoster: {"rosterSeq", "ttlS", "devices", "grant", "pending"},
-	"Device":  {"id", "key", "role", "scopes", "epoch", "tun"},
-	"Grant":   {"id", "scopes", "purposes", "controller"},
-	"Pending": {"hash", "ttlS"},
+	MsgRoster: {"rosterSeq", "ttlS", "devices", "grant", "pending", "noise"},
+	"Device":  {"id", "key", "role", "scopes", "epoch", "tun", "agent"},
+	// An agent row's grant (docs/agents.md). The client's name and the
+	// ticket came from FTW Cloud's own consent page and support system.
+	"Agent":     {"scopes", "ops", "caps", "expiresAtMs", "principal"},
+	"Caps":      {"holdS", "maxW", "perMin"},
+	"Principal": {"client", "clientId", "ticket"},
+	"Grant":     {"id", "scopes", "purposes", "controller"},
+	"Pending":   {"hash", "ttlS"},
 
 	MsgBye: {"why", "purge"},
+
+	// A kind and nothing else: no reading, no name, no id.
+	MsgNotice: {"kind"},
 
 	// tun carries no header and no signature: d is Noise ciphertext its two
 	// ends authenticate, and the service reads only dev and sid.
@@ -58,6 +66,7 @@ var Bodies = map[string]any{
 	MsgEvent:  Event{},
 	MsgRoster: Roster{},
 	MsgBye:    Bye{},
+	MsgNotice: Notice{},
 }
 
 // Unheaded are the box's messages without the common header.

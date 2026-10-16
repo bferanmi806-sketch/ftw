@@ -15,6 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/control"
+	"github.com/srcfl/ftw/go/internal/redact"
+	"github.com/srcfl/ftw/go/protocol"
 )
 
 // Config wires the message layer to the box. Every field except Logger,
@@ -54,6 +56,12 @@ type Config struct {
 	// window.
 	PlannerPrefs PlannerPrefs
 
+	// PlanChargers puts each charger's share on the plan, or nil on a box with
+	// no chargers. PlanFeed pushes the plan when the box replans, or nil for
+	// a box that pushes it only after a command.
+	PlanChargers PlanChargers
+	PlanFeed     *PlanFeed
+
 	// Caller is whose session this is. Required: a session always belongs to
 	// one enrolled device, and a handler that does not know which one cannot
 	// refuse anything.
@@ -78,6 +86,25 @@ type Config struct {
 	// contract constants; a typo is refused at construction rather than
 	// silently hiding a feature in the app.
 	Caps []string
+
+	// Access is the box's agent grants and approval keys, or nil on a box
+	// without them: the agent messages then answer E_UNKNOWN_OP.
+	Access Access
+	// Agents is the box's agent state, one per box like Commands. Required
+	// with Access.
+	Agents *AgentState
+	// Audit keeps who did what through an agent grant. Nil writes nothing.
+	Audit AuditLog
+	// Logs and Redactor serve logs.get, ConfigDoc and Redactor config.get,
+	// Views live.get and loadpoints.get. Each read answers E_UNAVAILABLE
+	// without its ports.
+	Logs      LogSource
+	Redactor  func() *redact.Redactor
+	ConfigDoc func() (any, error)
+	Views     AgentViews
+	// AgentKey cuts the ids in every answer to an agent, and resolves the
+	// ids an agent sends. The box derives it from a secret of its own.
+	AgentKey []byte
 
 	// Cloud answers hello_ok's FTW Cloud session information, or nil while
 	// FTW Cloud is off. Asked once per hello, for every role: a viewer reads
@@ -156,11 +183,21 @@ type Handler struct {
 	lastSent    map[string]int64
 	lastSources map[string]SourceWire
 	lastBlocked []string
+	// planMu holds a plan from read to send, so a newer plan never lands
+	// before an older one. lastPlan is the hash of the plan this session
+	// last got, without its uptime, so a push repeats nothing.
+	planMu   sync.Mutex
+	lastPlan [sha256.Size]byte
+
 	// lastRev is the controlRev this client was last told. A command carries
 	// the rev it expected, so a client left holding a stale one would have
 	// every command refused with no way to find out the new number — the
 	// snapshot is the only message that carries it.
 	lastRev uint64
+	// cmdAudits names the audited commands still waiting for a result.
+	cmdAudits map[string]cmdAudit
+	// untell stops an agent's session hearing how its requests end.
+	untell func()
 }
 
 // DefaultCaps is what this layer alone can back.
@@ -199,6 +236,10 @@ func New(cfg Config) (*Handler, error) {
 		return nil, errors.New("appproto: Grants is required")
 	case cfg.Commands == nil:
 		return nil, errors.New("appproto: Commands is required")
+	case cfg.Access != nil && cfg.Agents == nil:
+		return nil, errors.New("appproto: Agents is required with Access")
+	case cfg.Caller.Kind == apiauth.KindAgent && cfg.Access == nil:
+		return nil, errors.New("appproto: an agent's session needs Access")
 	}
 
 	// A role nobody recognises carries nothing, and a handler that would
@@ -229,7 +270,7 @@ func New(cfg Config) (*Handler, error) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Handler{
+	h := &Handler{
 		cfg:          cfg,
 		log:          cfg.Logger.With("component", "appproto"),
 		modes:        wireModes(control.ModeCatalog()),
@@ -242,7 +283,17 @@ func New(cfg Config) (*Handler, error) {
 		cadenceEvery: 1,
 		cadenceLeft:  1,
 		lastSent:     map[string]int64{},
-	}, nil
+	}
+	if h.isAgent() {
+		h.untell = cfg.Agents.subscribe(h.selfID(), h.sendDecided)
+	}
+	// An exchange sends nothing unasked; a watch reads the plan from FTW
+	// Cloud instead. An agent reads the plan by asking, never by a push,
+	// so its reads stay counted and in the audit.
+	if cfg.PlanFeed != nil && !cfg.Exchange && !h.isAgent() {
+		cfg.PlanFeed.join(h)
+	}
+	return h, nil
 }
 
 // Close ends the handler's own work when the session goes.
@@ -253,6 +304,12 @@ func New(cfg Config) (*Handler, error) {
 // passthrough.
 func (h *Handler) Close() {
 	h.cancel()
+	if h.untell != nil {
+		h.untell()
+	}
+	if h.cfg.PlanFeed != nil {
+		h.cfg.PlanFeed.leave(h)
+	}
 	h.histMu.Lock()
 	if h.histCancel != nil {
 		h.histCancel()
@@ -316,10 +373,15 @@ func (h *Handler) liveCaller() (apiauth.Caller, bool) {
 	if !ok {
 		return apiauth.Caller{}, false
 	}
+	if h.isAgent() && (grant.Agent == nil || grant.Agent.Expired || grant.Agent.NoClock) {
+		// An agent past its expiry, or with no clock to tell, holds
+		// nothing. agentGate says which, where an answer needs it.
+		return apiauth.Caller{}, false
+	}
 	caller := h.cfg.Caller
 	caller.Role = grant.Role
 	caller.Epoch = grant.Epoch
-	caller.Scopes = ScopesForGrant(grant.Role, grant.ParentRole)
+	caller.Scopes = ScopesForEnrolment(grant)
 	return caller, true
 }
 
@@ -355,13 +417,37 @@ func (h *Handler) dispatch(ctx context.Context, env Envelope) error {
 	if h.cfg.Exchange {
 		return h.dispatchExchange(ctx, env)
 	}
+	if h.isAgent() {
+		return h.dispatchAgent(ctx, env)
+	}
+	if env.By != "" && env.ID != nil {
+		// Only a support session names who made a call.
+		return h.sendError(env.ID, ErrorBody{Code: ErrUnknownOp, Args: map[string]any{"field": "by"}})
+	}
 	switch env.T {
 	case MsgHello:
 		return h.onHello(env)
 	case MsgSub:
 		return h.onSub(env)
 	case MsgCmd:
-		return h.onCmd(ctx, env)
+		return h.onCmd(ctx, env, "")
+	case protocol.MsgApprovalKeySet:
+		return h.onApprovalKeySet(env)
+	case protocol.MsgAgentAdd:
+		return h.onAgentAdd(env)
+	case protocol.MsgAgentWiden:
+		return h.onAgentWiden(env)
+	case protocol.MsgAgentRevoke:
+		return h.onAgentRevoke(env)
+	case protocol.MsgAgentList:
+		return h.onAgentList(env)
+	case protocol.MsgAgentConfirm:
+		return h.onAgentConfirm(ctx, env)
+	case protocol.MsgAuditGet:
+		return h.onAuditGet(env)
+	case protocol.MsgHealthGet, protocol.MsgLogsGet, protocol.MsgConfigGet, protocol.MsgEventsGet, protocol.MsgDiagRun,
+		protocol.MsgLiveGet, protocol.MsgLoadpointsGet, protocol.MsgDriversGet, protocol.MsgCarsGet:
+		return h.onRead(env)
 	case MsgPlanGet:
 		return h.onPlanGet(env.ID)
 	case MsgPriceGet:
@@ -425,14 +511,18 @@ func (h *Handler) onHello(env Envelope) error {
 		// more would invite an app that cannot use it to try.
 		caps = []string{CapStatusCore}
 		hint = HintAppUpdate
-	} else if h.cfg.Cloud != nil {
+	} else if h.cfg.Cloud != nil && !h.isAgent() {
+		// An agent reads through its own session; FTW Cloud's session
+		// information is a phone's.
 		cloud = h.cfg.Cloud()
 	}
 
 	source, syncedAtMs := h.cfg.Clock.Sync()
 	id := h.cfg.Info.Identity()
 
-	fastSub := hello.Sub != nil && boot == nil
+	// An agent never streams: the snapshot's source table names devices.
+	// Its view of now is live.get, counted and audited like any read.
+	fastSub := hello.Sub != nil && boot == nil && !h.isAgent()
 	body := HelloOK{
 		Proto: proto,
 		Mode:  mode,
@@ -524,6 +614,10 @@ func (h *Handler) onSub(env Envelope) error {
 }
 
 func (h *Handler) applySub(sub Sub) error {
+	if h.isAgent() {
+		// The second lock on the same door: no path gives an agent a stream.
+		return nil
+	}
 	bucket := sub.Bucket
 	if bucket != 256 && bucket != 512 {
 		// Lane 0 is one of two sizes for the life of the session. An
@@ -601,6 +695,11 @@ func (h *Handler) sendSnapshot() error {
 // frame even when nothing changed, so the relay cannot distinguish an idle
 // house from an active one within the chosen cadence.
 func (h *Handler) Tick() error {
+	if h.isAgent() {
+		if err := h.agentTick(); err != nil {
+			return err
+		}
+	}
 	h.mu.Lock()
 	if !h.subscribed {
 		h.mu.Unlock()
@@ -787,7 +886,8 @@ func fidOf(key string) uint64 {
 // Commands
 // --------------------------------------------------------------------------
 
-func (h *Handler) onCmd(ctx context.Context, env Envelope) error {
+// onCmd takes a command. by is the staff id on a support session's call.
+func (h *Handler) onCmd(ctx context.Context, env Envelope, by string) error {
 	var cmd Cmd
 	if err := Unmarshal(env.B, &cmd); err != nil {
 		h.log.Warn("undecodable cmd dropped", "err", err)
@@ -803,6 +903,15 @@ func (h *Handler) onCmd(ctx context.Context, env Envelope) error {
 			Args:      map[string]any{"t": MsgCmd, "missing": "cmdId"},
 		})
 	}
+	if h.isAgent() {
+		h.noteCmd(cmd.CmdID, cmdAudit{by: by, what: MsgCmd, target: cmd.Op})
+	}
+	return h.runCmd(ctx, cmd, by)
+}
+
+// runCmd makes every check and acts. An owner's confirmation of an agent's
+// request comes here too, as a command of its own.
+func (h *Handler) runCmd(ctx context.Context, cmd Cmd, by string) error {
 
 	// Idempotency first. A retry must return the original outcome, not act a
 	// second time — that is the entire reason the key exists. The box keeps
@@ -843,20 +952,17 @@ func (h *Handler) onCmd(ctx context.Context, env Envelope) error {
 	// Who is asking, as the box's records stand right now — the same question
 	// the passthrough asks, answered the same way. A phone revoked or demoted
 	// mid-session must not get one last command through on the strength of
-	// what its handshake said.
-	caller, enrolled := h.liveCaller()
-	if !enrolled {
-		if err := h.sendCmdResult(CmdResult{
-			CmdID: cmd.CmdID,
-			State: CmdRejected,
-			Error: &ErrorBody{
-				Code:      ErrGrantRevoked,
-				Retryable: ErrorRetryable[ErrGrantRevoked],
-			},
-		}); err != nil {
+	// what its handshake said. An agent meets its grant's expiry, allowlist,
+	// rate and caps here too.
+	caller, cmd, refusal, end := h.cmdCaller(cmd, by)
+	if refusal != nil {
+		if err := h.sendCmdResult(CmdResult{CmdID: cmd.CmdID, State: CmdRejected, Error: refusal}); err != nil {
 			return err
 		}
-		return h.Terminate(TerminateRevoked)
+		if end != "" {
+			return h.Terminate(end)
+		}
+		return nil
 	}
 
 	// The scope the operation declares, checked against the scope this
@@ -865,7 +971,7 @@ func (h *Handler) onCmd(ctx context.Context, env Envelope) error {
 	// command was refused by nothing at all. This is the line that makes a
 	// role real on the command lane; the passthrough's role gate is the same
 	// property on the other one.
-	if !caller.Scopes.Has(spec.scope) {
+	if !h.isAgent() && !caller.Scopes.Has(spec.scope) {
 		return h.sendCmdResult(CmdResult{
 			CmdID: cmd.CmdID,
 			State: CmdRejected,
@@ -1012,22 +1118,21 @@ func (h *Handler) settleAndReport(cmdID string, res CmdResult) error {
 	return nil
 }
 
+// modeArg is the mode a site.mode.set names. control.IsValidMode is the
+// box's own validator, shared with the HTTP API and Home Assistant. A second
+// list here would be a second place for the three to disagree.
+func modeArg(op string, args map[string]any) (control.Mode, *ErrorBody) {
+	raw, _ := args["mode"].(string)
+	if !control.IsValidMode(control.Mode(raw)) {
+		return "", badArg(op, "mode", raw)
+	}
+	return control.Mode(raw), nil
+}
+
 func (h *Handler) setMode(ctx context.Context, cmd Cmd, uptimeMs int64) error {
-	raw, _ := cmd.Args["mode"].(string)
-	wanted := control.Mode(raw)
-	if !control.IsValidMode(wanted) {
-		// control.IsValidMode is the box's own validator, shared with the
-		// HTTP API and Home Assistant. A second list here would be a second
-		// place for the three to disagree.
-		return h.sendCmdResult(CmdResult{
-			CmdID: cmd.CmdID,
-			State: CmdRejected,
-			Error: &ErrorBody{
-				Code:      ErrUnknownOp,
-				Retryable: false,
-				Args:      map[string]any{"op": cmd.Op, "arg": "mode", "value": raw},
-			},
-		})
+	wanted, bad := modeArg(cmd.Op, cmd.Args)
+	if bad != nil {
+		return h.rejectWith(cmd, bad)
 	}
 
 	if took, err := h.acceptCmd(cmd, uptimeMs); !took || err != nil {
@@ -1100,7 +1205,13 @@ func (h *Handler) onPlanGet(id *uint32) error {
 	return h.sendPlan(id)
 }
 
-func (h *Handler) sendPlan(id *uint32) error {
+func (h *Handler) sendPlan(id *uint32) error { return h.writePlan(id, false) }
+
+// writePlan reads the plan and sends it. With skipSame it sends nothing when
+// this session already has this plan.
+func (h *Handler) writePlan(id *uint32, skipSame bool) error {
+	h.planMu.Lock()
+	defer h.planMu.Unlock()
 	body := planFrom(
 		h.cfg.Plans.Latest(),
 		h.cfg.Plans.Rev(),
@@ -1108,14 +1219,28 @@ func (h *Handler) sendPlan(id *uint32) error {
 		h.cfg.Clock.UptimeMs(),
 		h.cfg.Clock.Now(),
 	)
+	if h.cfg.PlanChargers != nil {
+		body.Chargers = h.cfg.PlanChargers.PlanChargers(h.cfg.Clock.Now())
+	}
+	same := body
+	same.UptimeMs = 0
+	raw, err := Marshal(same)
+	if err != nil {
+		return err
+	}
+	key := sha256.Sum256(raw)
+	if skipSame && key == h.lastPlan {
+		return nil
+	}
 
 	// The optimizer plans further than the wire carries: 193 fifteen-minute
 	// slots encode to ~17 kB and the largest bulk bucket is 16 kB. Send the
 	// nearest slots that fit and drop the far tail — the app shows twelve
-	// hours, and slots two days out are a guess about a guess. What must
-	// never happen is the alternative: an encode error here used to kill the
-	// whole session, which the app experienced as "the box hangs up whenever
-	// I open the plan".
+	// hours, and slots two days out are a guess about a guess. Then the far
+	// windows of each charger, for the same reason. What must never happen is
+	// the alternative: an encode error here used to kill the whole session,
+	// which the app experienced as "the box hangs up whenever I open the
+	// plan".
 	for {
 		env, err := newEnvelope(MsgPlan, id, body)
 		if err != nil {
@@ -1126,13 +1251,33 @@ func (h *Handler) sendPlan(id *uint32) error {
 			return err
 		}
 		if bulkBucketFor(len(raw)) != 0 {
-			return h.send(Frame{Lane: LaneBulk, Bucket: bulkBucketFor(len(raw)), Envelope: env})
+			if err := h.send(Frame{Lane: LaneBulk, Bucket: bulkBucketFor(len(raw)), Envelope: env}); err != nil {
+				return err
+			}
+			h.lastPlan = key
+			return nil
 		}
-		if len(body.Slots) <= 1 {
-			return fmt.Errorf("appproto: a single plan slot does not fit any bulk bucket")
+		switch {
+		case len(body.Slots) > 1:
+			body.Slots = body.Slots[:len(body.Slots)*3/4]
+		case trimWindows(body.Chargers):
+		default:
+			return fmt.Errorf("appproto: a plan of one slot and one window per charger does not fit any bulk bucket")
 		}
-		body.Slots = body.Slots[:len(body.Slots)*3/4]
 	}
+}
+
+// trimWindows drops the far quarter of each charger's windows, keeping the
+// next one, and reports whether anything went.
+func trimWindows(chargers []PlanCharger) bool {
+	trimmed := false
+	for i := range chargers {
+		if n := len(chargers[i].Windows); n > 1 {
+			chargers[i].Windows = chargers[i].Windows[:max(1, n*3/4)]
+			trimmed = true
+		}
+	}
+	return trimmed
 }
 
 // --------------------------------------------------------------------------
@@ -1160,6 +1305,10 @@ func (h *Handler) sendCmdAck(ack CmdAck) error {
 }
 
 func (h *Handler) sendCmdResult(res CmdResult) error {
+	h.auditCmdResult(res)
+	if h.isAgent() {
+		res = h.forAgentResult(res)
+	}
 	h.mu.Lock()
 	bucket := h.bucket
 	h.mu.Unlock()
@@ -1172,6 +1321,9 @@ func (h *Handler) sendCmdResult(res CmdResult) error {
 // id, a window the box could not serve would raise a session-wide banner and
 // make the whole app look broken over one chart the user could simply narrow.
 func (h *Handler) sendError(id *uint32, body ErrorBody) error {
+	if h.isAgent() {
+		body.Args = h.forAgent(body.Args)
+	}
 	h.mu.Lock()
 	bucket := h.bucket
 	h.mu.Unlock()

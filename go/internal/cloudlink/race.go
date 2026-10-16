@@ -134,7 +134,7 @@ func (l *Link) afterRace(network, won string, results <-chan dialed, cancelQUIC 
 }
 
 func (l *Link) dialWebSocket(ctx context.Context) (uplinkConn, error) {
-	conn, resp, err := l.dialer().DialContext(ctx, l.opts.Endpoint, nil)
+	conn, resp, err := l.dialer().DialContext(ctx, l.endpoint(), nil)
 	if resp != nil && resp.Body != nil {
 		_ = resp.Body.Close()
 	}
@@ -145,8 +145,8 @@ func (l *Link) dialWebSocket(ctx context.Context) (uplinkConn, error) {
 }
 
 // quicAddr is the service's QUIC address: the WebSocket endpoint's host and
-// port, over UDP. False when QUIC is off: a test that names its own
-// endpoint and does not ask for QUIC.
+// port, over UDP, on the shard that holds the home. False when QUIC is off:
+// a test that names its own endpoint and does not ask for QUIC.
 func (l *Link) quicAddr() (string, bool) {
 	if !l.quicOn {
 		return "", false
@@ -154,7 +154,7 @@ func (l *Link) quicAddr() (string, bool) {
 	if l.opts.QUICAddr != "" {
 		return l.opts.QUICAddr, true
 	}
-	u, err := url.Parse(l.opts.Endpoint)
+	u, err := url.Parse(l.endpoint())
 	if err != nil || u.Hostname() == "" {
 		return "", false
 	}

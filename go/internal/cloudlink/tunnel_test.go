@@ -40,7 +40,7 @@ func TestTheBoxLinksForItsPhonesAndSendsNoReadings(t *testing.T) {
 	if err := cloudwire.Unmarshal(env.B, &hello); err != nil {
 		t.Fatal(err)
 	}
-	if len(hello.GrantID) != 0 || !slices.Equal(hello.Caps, []string{cloudwire.MsgRoster, cloudwire.CapTun}) {
+	if len(hello.GrantID) != 0 || !slices.Equal(hello.Caps, []string{cloudwire.MsgRoster, cloudwire.MsgNotice, cloudwire.CapTun, cloudwire.CapShard}) {
 		t.Fatalf("hello names grant %x and caps %v", hello.GrantID, hello.Caps)
 	}
 
@@ -170,8 +170,17 @@ func TestTunDoesNotSpendTheCopysBudget(t *testing.T) {
 		}
 		svc.waitFor(cloudwire.MsgTun, 3*time.Second)
 	}
+	// The last tun is counted when it leaves, a moment after the service
+	// sees it; and the copy's own heartbeat may go meanwhile on a slow
+	// runner. What must hold is that the tunnel's 40 KiB never lands on the
+	// copy's count.
+	deadline := time.Now().Add(3 * time.Second)
 	st := h.link.Status()
-	if st.BytesLast24h != before || st.TunBytesLast24h < 40_960 {
+	for st.TunBytesLast24h < 40_960 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		st = h.link.Status()
+	}
+	if st.BytesLast24h-before >= 40_960 || st.TunBytesLast24h < 40_960 {
 		t.Fatalf("copy %d → %d bytes, tunnel %d", before, st.BytesLast24h, st.TunBytesLast24h)
 	}
 }
@@ -504,5 +513,25 @@ func TestTheCopyFlowsPastTheTunnelBudget(t *testing.T) {
 	svc.waitFor(cloudwire.MsgLive, 7*time.Second)
 	if err := h.link.SendTun(cloudwire.Tun{Dev: "q5Lw0Zb1", Sid: 1, D: []byte{1}}, false); err == nil {
 		t.Fatal("tun went past its own budget")
+	}
+}
+
+// A security notice goes whenever the box is linked, with the readable copy
+// off, and carries the kind alone.
+func TestANoticeGoesWithTheCopyOff(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	h.nextRoster(t)
+	if h.link.Notice("cloud.granted") {
+		t.Fatal("a kind that is not a notice was queued")
+	}
+	if !h.link.Notice(protocol.PushAgentAdded) {
+		t.Fatal("the notice was refused")
+	}
+	env := svc.waitFor(cloudwire.MsgNotice, 3*time.Second)
+	var n cloudwire.Notice
+	if err := cloudwire.Unmarshal(env.B, &n); err != nil || n.Kind != protocol.PushAgentAdded {
+		t.Fatalf("notice %+v %v", n, err)
 	}
 }
