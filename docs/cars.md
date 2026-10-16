@@ -106,9 +106,13 @@ At each plug-in the box asks, in this order (`carIdentifiedBy`):
 2. `car`: one of the car's sources saw its cable go in within a minute of
    the plug-in and does not say it is elsewhere (`at_site` false), or says
    it is charging at this site (`at_site` true) while this charger alone
-   delivers. A source says so with `plugged` and `at_site` in its `vehicle`
-   emit, or with a charging state that needs a cable. Two cars saying so is
-   no answer.
+   delivers. A source says so with `plugged` and `at_site` (or
+   `site_distance_m`) in its `vehicle` emit, or with a charging state that
+   needs a cable. When the source gives `plugged_since_ms`, that is when the
+   cable went in; otherwise it is when the box first saw the source say so.
+   A source that does not know where the car is counts only by that minute.
+   Two cars saying so is no answer. The fields are in
+   [writing-a-driver.md](writing-a-driver.md#which-car-is-plugged-in).
 3. `only`: exactly one car could be here: the box knows one car that is not
    on another charger, and it has not said it is somewhere else. The car's
    usual charger counts the same way: a car the box made from a charger's

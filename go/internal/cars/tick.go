@@ -259,9 +259,18 @@ func (r *Runtime) ingestLocked(obs []telemetry.VehicleObservation, states []load
 			r.sources[o.Driver] = ss
 		}
 		plugged := pluggedEvidence(o)
-		if !plugged {
+		switch {
+		case !plugged:
 			ss.pluggedSince = time.Time{}
-		} else if !ss.plugged && ss.seen {
+		case o.Plugged != nil && !o.PluggedSince.IsZero():
+			// The car's own clock says when its cable went in, which a
+			// source that reports minutes apart, or a box that just
+			// started, cannot see for itself.
+			ss.pluggedSince = o.PluggedSince
+			if ss.pluggedSince.After(now) {
+				ss.pluggedSince = now
+			}
+		case !ss.plugged && ss.seen:
 			ss.pluggedSince = o.ReportedAt
 			if ss.pluggedSince.IsZero() || ss.pluggedSince.After(now) {
 				ss.pluggedSince = now
