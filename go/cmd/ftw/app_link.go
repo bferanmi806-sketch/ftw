@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"hash/fnv"
 	"log/slog"
 	"math"
 	"net/http"
@@ -25,6 +26,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/prices"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/telemetry"
+	"github.com/srcfl/ftw/go/protocol"
 )
 
 // The FTW app's uplink, wired to the box.
@@ -439,6 +441,14 @@ func (a *appLoadpoints) ObservedHold(id string, now time.Time) (loadpoint.Manual
 	return a.ctrl.GetManualHold(id, now)
 }
 
+func (a *appLoadpoints) HoldIfOwn(id string, h loadpoint.ManualHold, now time.Time) bool {
+	return a.ctrl.SetManualHoldIfOwn(id, h, now)
+}
+
+func (a *appLoadpoints) ClearHoldIfOwn(id, setBy string, now time.Time) bool {
+	return a.ctrl.ClearManualHoldIfOwn(id, setBy, now)
+}
+
 func (a *appLoadpoints) Boost(id string, lease loadpoint.BatteryBoostLease, now time.Time) error {
 	if _, err := a.ctrl.EnableBatteryBoost(id, lease, now); err != nil {
 		return err
@@ -561,6 +571,68 @@ func (a *appPlans) CeilingW() *int64 {
 	return &ceiling
 }
 
+// appPlanChargers is each charger's share of the plan, read from the same plan
+// snapshot and the same windows GET /api/loadpoints serves. Keyed by the
+// charger; CarID stays empty until Core keeps cars.
+type appPlanChargers struct {
+	planner *mpc.Service
+	mgr     *loadpoint.Manager
+	ctrl    *loadpoint.Controller
+}
+
+func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
+	snap := a.planner.PlanSnapshot()
+	// While a newer plan is being made the box goes on acting on the one it
+	// has, so its windows stay, marked pending. The HTTP route empties them.
+	acting := snap
+	if snap.Pending && !snap.Unproven {
+		acting.Outdated = false
+	}
+	states := a.mgr.States()
+	out := make([]appproto.PlanCharger, 0, len(states))
+	for _, st := range states {
+		ch := appproto.PlanCharger{
+			ID: st.ID, PluggedIn: st.PluggedIn,
+			Pending: snap.Pending, Outdated: snap.Outdated,
+			Windows: []appproto.PlanChargerWindow{},
+			GoalRev: goalRev(st),
+		}
+		if a.ctrl != nil && !acting.Outdated {
+			ch.GridDeferred = a.ctrl.GridDeferred(st.ID)
+		}
+		windows, totalWh := acting.LoadpointPlanWindows(st.ID, now, api.MaxPlanWindows)
+		for _, w := range windows {
+			ch.Windows = append(ch.Windows, appproto.PlanChargerWindow{
+				StartMs: w.Start.UnixMilli(), EndMs: w.End.UnixMilli(), Wh: int64(math.Round(w.EnergyWh)),
+			})
+		}
+		ch.TotalWh = int64(math.Round(totalWh))
+		if snap.Plan != nil && !snap.Pending && !snap.Outdated {
+			if wh, ok := snap.Plan.LoadpointShortfallWh[st.ID]; ok && !math.IsNaN(wh) && !math.IsInf(wh, 0) {
+				short := int64(math.Round(max(0, wh)))
+				ch.ShortfallWh = &short
+			}
+		}
+		out = append(out, ch)
+	}
+	return out
+}
+
+// goalRev changes when a charger's goal, ready time, schedule or solar-only
+// choice changes, wherever that was done, so a phone knows to read it again.
+func goalRev(st loadpoint.State) uint32 {
+	raw, _ := json.Marshal(struct {
+		Schedule      loadpoint.Schedule
+		TargetSoC     float64
+		TargetTimeMs  int64
+		SurplusOnly   bool
+		FinishAtLimit bool
+	}{st.Schedule, st.TargetSoC, st.TargetTime.UnixMilli(), st.SurplusOnly, st.FinishAtVehicleLimit})
+	h := fnv.New32a()
+	_, _ = h.Write(raw)
+	return h.Sum32()
+}
+
 // startAppLink connects the box to the app relay when its loaded config leaves
 // the link enabled. Config defaults an omitted app_link section on.
 //
@@ -587,6 +659,7 @@ func startAppLink(
 	gateway *lateAPI,
 	webPush *notifications.WebPush,
 	cloud *cloudSession,
+	agents *agentPorts,
 ) (*appenroll.Identity, *appuplink.Uplink, bool, error) {
 	enabled := cfg != nil && cfg.AppLink.On()
 
@@ -594,6 +667,12 @@ func startAppLink(
 	if err != nil {
 		return nil, nil, enabled, err
 	}
+	// Agent rows expire by the wall clock, and do nothing without one, nor
+	// below the highest time the box has seen.
+	agentWall.load(st)
+	enroll.SetClock(agentClock)
+	agents.key = agentKey(enroll)
+	enroll.OnOwnerAdded(func() { agents.push(protocol.PushOwnerAdded) })
 	if !enabled {
 		return enroll, nil, false, nil
 	}
@@ -630,6 +709,19 @@ func startAppLink(
 		caps = append(caps, appproto.CapDerEv)
 	}
 
+	// The plan reaches every streaming phone the moment the planner
+	// replaces it, with each charger's windows, so a car plugged in shows
+	// its plan without a read.
+	var planChargers appproto.PlanChargers
+	var planFeed *appproto.PlanFeed
+	if planner != nil {
+		planFeed = appproto.NewPlanFeed(appproto.PlanSettle)
+		planner.OnPlanChange(planFeed.Changed)
+		if lpMgr != nil {
+			planChargers = &appPlanChargers{planner: planner, mgr: lpMgr, ctrl: lpCtrl}
+		}
+	}
+
 	// Prices ride on the price service, and only when it has a zone and a
 	// store to have fetched into. With either missing there is nothing to
 	// serve, so the capability stays unsaid rather than advertised and empty.
@@ -662,6 +754,20 @@ func startAppLink(
 	// says so, so a phone offers "Add watch".
 	caps = append(caps, appproto.CapCmdExchange)
 
+	// Agents (docs/agents.md): an owner's grants to an assistant, Sourceful
+	// support or the release check. They reach the box through FTW Cloud's
+	// tunnel only, and every call meets its grant here.
+	agents.access = &appuplink.AgentAccess{Enroll: enroll, Clock: agentClock, Push: agents.push,
+		Holds: endAgentHolds(loadpoints)}
+	agents.state = appproto.NewAgentState()
+	if st != nil {
+		agents.audit = newStateAudit(ctx, st)
+	}
+	caps = append(caps, appproto.CapAccessAgents)
+	// One view for every agent session, so a charger's plug-in count is
+	// the same whichever session reads it.
+	views := agentViews{site: &cloudSite{site: site, api: gateway}}
+
 	// handlerFor builds one handler for one session: a phone's stream, or a
 	// watch's exchange. They share the ports above, which are read-only
 	// apart from the mode and the command log, and the mode goes through
@@ -682,11 +788,21 @@ func startAppLink(
 				History:      history,
 				Prices:       priceReader,
 				Loadpoints:   loadpoints,
+				PlanChargers: planChargers,
+				PlanFeed:     planFeed,
 				API:          gateway,
 				Caller:       caller,
 				Grants:       grants,
 				Commands:     cmds,
 				Exchange:     exchange,
+				Access:       agents.access,
+				Agents:       agents.state,
+				Audit:        agents.audit,
+				Logs:         ringLogs{ring: agents.logs},
+				Redactor:     agents.redactor,
+				Views:        views,
+				AgentKey:     agents.key,
+				ConfigDoc:    agents.configDoc,
 				// FTW Cloud is asked per session: its link is bound after
 				// this returns, and its grant moves while the box runs.
 				Caps:   cloud.caps(caps),
@@ -713,6 +829,11 @@ func startAppLink(
 	if err != nil {
 		return enroll, nil, enabled, err
 	}
+	agents.access.Drop = func(key []byte) { uplink.DropSessionsByAppKey(key) }
+	agents.boxPage = func(by string) (*appproto.Handler, error) {
+		return handlerFor(false)(discardSender{}, boxPageCaller(by), boxPageGrant{})
+	}
+	go sweepAgents(ctx, agents)
 
 	go func() {
 		if err := uplink.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -800,6 +921,9 @@ func (l *lateAPI) Route(r *http.Request) apiauth.RouteFacts {
 type appLinkAPI struct {
 	enroll *appenroll.Identity
 	uplink *appuplink.Uplink
+	// agents ends the holds and the state of agent rows a removal takes
+	// with it. Nil while the app link is off.
+	agents *agentPorts
 	// st sweeps a revoked phone's push subscriptions. Nil in embeddings
 	// without storage; the sweep is then vacuously done.
 	st *state.Store
@@ -868,7 +992,19 @@ func (a *appLinkAPI) Devices() []api.AppDevice {
 // was withdrawn, which for a demotion is not true and for a promotion is the
 // opposite of true.
 func (a *appLinkAPI) SetDeviceRole(id, role string) error {
-	return appLinkError(a.enroll.SetRole(id, role))
+	if err := a.enroll.SetRole(id, role); err != nil {
+		return appLinkError(err)
+	}
+	// A phone that is no longer an owner vouches for no control: the holds
+	// of the agents it approved end now.
+	if role != apiauth.RoleOwner && a.agents != nil && a.agents.access != nil {
+		for _, row := range a.agents.access.Agents() {
+			if row.ApprovedBy == apiauth.KindApp+":"+id {
+				a.agents.access.EndHolds(row.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // RevokeDevice locks one device out, and a phone's watches with it. atTheBox
@@ -876,9 +1012,23 @@ func (a *appLinkAPI) SetDeviceRole(id, role string) error {
 // thing that decides whether the last owner may go; Presence is enrollment's
 // word for the same fact.
 func (a *appLinkAPI) RevokeDevice(id string, atTheBox bool) error {
+	agentRows := map[string]bool{}
+	if a.agents != nil && a.agents.access != nil {
+		for _, row := range a.agents.access.Agents() {
+			agentRows[row.ID] = true
+		}
+	}
 	removed, err := a.enroll.Revoke(id, appenroll.Presence(atTheBox))
 	if err != nil {
 		return appLinkError(err)
+	}
+	// An agent row this took, by its id or with the phone that approved it,
+	// goes the way a revoke goes: its holds end, its state goes, and the
+	// audit log says so.
+	for _, gone := range removed {
+		if agentRows[gone.ID] {
+			a.agents.agentGone(gone.ID, "app-link")
+		}
 	}
 	var swept int64
 	for _, gone := range removed {
@@ -939,9 +1089,9 @@ func appLinkError(err error) error {
 // panics on first use. Returning an untyped nil is the difference between
 // "pairing is off" and a crash on the one screen someone reaches for when
 // nothing else works.
-func appEnrollForAPI(enroll *appenroll.Identity, uplink *appuplink.Uplink, st *state.Store, enabled bool) api.AppEnroller {
+func appEnrollForAPI(enroll *appenroll.Identity, uplink *appuplink.Uplink, st *state.Store, enabled bool, agents *agentPorts) api.AppEnroller {
 	if !enabled || enroll == nil {
 		return nil
 	}
-	return &appLinkAPI{enroll: enroll, uplink: uplink, st: st}
+	return &appLinkAPI{enroll: enroll, uplink: uplink, st: st, agents: agents}
 }
