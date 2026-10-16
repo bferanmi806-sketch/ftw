@@ -260,7 +260,7 @@ type Link struct {
 	events        []EventIn
 	eventsDropped int64
 	// notices wait for the uplink; see Notice.
-	notices []string
+	notices []notice
 	closing bool
 	byeWhy  string
 	byeDone chan struct{}

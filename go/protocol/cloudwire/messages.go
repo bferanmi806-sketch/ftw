@@ -1,6 +1,13 @@
 package cloudwire
 
-import "github.com/srcfl/ftw/go/protocol"
+import (
+	"errors"
+	"slices"
+
+	"github.com/fxamacker/cbor/v2"
+
+	"github.com/srcfl/ftw/go/protocol"
+)
 
 // Message types. The service sends exactly the first five and tun; anything
 // else from it closes the uplink.
@@ -378,15 +385,49 @@ type Grant struct {
 
 // Notice is a security notice for the owners: a push kind from the
 // catalogue, such as agent.added, and nothing that says more. The service
-// sends each owner device registered for alerts a push with no data.
+// sends each owner device registered for alerts a push carrying the
+// notice, which the phone checks and words from its catalogue.
 type Notice struct {
 	Header
 	Kind string `cbor:"kind"`
+	// Client is the name of the client given access, as FTW Cloud's
+	// consent page showed it: only on agent.added, and only while the
+	// readable copy is on and carries events. Otherwise absent.
+	Client string `cbor:"client,omitempty"`
 }
 
 // NoticeKinds are the kinds a notice may carry.
 var NoticeKinds = []string{protocol.PushAgentAdded, protocol.PushAgentRequest, protocol.PushAgentExpiring,
 	protocol.PushApprovalKeySet, protocol.PushOwnerAdded}
+
+// NoticeClientMaxBytes bounds a notice's client name. A longer name goes
+// without the name.
+const NoticeClientMaxBytes = 64
+
+// ErrNotice refuses a notice body that is not one: an unknown field, a kind
+// outside NoticeKinds, or a client name where none may be.
+var ErrNotice = errors.New("cloudwire: not a notice")
+
+// ReadNotice decodes a notice body strictly. A body with any field beyond
+// the header, kind and client is refused, so a notice cannot carry a
+// reading, a name or an id to a phone or to Apple.
+func ReadNotice(body []byte) (Notice, error) {
+	var keys map[string]cbor.RawMessage
+	if Unmarshal(body, &keys) != nil {
+		return Notice{}, ErrNotice
+	}
+	for k := range keys {
+		if !slices.Contains(Fields["header"], k) && !slices.Contains(Fields[MsgNotice], k) {
+			return Notice{}, ErrNotice
+		}
+	}
+	var n Notice
+	if Unmarshal(body, &n) != nil || !slices.Contains(NoticeKinds, n.Kind) ||
+		(n.Client != "" && (n.Kind != protocol.PushAgentAdded || len(n.Client) > NoticeClientMaxBytes)) {
+		return Notice{}, ErrNotice
+	}
+	return n, nil
+}
 
 // Bye ends the uplink. Purge asks the service to delete the home.
 type Bye struct {
