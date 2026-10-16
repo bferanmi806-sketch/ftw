@@ -551,7 +551,9 @@ func TestANoticeNamesTheClientOnlyWhenTheGrantCarriesEvents(t *testing.T) {
 		{"events granted", []string{protocol.ScopeLiveRead, protocol.ScopeEventsRead}, protocol.PushAgentAdded, "Claude", "Claude"},
 		{"the copy without events", []string{protocol.ScopeLiveRead}, protocol.PushAgentAdded, "Claude", ""},
 		{"another kind", []string{protocol.ScopeEventsRead}, protocol.PushAgentRequest, "Claude", ""},
-		{"a name too long", []string{protocol.ScopeEventsRead}, protocol.PushAgentAdded, strings.Repeat("c", cloudwire.NoticeClientMaxBytes+1), ""},
+		{"a name too long", []string{protocol.ScopeEventsRead}, protocol.PushAgentAdded, strings.Repeat("c", cloudwire.NoticeClientMaxRunes+1), ""},
+		{"a name the consent page cut", []string{protocol.ScopeEventsRead}, protocol.PushAgentAdded, strings.Repeat("ö", 64) + "…", strings.Repeat("ö", 64) + "…"},
+		{"a format character", []string{protocol.ScopeEventsRead}, protocol.PushAgentAdded, "Claude\u202e", ""},
 		{"a line break", []string{protocol.ScopeEventsRead}, protocol.PushAgentAdded, "Claude\nPay here", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -586,6 +588,29 @@ func TestANoticeKindIsNoEvent(t *testing.T) {
 		t.Fatal("an ordinary event was refused")
 	}
 	svc.waitFor(cloudwire.MsgEvent, 3*time.Second)
+}
+
+// Notices wait for the uplink in a queue of 16. A seventeenth pushes the
+// oldest out, and the box counts it.
+func TestAFullNoticeQueueCountsWhatItDrops(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	h.grant(t)
+	svc.waitFor(cloudwire.MsgRoster, 5*time.Second)
+	// The same linked box, not running: nothing takes its notices.
+	idle, err := New(Options{Site: h.site, Roster: fakeRoster{}, KV: h.kv, KeyPath: h.keyPath,
+		ServiceKeys: h.link.opts.ServiceKeys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range noticeQueue + 1 {
+		if !idle.Notice(protocol.PushAgentRequest, "") {
+			t.Fatalf("notice %d was refused", i)
+		}
+	}
+	if st := idle.Status(); st.NoticesDropped != 1 {
+		t.Fatalf("dropped %d", st.NoticesDropped)
+	}
 }
 
 // A notice goes past the spent byte budget, as an event does: it is how an

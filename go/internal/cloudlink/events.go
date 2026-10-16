@@ -4,10 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/srcfl/ftw/go/protocol"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
@@ -114,15 +111,13 @@ func (w *writer) sendEvents(snap grantSnapshot, now time.Time) error {
 
 // noticeClient is the client name a notice may carry: on agent.added, while
 // the copy is on and its grant has events, as an event's arguments would,
-// and only a short, plain name.
+// and only a name cloudwire.NoticeClientOK takes, as the consent page cut it.
 func noticeClient(snap grantSnapshot, n notice) string {
-	c := n.client
 	if n.kind != protocol.PushAgentAdded || !snap.copyOn() || !snap.g.has(protocol.ScopeEventsRead) ||
-		c == "" || len(c) > cloudwire.NoticeClientMaxBytes || !utf8.ValidString(c) ||
-		strings.ContainsFunc(c, unicode.IsControl) {
+		!cloudwire.NoticeClientOK(n.client) {
 		return ""
 	}
-	return c
+	return n.client
 }
 
 // projectEvent cuts opaque ids and drops names.
@@ -237,11 +232,18 @@ func (l *Link) Notice(kind, client string) bool {
 		l.mu.Unlock()
 		return false
 	}
+	dropped := ""
 	if len(l.notices) >= noticeQueue {
+		dropped = l.notices[0].kind
 		l.notices = l.notices[1:]
+		l.noticesDropped++
 	}
 	l.notices = append(l.notices, notice{kind, client})
 	l.mu.Unlock()
+	if dropped != "" {
+		// The box's own transports carried it; FTW Cloud never will.
+		l.log.Warn("cloudlink: the notice queue is full; the oldest notice was dropped", "kind", dropped, "queued", noticeQueue)
+	}
 	l.signal()
 	return true
 }

@@ -23,8 +23,14 @@ func TestReadNoticeTakesOnlyANotice(t *testing.T) {
 	}{
 		{"a kind", body(Notice{Kind: protocol.PushOwnerAdded}, nil), true},
 		{"agent.added with its client", body(Notice{Kind: protocol.PushAgentAdded, Client: "Claude"}, nil), true},
-		{"a client at the limit", body(Notice{Kind: protocol.PushAgentAdded, Client: strings.Repeat("c", NoticeClientMaxBytes)}, nil), true},
-		{"a client over the limit", body(Notice{Kind: protocol.PushAgentAdded, Client: strings.Repeat("c", NoticeClientMaxBytes+1)}, nil), false},
+		{"a name the consent page cut", body(Notice{Kind: protocol.PushAgentAdded, Client: strings.Repeat("ö", 64) + "…"}, nil), true},
+		{"a client over the limit", body(Notice{Kind: protocol.PushAgentAdded, Client: strings.Repeat("c", NoticeClientMaxRunes+1)}, nil), false},
+		{"a format character", body(Notice{Kind: protocol.PushAgentAdded, Client: "Claude\u202e"}, nil), false},
+		{"a control character", body(Notice{Kind: protocol.PushAgentAdded, Client: "Claude\nPay here"}, nil), false},
+		{"a short boot", func() []byte {
+			b, _ := Marshal(Notice{Header: Header{Seq: 4, Boot: []byte{1, 2}}, Kind: protocol.PushOwnerAdded})
+			return b
+		}(), false},
 		{"a client on another kind", body(Notice{Kind: protocol.PushAgentRequest, Client: "Claude"}, nil), false},
 		{"a kind that is not a notice", body(Notice{Kind: protocol.PushChargingConnected}, nil), false},
 		{"no kind", body(Notice{}, nil), false},

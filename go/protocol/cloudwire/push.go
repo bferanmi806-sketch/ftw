@@ -3,6 +3,7 @@ package cloudwire
 import (
 	"bytes"
 	"encoding/json"
+	"slices"
 
 	"github.com/srcfl/ftw/go/protocol"
 )
@@ -102,8 +103,9 @@ type PushUnregister struct {
 const NoticeClientArg = "client"
 
 // AlertMaxAgeMs is how old an event may be and still get its text and
-// buttons on the phone. An older one, or one the phone cannot anchor in
-// time, shows the generic line with no buttons.
+// buttons on the phone; a notice may be NoticeMaxAgeMs old. An older one,
+// or one the phone cannot anchor in time, shows the generic line with no
+// buttons.
 const AlertMaxAgeMs = 10 * 60 * 1000
 
 // UnreachableAfterMs is how long the service waits without the box's socket
@@ -234,7 +236,9 @@ func ReadAlert(payload []byte, boxKey func(home string) []byte, offset func(home
 		return view
 	}
 	var ev Event
+	maxAge := int64(AlertMaxAgeMs)
 	if env.T == MsgNotice {
+		maxAge = NoticeMaxAgeMs
 		// A notice reads as an event of its kind, with the client's name
 		// as its one argument when it carries one.
 		n, err := ReadNotice(env.B)
@@ -245,7 +249,9 @@ func ReadAlert(payload []byte, boxKey func(home string) []byte, offset func(home
 		if n.Client != "" {
 			ev.Args[NoticeClientArg] = n.Client
 		}
-	} else if Unmarshal(env.B, &ev) != nil {
+	} else if Unmarshal(env.B, &ev) != nil || slices.Contains(NoticeKinds, ev.Kind) {
+		// A notice's kind comes only as a notice, to the owners: as an
+		// event it could have reached a viewer.
 		return view
 	}
 	at, ok := alertSendTime(ev, offset(a.Home), nowMs)
@@ -256,7 +262,7 @@ func ReadAlert(payload []byte, boxKey func(home string) []byte, offset func(home
 		at = min(at, *ev.Ts)
 	}
 	_, known := protocol.PushSentences[ev.Kind]
-	if !known || ev.Kind == protocol.PushBoxUnreachable || nowMs-at > AlertMaxAgeMs {
+	if !known || ev.Kind == protocol.PushBoxUnreachable || nowMs-at > maxAge {
 		return view
 	}
 	return AlertView{Verdict: AlertEvent, Home: a.Home, Kind: ev.Kind, Args: ev.Args, Src: ev.Src, LP: ev.LP,

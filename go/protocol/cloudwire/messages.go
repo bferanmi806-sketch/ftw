@@ -3,6 +3,8 @@ package cloudwire
 import (
 	"errors"
 	"slices"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/fxamacker/cbor/v2"
 
@@ -400,12 +402,34 @@ type Notice struct {
 var NoticeKinds = []string{protocol.PushAgentAdded, protocol.PushAgentRequest, protocol.PushAgentExpiring,
 	protocol.PushApprovalKeySet, protocol.PushOwnerAdded}
 
-// NoticeClientMaxBytes bounds a notice's client name. A longer name goes
-// without the name.
-const NoticeClientMaxBytes = 64
+// NoticeClientMaxRunes bounds a notice's client name in characters: FTW
+// Cloud's consent page keeps at most 64 of a name and marks one it cut with
+// "…", so every name it shows fits.
+const NoticeClientMaxRunes = 65
 
-// ErrNotice refuses a notice body that is not one: an unknown field, a kind
-// outside NoticeKinds, or a client name where none may be.
+// NoticeMaxAgeMs is how old a notice may be and still get its words on the
+// phone, and how long Apple may keep trying to deliver it. A notice states
+// a lasting fact, such as a new owner, so it lasts longer than an event.
+const NoticeMaxAgeMs = 24 * 60 * 60 * 1000
+
+// NoticeClientOK reports whether a client name may go in a notice: valid
+// UTF-8, at most NoticeClientMaxRunes characters, and no control or format
+// character, which could reorder or hide what a lock screen shows.
+func NoticeClientOK(c string) bool {
+	if c == "" || !utf8.ValidString(c) || utf8.RuneCountInString(c) > NoticeClientMaxRunes {
+		return false
+	}
+	for _, r := range c {
+		if unicode.Is(unicode.Cc, r) || unicode.Is(unicode.Cf, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// ErrNotice refuses a notice body that is not one: an unknown field, a
+// header out of shape, a kind outside NoticeKinds, or a client name where
+// none may be or that NoticeClientOK refuses.
 var ErrNotice = errors.New("cloudwire: not a notice")
 
 // ReadNotice decodes a notice body strictly. A body with any field beyond
@@ -422,8 +446,8 @@ func ReadNotice(body []byte) (Notice, error) {
 		}
 	}
 	var n Notice
-	if Unmarshal(body, &n) != nil || !slices.Contains(NoticeKinds, n.Kind) ||
-		(n.Client != "" && (n.Kind != protocol.PushAgentAdded || len(n.Client) > NoticeClientMaxBytes)) {
+	if Unmarshal(body, &n) != nil || len(n.Boot) != BootBytes || n.UptimeMs < 0 || !slices.Contains(NoticeKinds, n.Kind) ||
+		(n.Client != "" && (n.Kind != protocol.PushAgentAdded || !NoticeClientOK(n.Client))) {
 		return Notice{}, ErrNotice
 	}
 	return n, nil

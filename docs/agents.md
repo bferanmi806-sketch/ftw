@@ -689,6 +689,11 @@ each notice, as the box signed it, in an alert to the home's owner devices
 only, never to a viewer or a watch. These kinds never go to FTW Cloud as an
 `event`, so an owner hears of each change once through it.
 
+FTW Cloud knows each agent's client name whatever the copy: the roster lists
+it in the agent row (`principal.client`), and the name came from its own
+consent page. The copy decides only whether the name also goes to Apple in a
+notice.
+
 ## The audit log
 
 The box writes a row for every call an agent makes and for every change to

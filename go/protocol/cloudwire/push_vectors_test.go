@@ -137,6 +137,13 @@ func TestPushVectors(t *testing.T) {
 	}
 	named := asEvent(agentNamed)
 	named.Args = map[string]string{NoticeClientArg: "Claude"}
+	// A notice kind sent as an event, as a box on #1646 did: it could have
+	// reached a viewer, so it reads as nothing.
+	noticeAsEvent := Event{Header: Header{Seq: 23, Boot: boot, UptimeMs: 75_023, WallMs: at(75_023)},
+		EventID: "bm90aWNlZXYx", Kind: protocol.PushAgentAdded, Severity: SeverityInfo, Args: map[string]string{}}
+	dayOldNotice := notice(24, protocol.PushApprovalKeySet, "")
+	shortBoot := notice(25, protocol.PushOwnerAdded, "")
+	shortBoot.Boot = boot[:8]
 
 	// Rule U: the phone learned phone time minus box uptime an hour before
 	// the event, so the anchor carries 0.01 % of that hour as margin.
@@ -237,6 +244,19 @@ func TestPushVectors(t *testing.T) {
 		{name: "notice that carries a reading", key: box, signFor: home, notice: withReading,
 			extra: map[string]any{"fields": map[int]int64{1: 2400}}, alert: Alert{Home: home},
 			nowMs: fresh(asEvent(withReading)), want: generic},
+		{name: "a notice kind sent as an event", key: box, signFor: home, event: &noticeAsEvent, alert: Alert{Home: home},
+			nowMs: fresh(noticeAsEvent), want: generic},
+		{name: "notice: twenty hours old is still shown", key: box, signFor: home, notice: dayOldNotice, alert: Alert{Home: home},
+			nowMs: *dayOldNotice.WallMs + 20*60*60*1000,
+			want: func() pushVectorOut {
+				o := event(asEvent(dayOldNotice))
+				o.AtMs = *dayOldNotice.WallMs
+				return o
+			}()},
+		{name: "notice: over a day old", key: box, signFor: home, notice: dayOldNotice, alert: Alert{Home: home},
+			nowMs: *dayOldNotice.WallMs + NoticeMaxAgeMs + 1, want: generic},
+		{name: "notice with a short boot", key: box, signFor: home, notice: shortBoot, alert: Alert{Home: home},
+			nowMs: fresh(asEvent(shortBoot)), want: generic},
 	}
 
 	keys := map[string][]byte{home: boxPK, otherHome: otherPK}

@@ -592,7 +592,7 @@ record cannot turn a withdrawn consent back on.
 | Field | Type | Meaning |
 |---|---|---|
 | `kind` | text | One of `agent.added`, `agent.request`, `agent.expiring`, `approval.key.set`, `owner.added` |
-| `client` | text, optional | On `agent.added` only, while the readable copy is on and its grant has `ftw.events.read`: the client's name as FTW Cloud's consent page showed it, at most 64 bytes. Absent otherwise |
+| `client` | text, optional | On `agent.added` only, while the readable copy is on and its grant has `ftw.events.read`: the client's name as FTW Cloud's consent page showed it: at most 65 characters (the page keeps 64 and marks a cut name with "…"), and no control or format character. Absent otherwise |
 
 A security notice: someone gained access, asks for a change, is about to
 lose access, or can now approve access. The service checks that the body
@@ -600,7 +600,13 @@ holds nothing beyond the header, `kind` and `client` (`cloudwire.ReadNotice`)
 and sends each owner device registered for alerts the notice as it arrived,
 in an `alert` (see [Push](#push)). The phone words it from its catalogue. A
 notice of these kinds never goes as an `event`, so an owner gets one alert,
-not two. See [Agents](agents.md).
+not two; a phone shows an event of these kinds as the generic line. A notice
+states a lasting fact, so Apple may hold it and the phone shows it for a day
+(`NoticeMaxAgeMs`), where an event lasts 10 minutes. The box keeps at most 16
+notices for the uplink and counts any it drops (`noticesDropped` in
+`GET /api/cloud`). The name in `client` is not new to the service: the
+roster's agent row carries it whatever the copy (`principal.client`); the
+copy decides only whether it also reaches Apple. See [Agents](agents.md).
 
 **`bye`** `{why, purge}`. `why` is `revoked`, `shutdown` or `update`.
 `purge: true` asks the service to delete the home. `why: "update"` holds
@@ -1034,7 +1040,7 @@ through the relay instead, and prices and the plan wait for the phone.
 
 | Type | Payload | Phone behaviour |
 |---|---|---|
-| `alert` | `aps` with the generic title "FTW" and `mutable-content: 1`, plus `home` and, in its `event` member, the box's `event` or `notice` envelope in base64 | The extension checks the signature and drops an already seen `(boot, seq)`. If the event or notice is anchored and at most 10 minutes old, it renders text from the app's catalogue copy and picks the category, and so the buttons, from the verified `kind`. A notice reads as an event of its kind, with `client` as its one argument. Otherwise it shows a generic line with no buttons |
+| `alert` | `aps` with the generic title "FTW" and `mutable-content: 1`, plus `home` and, in its `event` member, the box's `event` or `notice` envelope in base64 | The extension checks the signature and drops an already seen `(boot, seq)`. If the event is anchored and at most 10 minutes old, or the notice at most a day, it renders text from the app's catalogue copy and picks the category, and so the buttons, from the verified `kind`. A notice reads as an event of its kind, with `client` as its one argument. Otherwise it shows a generic line with no buttons |
 | `widgets` | Content changed, no data | Widgets fetch with their token |
 | `liveactivity` | `home`, the `lp` envelope and the newest `hb` envelope, in base64 | The view shows numbers only if both signatures check, the `hb` covers that `lp`, and the charger source grades `live` by the freshness rules; otherwise "Open FTW". `staleDate` is set to when that grade would lapse |
 | `box.unreachable` | Generic, from the service | Sent after 600 s without the box's socket. No box signature, no arguments, no buttons |
