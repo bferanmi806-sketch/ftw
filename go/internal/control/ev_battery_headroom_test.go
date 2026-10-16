@@ -357,8 +357,16 @@ func TestEVBatteryObservedSiblingRiseNeedsRoomWithoutOrder(t *testing.T) {
 }
 
 func TestEVBatteryPendingSiblingBacksOffExistingChargeForEV(t *testing.T) {
-	for _, siblingTarget := range []bool{false, true} {
-		t.Run(fmt.Sprint(siblingTarget), func(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		hasTarget bool
+		targetW   float64
+	}{
+		{name: "absent"},
+		{name: "zero", hasTarget: true},
+		{name: "partial", hasTarget: true, targetW: 2000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			store, state := evBatteryFixture(t, 5000, nil,
 				evBatteryFixturePower{driver: "car", kind: telemetry.DerEV, before: 0, after: 0, requested: 5000, phaseMode: "3p"},
 				evBatteryFixturePower{driver: "battery", kind: telemetry.DerBattery, before: 4000, after: 4000},
@@ -366,12 +374,27 @@ func TestEVBatteryPendingSiblingBacksOffExistingChargeForEV(t *testing.T) {
 			old := store.BeginCommand("sibling", []byte(`{"action":"battery","power_w":8000}`), time.Now())
 			store.CompleteCommand(old, "accepted")
 			targets := []DispatchTarget{{Driver: "battery", TargetW: 4000}}
-			if siblingTarget {
-				targets = append(targets, DispatchTarget{Driver: "sibling", TargetW: 0})
+			if tc.hasTarget {
+				targets = append(targets, DispatchTarget{Driver: "sibling", TargetW: tc.targetW})
 			}
 			out := clampEVBatteryHeadroom(targets, store, state, 17250)
 			if math.Abs(out[0].TargetW-2560) > .01 || 1000+5000+8000+out[0].TargetW > 16560.01 {
 				t.Fatalf("pending sibling kept optional battery ahead of EV: %v", out)
+			}
+		})
+	}
+}
+
+func TestEVBatteryPositiveLimitsUseOneSnapshot(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprint(reverse), func(t *testing.T) {
+			targets := []DispatchTarget{{Driver: "first", TargetW: 8000}, {Driver: "second", TargetW: 8000}}
+			if reverse {
+				targets[0], targets[1] = targets[1], targets[0]
+			}
+			out := capBatteryOffersToHeadroom(targets, map[string]float64{"first": 0, "second": 0}, map[string]float64{"first": 0, "second": 0}, 10000)
+			if out[0].TargetW != 5000 || out[1].TargetW != 5000 {
+				t.Fatalf("one target's clamp changed the other's shared allocation: %v", out)
 			}
 		})
 	}

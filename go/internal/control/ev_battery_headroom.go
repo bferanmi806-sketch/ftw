@@ -260,6 +260,25 @@ func capBatteryOffersToHeadroom(targets []DispatchTarget, baselines, uppers map[
 			}
 		}
 	}
+	// A partial positive reduction also leaves its old higher order pending.
+	// Bound every offer against the same snapshot of its siblings; one
+	// commanded reduction must not fund another offer in this pass.
+	covered := make([]float64, len(out))
+	var coveredTotal float64
+	for i, target := range out {
+		if target.TargetW > 0 {
+			covered[i] = math.Max(target.TargetW, math.Max(0, uppers[target.Driver]))
+			coveredTotal += covered[i]
+		}
+	}
+	for i := range out {
+		if out[i].TargetW > 0 {
+			room := math.Max(0, capW-(coveredTotal-covered[i]))
+			if out[i].TargetW > room {
+				out[i].TargetW, out[i].Clamped = room, true
+			}
+		}
+	}
 	return out
 }
 
