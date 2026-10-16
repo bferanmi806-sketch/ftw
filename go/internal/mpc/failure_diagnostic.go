@@ -98,7 +98,7 @@ func (s *Service) PlanningFailureSnapshot() *PlanningFailure {
 }
 
 func (s *Service) recordPlanningFailure(r replanRequest, stage, message string, slots []Slot, p Params, optimizerErr error) {
-	if r.wasCanceledByService() {
+	if r.wasCanceledByService() || s.repeatsPlanningFailure(stage, message) {
 		return
 	}
 	// Limit source rows before encoding; normal 48-hour, quarter-hour plans
@@ -128,11 +128,25 @@ func (s *Service) recordPlanningFailure(r replanRequest, stage, message string, 
 		f.OptimizerRequest, f.OptimizerResponse = wire.request, wire.response
 	}
 	s.mu.Lock()
-	if !s.stopping && r.generation == s.latestReplanGeneration && !r.wasCanceledByService() {
+	if !s.stopping && r.generation == s.latestReplanGeneration && !r.wasCanceledByService() && !s.repeatsPlanningFailureLocked(stage, message) {
 		s.lastPlanningFailure = f
 		s.planningFailureRestored = false
 	}
 	s.mu.Unlock()
+}
+
+// A failure that repeats keeps its first evidence. Writing it again would
+// cost a FULL-sync commit on every replan while it lasts. Evidence restored
+// from before a restart is replaced once by this run's.
+func (s *Service) repeatsPlanningFailure(stage, message string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.repeatsPlanningFailureLocked(stage, message)
+}
+
+func (s *Service) repeatsPlanningFailureLocked(stage, message string) bool {
+	f := s.lastPlanningFailure
+	return f != nil && !s.planningFailureRestored && f.Stage == stage && f.Error == message
 }
 
 type PlanningFailureStorage struct {

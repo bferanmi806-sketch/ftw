@@ -13,6 +13,9 @@ type forecastChoice struct {
 	slots     []Slot
 	warning   string
 	marginErr error
+	// withoutCaution is set when the plan ignores a caution forecast that
+	// differed from the point forecast.
+	withoutCaution bool
 }
 
 func validateForecastCaution(p Params) error {
@@ -84,7 +87,7 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 		err = preservesDepartureGoals(p, plan, candidate)
 	}
 	if err != nil {
-		choice.marginErr = err
+		choice.marginErr, choice.withoutCaution = err, true
 		choice.warning = "Forecast caution could not retain the point plan's limits and departure goals; using the point forecast: " + err.Error()
 		return choice, nil
 	}

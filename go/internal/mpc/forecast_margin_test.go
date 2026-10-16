@@ -40,7 +40,7 @@ func (o *optionalMarginOptimizer) Optimize(ctx context.Context, slots []Slot, p 
 	return o.worker.Optimize(ctx, slots, p)
 }
 
-func TestForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
+func TestNativeForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
 	for _, fault := range []string{"infeasible", "broken reply", "timeout", "invalid plan"} {
 		t.Run(fault, func(t *testing.T) {
 			svc := shadowTestService(t)
@@ -51,6 +51,7 @@ func TestForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
 			optimizer := &optionalMarginOptimizer{worker: worker, fault: fault}
 			svc.Optimizer = optimizer
 			svc.Defaults.MaxChargeW, svc.Defaults.MaxDischargeW = 0, 0
+			svc.PVForecastSafetyK = .3
 			svc.ForecastSnapshot = func(time.Time, []state.ForecastPoint) ForecastInputs {
 				return ForecastInputs{Load: func(time.Time) float64 { return 1000 },
 					Risk: func(_, risk []Slot, _ float64) {
@@ -70,6 +71,9 @@ func TestForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
 			if plan == nil || len(plan.Actions) != 4 || plan.Solver.Engine != "native" || plan.Solver.Fallback || optimizer.calls != 2 {
 				t.Fatalf("optional failure lost the native point plan: status=%+v calls=%d", svc.PlanSnapshot(), optimizer.calls)
 			}
+			if !plan.CautionOff {
+				t.Fatal("the point plan does not say caution is off")
+			}
 			if err := ValidatePlan(svc.lastSlots, svc.lastParams, plan); err != nil {
 				t.Fatal(err)
 			}
@@ -86,7 +90,7 @@ func TestForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
 	}
 }
 
-func TestForecastMarginInvalidPVKeepsFullPointHorizon(t *testing.T) {
+func TestNativeForecastMarginInvalidPVKeepsFullPointHorizon(t *testing.T) {
 	for _, backend := range []string{"core", "native"} {
 		for _, badSlot := range []int{0, 2} {
 			t.Run(fmt.Sprintf("%s/slot%d", backend, badSlot), func(t *testing.T) {
@@ -116,7 +120,7 @@ func TestForecastMarginInvalidPVKeepsFullPointHorizon(t *testing.T) {
 	}
 }
 
-func TestForecastMarginRetainsRealDepartureShortfall(t *testing.T) {
+func TestNativeForecastMarginRetainsRealDepartureShortfall(t *testing.T) {
 	for _, backend := range []string{"core", "native", "worker unavailable"} {
 		t.Run(backend, func(t *testing.T) {
 			svc := shadowTestService(t)
@@ -340,7 +344,7 @@ func TestForecastMarginKeepsActualPublicationTime(t *testing.T) {
 
 // These fields describe optional caution, not equipment. Invalid values must
 // survive in support evidence while the effective solve uses the point model.
-func TestForecastMarginBadOptionalParametersKeepPoint(t *testing.T) {
+func TestNativeForecastMarginBadOptionalParametersKeepPoint(t *testing.T) {
 	for _, backend := range []string{"core", "native"} {
 		for _, field := range []string{"PVUncertaintyW", "PVRelativeUncertainty", "PVForecastSafetyK"} {
 			for _, bad := range []struct {
