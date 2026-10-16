@@ -18,13 +18,14 @@ const VehicleMaxAge = 5 * time.Minute
 
 // A vehicle driver may give the car's distance from the site instead of
 // at_site. Within SiteNearM the car is here; beyond SiteAwayM it is
-// elsewhere; between, the box does not know. The gap absorbs a site pin set
-// by a click on a zoomed-out map and a parked car's drifting GPS fix: a car
-// that wrongly reads as elsewhere turns the only car into a visitor
-// (docs/cars.md), which is worse than not knowing.
+// elsewhere; between, the box does not know. The site's position is the
+// weather pin, set for forecasts with a click on a map shown at zoom 11, so
+// it can be off by a kilometre or more. A car that wrongly reads as
+// elsewhere turns the only car into a visitor (docs/cars.md), which is worse
+// than not knowing.
 const (
 	SiteNearM = 300.0
-	SiteAwayM = 1000.0
+	SiteAwayM = 5000.0
 )
 
 // atSiteFromDistance turns a distance from the site into the car's at_site.

@@ -4,26 +4,36 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
-// host.site_location gives the site's coordinates to a vehicle driver only,
-// and nil when the site has none.
-func TestLuaSiteLocationIsForVehicleDriversOnly(t *testing.T) {
+// host.site_location gives the site's coordinates to a driver whose signed
+// catalog entry lists vehicle, and nil to every other driver: a charger, a
+// file that only calls itself a vehicle driver, or a site with no position.
+func TestLuaSiteLocationIsForSignedVehicleDriversOnly(t *testing.T) {
+	signed := func(caps ...string) *RuntimePolicy {
+		return &RuntimePolicy{PackageID: "com.sourceful.driver.car", Version: "0.1.0",
+			ArtifactSHA256: strings.Repeat("b", 64), RuntimeABI: "gopher-lua-source-v1",
+			HostAPIProfile: "sourceful.host/ftw-core/v1", ReadOnly: true, Capabilities: caps}
+	}
 	for _, tc := range []struct {
-		name, caps string
-		set, ok    bool
-		want       string
+		name   string
+		policy *RuntimePolicy
+		set    bool
+		ok     bool
+		want   string
 	}{
-		{"vehicle", `{ "vehicle" }`, true, true, "59.5,17.25"},
-		{"vehicle on a site with no position", `{ "vehicle" }`, true, false, "nil"},
-		{"vehicle on a host without it", `{ "vehicle" }`, false, false, "nil"},
-		{"a charger", `{ "ev" }`, true, true, "nil"},
+		{"signed vehicle", signed("vehicle"), true, true, "59.5,17.25"},
+		{"signed vehicle on a site with no position", signed("vehicle"), true, false, "nil"},
+		{"signed vehicle on a host without it", signed("vehicle"), false, false, "nil"},
+		{"signed charger", signed("ev"), true, true, "nil"},
+		{"a local file that calls itself a vehicle driver", nil, true, true, "nil"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			source := `DRIVER = { capabilities = ` + tc.caps + ` }
+			source := `DRIVER = { capabilities = { "vehicle" }, read_only = true }
 function driver_init(config) end
 function driver_poll()
   local lat, lon = host.site_location()
@@ -38,7 +48,7 @@ function driver_default_mode() end`
 			if tc.set {
 				env.SiteLocation = func() (float64, float64, bool) { return 59.5, 17.25, tc.ok }
 			}
-			d, err := NewLuaDriver(path, env)
+			d, err := NewLuaDriverWithPolicy(path, env, tc.policy)
 			if err != nil {
 				t.Fatal(err)
 			}

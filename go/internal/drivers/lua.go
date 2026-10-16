@@ -655,9 +655,12 @@ func registerHost(L *lua.LState, env *HostEnv) {
 	}))
 	// The site's coordinates, for a vehicle driver only: it measures its
 	// car's distance from the site and emits site_distance_m. Other drivers
-	// talk to vendor clouds that have no use for where the home is.
+	// talk to vendor clouds that have no use for where the home is. What
+	// makes a driver a vehicle driver is its signed catalog entry: a Lua
+	// file's own DRIVER table could claim anything, so a bundled or local
+	// file gets nil.
 	host.RawSetString("site_location", L.NewFunction(func(L *lua.LState) int {
-		if env.SiteLocation == nil || !driverDeclaresCapability(L, "vehicle") {
+		if env.SiteLocation == nil || !env.RuntimePolicy.Lists("vehicle") {
 			L.Push(lua.LNil)
 			return 1
 		}

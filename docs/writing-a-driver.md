@@ -243,13 +243,19 @@ optional; leave out what the source does not know.
 | Field | Meaning |
 |---|---|
 | `plugged` | The car's own word on its charge cable: `true` in, `false` out. |
-| `plugged_since_ms` | Unix ms at which the source saw the cable take that state: the source's own change time (Home Assistant's `last_changed`), else the first reading that showed it. Leave it out when the driver has not seen a change, as at its first reading. |
+| `plugged_since_ms` | Unix ms at which the source saw the cable take that state. Send it only when the source reads the cable at least every 30 seconds, and leave it out until the driver has seen a change. The time is when the source read the change, not the plug-in itself: Home Assistant's `last_changed` is when Home Assistant read it. |
 | `at_site` | `true` when the car is at this site, `false` when it is somewhere else, from the source's own idea of home. |
-| `site_distance_m` | The car's distance from the site in metres. Core reads up to 300 m as here and over 1 km as elsewhere, and does not know in between. `at_site` wins when both are given. |
+| `site_distance_m` | The car's distance from the site in metres. Core reads up to 300 m as here and over 5 km as elsewhere, and does not know in between: the site's position is a weather pin. `at_site` wins when both are given. |
 
 `host.site_location()` returns the site's `lat, lon`, or `nil` when the site
-has no position (no weather pin, or the pin nobody moved). Only a driver whose
-`DRIVER.capabilities` lists `vehicle` gets it. Measure the distance in the
-driver and emit only `site_distance_m`, so the car's coordinates stay there.
-Read the cable and the place at the driver's own cadence: never wake a car
-only to learn them.
+has no position (no weather pin, or the pin nobody moved). Only a driver from
+the signed channel whose signed catalog entry lists `vehicle` gets it; a
+bundled or local file gets `nil`, whatever its own `DRIVER` table says.
+Measure the distance in the driver and emit only `site_distance_m`, so the
+car's coordinates stay there. Prefer the source's own idea of home (a Home
+Assistant zone, a TeslaMate geofence) as `at_site`: the pin is set for
+forecasts. Read the cable and the place at the driver's own cadence: never
+wake a car only to learn them.
+
+Send a vehicle `soc` as a percent, except 1 % or less, which goes as a
+fraction: Core reads 1 or less as a fraction, so a plain `1` is 100 %.
