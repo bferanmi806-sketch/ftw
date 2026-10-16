@@ -329,10 +329,32 @@ func TestBulkTunTakesTheBulkStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitUntil(t, "two tuns", func() bool { return len(svc.kindsOf(cloudwire.MsgTun)) >= 2 })
-	kinds := svc.kindsOf(cloudwire.MsgTun)
-	if !slices.Contains(kinds, msgBulk) || kinds[0] != websocket.BinaryMessage {
-		t.Fatalf("tun kinds %v", kinds)
+	// The two travel on two streams, which QUIC keeps in no order between
+	// them, so each is told by its size rather than by which came first.
+	bySize := svc.tunKindsBySize()
+	if bySize[1] != websocket.BinaryMessage || bySize[4096] != msgBulk {
+		t.Fatalf("tun kinds by size %v: lane 0 should come by the control stream (%d), bulk by the bulk stream (%d)",
+			bySize, websocket.BinaryMessage, msgBulk)
 	}
+}
+
+// tunKindsBySize is how each tun from the box came, by the size of its d.
+func (s *fakeService) tunKindsBySize() map[int]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[int]int{}
+	n := 0
+	for _, env := range s.got {
+		if env.T != cloudwire.MsgTun {
+			continue
+		}
+		var tun cloudwire.Tun
+		if cloudwire.Unmarshal(env.B, &tun) == nil && n < len(s.kinds[cloudwire.MsgTun]) {
+			out[len(tun.D)] = s.kinds[cloudwire.MsgTun][n]
+		}
+		n++
+	}
+	return out
 }
 
 // A datagram from the service, or anything but tun on its bulk stream,
