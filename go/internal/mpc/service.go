@@ -1985,7 +1985,8 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 					break
 				}
 				if retryErr == nil {
-					cautionOff = cautionOff || !sameForecast(fallbackSlots, baseForecastSlots)
+					// Only a downside planner solved the caution forecast.
+					cautionOff = cautionOff || (downsidePrimary && !sameForecast(fallbackSlots, baseForecastSlots))
 					candidate, slots, err = recovered, attempt.slots, nil
 					baseForecastSlots = append([]Slot(nil), attempt.base...)
 					fallbackSlots = append([]Slot(nil), attempt.slots...)

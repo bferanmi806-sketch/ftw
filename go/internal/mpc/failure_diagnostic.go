@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const planningFailureByteLimit = 1 << 20
@@ -146,7 +147,18 @@ func (s *Service) repeatsPlanningFailure(stage, message string) bool {
 
 func (s *Service) repeatsPlanningFailureLocked(stage, message string) bool {
 	f := s.lastPlanningFailure
-	return f != nil && !s.planningFailureRestored && f.Stage == stage && f.Error == message
+	return f != nil && !s.planningFailureRestored && f.Stage == stage && withoutDigits(f.Error) == withoutDigits(message)
+}
+
+// A slot index or a watt figure in the message changes from replan to replan
+// while the failure stays the same.
+func withoutDigits(message string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsDigit(r) {
+			return -1
+		}
+		return r
+	}, message)
 }
 
 type PlanningFailureStorage struct {

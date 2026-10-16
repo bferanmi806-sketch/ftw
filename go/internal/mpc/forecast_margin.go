@@ -63,8 +63,8 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 		}
 		return choice, err
 	}
-	remaining := time.UnixMilli(end).Sub(now()) - energyplanPublishMargin
-	available := remaining
+	remaining := func() time.Duration { return time.UnixMilli(end).Sub(now()) - energyplanPublishMargin }
+	available := remaining()
 	if deadline, ok := ctx.Deadline(); ok {
 		available = min(available, time.Until(deadline))
 	}
@@ -73,10 +73,17 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 	if !cautionFirst {
 		var err error
 		if choice, err = solvePoint(); err != nil || len(choice.slots) != len(point) {
+			// A shortened point plan never keeps caution.
+			choice.withoutCaution = err == nil
 			return choice, err
 		}
 	}
-	budget := min(forecastRecoveryBudget-time.Since(started), remaining)
+	// The point solve took time; caution must still end inside the slot.
+	budget := min(forecastRecoveryBudget-time.Since(started), remaining())
+	if cautionFirst {
+		// Leave the point plan the largest worker budget in case it is needed.
+		budget = min(budget, available-energyplanFleetBudget)
+	}
 	marginCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	var candidate Plan
@@ -113,6 +120,7 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 		}
 		var pointErr error
 		if choice, pointErr = solvePoint(); pointErr != nil || len(choice.slots) != len(point) {
+			choice.withoutCaution = pointErr == nil
 			return choice, pointErr
 		}
 	}
@@ -129,7 +137,14 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 
 // Reuse Core replay with the same physical battery/EV choices and PV downside,
 // but without optional extra house load. Recompute only balance and accounting
-// on a copy: invented load cannot permit battery export or battery-fed charging.
+// on a copy: invented load cannot permit battery export the mode forbids, or
+// break a grid limit.
+//
+// The vehicle rules stay with the cautious plan's own inputs, where it has
+// already passed them. Load that does not show up cannot make the battery
+// feed a protected car: with battery_covers_ev off, dispatch stops discharge
+// at the house. With it on, the owner lets the battery feed the car, and the
+// battery energy the house does not use is export, which the mode judges here.
 func validateMarginPointLoad(point, risk []Slot, p Params, plan Plan) error {
 	slots := append([]Slot(nil), point...)
 	plan.Actions = append([]Action(nil), plan.Actions...)
@@ -142,7 +157,7 @@ func validateMarginPointLoad(point, risk []Slot, p Params, plan Plan) error {
 		a.CostOre = reserveSlotCost(slots[i], p, *a)
 		plan.TotalCostOre += a.CostOre
 	}
-	if err := ValidatePlan(slots, p, &plan); err != nil {
+	if err := validatePlan(slots, p, &plan, false); err != nil {
 		return fmt.Errorf("forecast caution requires extra house load to obey site policy: %w", err)
 	}
 	return nil

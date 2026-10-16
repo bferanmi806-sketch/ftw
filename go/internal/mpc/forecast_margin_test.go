@@ -87,6 +87,11 @@ func TestNativeForecastMarginKeepsPointAfterOptionalFailure(t *testing.T) {
 			if failure == nil || failure.RecoveredDecisionID != plan.DecisionID || !svc.PlanningFailureStorageSnapshot().Durable {
 				t.Fatal("optional failure lost its durable evidence")
 			}
+			optimizer.fault = ""
+			if next := svc.Replan(context.Background()); next == nil || next.CautionOff || next.Solver.Engine != "native" {
+				t.Fatalf("working caution did not clear the flag on the Energyplan path: %+v", svc.PlanSnapshot())
+			}
+			svc.shadowWG.Wait()
 		})
 	}
 }
@@ -231,29 +236,50 @@ func TestForecastMarginCannotTradeDepartureGoalsBetweenCars(t *testing.T) {
 	}
 }
 
+// Invented house load cannot buy battery export the mode forbids. How the
+// battery and the car share power is judged on the cautious plan's own inputs
+// and again at dispatch, so a point-load replay does not refuse it: with
+// battery_covers_ev off, dispatch stops discharge at the house, and with it
+// on the owner lets the battery feed the car.
 func TestForecastMarginCannotGrantExtraDischargePermission(t *testing.T) {
-	for _, mode := range []Mode{ModeSelfConsumption, ModeArbitrage} {
-		t.Run(string(mode), func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     Mode
+		car      bool
+		coversEV bool
+		export   bool
+		refused  bool
+	}{
+		{"self consumption export", ModeSelfConsumption, false, false, false, true},
+		{"protected car", ModeArbitrage, true, false, false, false},
+		{"car covered and export allowed", ModeArbitrage, true, true, true, false},
+		{"car covered and export forbidden", ModePassiveArbitrage, true, true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			slots, p := externalTestFixture()
 			slots = slots[:1]
-			slots[0].LoadW, p.Mode, p.InitialSoC = 2000, mode, .5
+			slots[0].LoadW, p.Mode, p.InitialSoC = 2000, tc.mode, .5
 			p.DischargeEfficiency = 1
 			a := Action{SlotStartMs: slots[0].StartMs, SlotLenMin: 60, LoadW: 2000, BatteryW: -1500, GridW: 500, SoC: .35}
-			if mode == ModeArbitrage {
+			if tc.car {
 				p.Loadpoint = &LoadpointSpec{ID: "car", CapacityWh: 10000, InitialSoC: .2, SoCMax: 1, Levels: 11, PluggedIn: true,
-					TargetSoC: .3, TargetSlotIdx: 0, MaxChargeW: 1000, AllowedStepsW: []float64{0, 1000}, ChargeEfficiency: 1, NoBatteryToEV: true}
+					TargetSoC: .3, TargetSlotIdx: 0, MaxChargeW: 1000, AllowedStepsW: []float64{0, 1000}, ChargeEfficiency: 1, NoBatteryToEV: !tc.coversEV}
 				a.LoadpointW, a.LoadpointSoC, a.GridW = 1000, .3, 1500
 			}
+			if tc.export {
+				// The battery covers the house and the car; nothing is imported.
+				a.BatteryW, a.SoC, a.GridW = -3000, .2, 0
+			}
 			a.CostOre = reserveSlotCost(slots[0], p, a)
-			plan := Plan{Mode: mode, CapacityWh: p.CapacityWh, InitialSoC: .5, HorizonSlots: 1, Actions: []Action{a}, TotalCostOre: a.CostOre}
+			plan := Plan{Mode: tc.mode, CapacityWh: p.CapacityWh, InitialSoC: .5, HorizonSlots: 1, Actions: []Action{a}, TotalCostOre: a.CostOre}
 			if err := ValidatePlan(slots, p, &plan); err != nil {
 				t.Fatalf("risk candidate must satisfy its inflated load: %v", err)
 			}
 			point := append([]Slot(nil), slots...)
 			point[0].LoadW = 1000
 			before, _ := json.Marshal(plan)
-			if err := validateMarginPointLoad(point, slots, p, plan); err == nil {
-				t.Fatal("optional load granted battery export or battery-to-EV permission")
+			if err := validateMarginPointLoad(point, slots, p, plan); (err != nil) != tc.refused {
+				t.Fatalf("refused = %v, want %v: %v", err != nil, tc.refused, err)
 			}
 			after, _ := json.Marshal(plan)
 			if string(before) != string(after) {

@@ -2,6 +2,7 @@ package mpc
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -199,5 +200,137 @@ func TestForecastCautionSolvesFirstWhenBothPassesFit(t *testing.T) {
 				t.Fatalf("caution plan chosen = %v, want %v: %s", got, tc.caution, choice.warning)
 			}
 		})
+	}
+}
+
+// The caution solve must end inside the slot after a slow point solve, and
+// when caution goes first it leaves the point plan a full worker budget.
+func TestForecastCautionBudgetEndsInsideTheSlot(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		left time.Duration
+		// The latest caution deadline, counted from the slot's end.
+		latest time.Duration
+	}{
+		{"point first after a slow point solve", 2 * time.Second, energyplanPublishMargin},
+		{"caution first", forecastRecoveryBudget + time.Second, energyplanPublishMargin + energyplanFleetBudget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slots, p := externalTestFixture()
+			slots = slots[:1]
+			p.SoCLevels, p.ActionLevels = 21, 11
+			risk := append([]Slot(nil), slots...)
+			risk[0].LoadW += 100
+			began := time.Now()
+			slotEnd := began.Add(tc.left)
+			serviceEnd := time.UnixMilli(slots[0].StartMs + int64(slots[0].LenMin)*60000)
+			now := func() time.Time { return serviceEnd.Add(-tc.left).Add(time.Since(began)) }
+			var deadline time.Time
+			_, err := planWithForecastMargin(context.Background(), slots, risk, p, now,
+				func(ctx context.Context, in []Slot, p Params) (Plan, []Slot, error) {
+					if in[0].LoadW == risk[0].LoadW {
+						deadline, _ = ctx.Deadline()
+					} else {
+						time.Sleep(300 * time.Millisecond)
+					}
+					return corePlanWithRecovery(ctx, in, p)
+				})
+			if err != nil || deadline.IsZero() {
+				t.Fatalf("no caution solve: %v", err)
+			}
+			if limit := slotEnd.Add(-tc.latest).Add(20 * time.Millisecond); deadline.After(limit) {
+				t.Fatalf("caution may run until %v after the slot's last safe moment", deadline.Sub(slotEnd.Add(-tc.latest)))
+			}
+		})
+	}
+}
+
+// A point plan that covers only part of the horizon never keeps caution, in
+// either order, so the published plan says so.
+func TestShortenedPointPlanIsWithoutCaution(t *testing.T) {
+	for _, left := range []time.Duration{2 * time.Second, time.Hour} {
+		t.Run(left.String(), func(t *testing.T) {
+			slots, p := externalTestFixture()
+			p.SoCLevels, p.ActionLevels = 21, 11
+			risk := append([]Slot(nil), slots...)
+			for i := range risk {
+				risk[i].LoadW += 100
+			}
+			end := time.UnixMilli(slots[0].StartMs + int64(slots[0].LenMin)*60000)
+			choice, err := planWithForecastMargin(context.Background(), slots, risk, p,
+				func() time.Time { return end.Add(-left) },
+				func(ctx context.Context, in []Slot, p Params) (Plan, []Slot, error) {
+					if in[0].LoadW == risk[0].LoadW {
+						return Plan{}, nil, errors.New("caution unavailable")
+					}
+					return corePlanWithRecovery(ctx, in[:1], p)
+				})
+			if err != nil || len(choice.slots) != 1 || !choice.withoutCaution {
+				t.Fatalf("shortened point plan: slots=%d without caution=%v err=%v", len(choice.slots), choice.withoutCaution, err)
+			}
+		})
+	}
+}
+
+// priorOnlyOptimizer finds every forecast infeasible except the configured
+// load prior, so the service recovers with the prior.
+type priorOnlyOptimizer struct {
+	downside bool
+	priorW   float64
+}
+
+func (o priorOnlyOptimizer) UsesDownsidePV() bool { return o.downside }
+func (priorOnlyOptimizer) Close() error           { return nil }
+func (o priorOnlyOptimizer) Optimize(ctx context.Context, slots []Slot, p Params) (Plan, error) {
+	if slots[len(slots)-1].LoadW != o.priorW {
+		return Plan{}, &externalError{Code: "infeasible", Message: "test"}
+	}
+	plan, _, err := corePlanWithRecovery(ctx, slots, p)
+	return plan, err
+}
+
+// Only a planner that solves the caution forecast loses it to a prior. A
+// planner that never used caution does not read as caution off.
+func TestPriorRecoveryMarksCautionOffOnlyForDownsidePlanners(t *testing.T) {
+	for _, downside := range []bool{false, true} {
+		t.Run(map[bool]string{false: "point planner", true: "downside planner"}[downside], func(t *testing.T) {
+			svc := shadowTestService(t)
+			start := time.Now().UTC().Truncate(time.Hour)
+			svc.now = func() time.Time { return start.Add(5 * time.Minute) }
+			svc.PVForecastSafetyK = .3
+			svc.Optimizer = priorOnlyOptimizer{downside: downside, priorW: svc.BaseLoad}
+			svc.ForecastSnapshot = func(time.Time, []state.ForecastPoint) ForecastInputs {
+				return ForecastInputs{Load: func(time.Time) float64 { return 1000 },
+					Risk: func(_, risk []Slot, _ float64) {
+						for i := range risk {
+							risk[i].LoadW = 1200
+						}
+					}}
+			}
+			plan := svc.Replan(context.Background())
+			svc.shadowWG.Wait()
+			if plan == nil || plan.Solver == nil || plan.Solver.Fallback || svc.lastSlots[3].LoadW != svc.BaseLoad {
+				t.Fatalf("no prior plan from the optimizer: %+v", svc.PlanSnapshot())
+			}
+			if plan.CautionOff != downside {
+				t.Fatalf("caution off = %v, want %v", plan.CautionOff, downside)
+			}
+		})
+	}
+}
+
+// A slot number or a watt figure that moves between replans does not make a
+// lasting failure new evidence.
+func TestRepeatedFailureIgnoresChangingNumbers(t *testing.T) {
+	svc := shadowTestService(t)
+	svc.lastPlanningFailure = &PlanningFailure{Stage: "forecast_caution", Error: "slot 6 grid_w -120.5 violates grid limits"}
+	if !svc.repeatsPlanningFailure("forecast_caution", "slot 17 grid_w -98.25 violates grid limits") {
+		t.Fatal("changed numbers made the same failure new")
+	}
+	if svc.repeatsPlanningFailure("forecast_caution", "slot 6 grid_w -120.5 violates mode") {
+		t.Fatal("a different failure was taken for a repeat")
+	}
+	if svc.repeatsPlanningFailure("risk_inputs", "slot 6 grid_w -120.5 violates grid limits") {
+		t.Fatal("a different stage was taken for a repeat")
 	}
 }

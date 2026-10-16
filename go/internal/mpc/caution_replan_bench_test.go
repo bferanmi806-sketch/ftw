@@ -19,10 +19,8 @@ import (
 //	FTW_NATIVE_SOLVER=$(python3 ../optimizer/native/verify.py --host-binary) \
 //	  go test ./internal/mpc -run '^$' -bench NativeCautionReplan -benchtime 5x
 func BenchmarkNativeCautionReplan(b *testing.B) {
-	// A morning and an evening plug-in. In the evening the cautious plan
-	// discharges the battery for the extra house load while the car charges.
-	// With the point load that discharge would feed the car, so Core refuses
-	// it, and the case shows the cost of falling back to the point plan.
+	// A morning and an evening plug-in, with and without battery_covers_ev.
+	// The caution-off metric counts plans that fell back to the point plan.
 	starts := map[string]time.Time{
 		"morning": time.Date(2026, 10, 16, 7, 45, 0, 0, time.UTC),
 		"evening": time.Date(2026, 10, 15, 16, 0, 0, 0, time.UTC),
@@ -30,18 +28,21 @@ func BenchmarkNativeCautionReplan(b *testing.B) {
 	for _, planner := range []string{"energyplan", "core"} {
 		for _, at := range []string{"morning", "evening"} {
 			for _, site := range []struct {
-				name  string
-				slots int
-				ev    bool
+				name     string
+				slots    int
+				ev       bool
+				coversEV bool
 			}{
-				{"battery/35h", 140, false},
-				{"battery/48h", 193, false},
-				{"battery+ev/35h", 140, true},
-				{"battery+ev/48h", 193, true},
+				{"battery/35h", 140, false, false},
+				{"battery/48h", 193, false, false},
+				{"battery+ev/35h", 140, true, false},
+				{"battery+ev/48h", 193, true, false},
+				{"battery-covers-ev/35h", 140, true, true},
+				{"battery-covers-ev/48h", 193, true, true},
 			} {
 				for _, k := range []float64{0, .3} {
 					b.Run(fmt.Sprintf("%s/%s/%s/k=%g", planner, at, site.name, k), func(b *testing.B) {
-						svc := cautionBenchService(b, starts[at], site.slots, site.ev, k)
+						svc := cautionBenchService(b, starts[at], site.slots, site.ev, site.coversEV, k)
 						if planner == "energyplan" {
 							template := nativeWorker(b, time.Second)
 							o, err := NewEnergyplanOptimizer(template.cfg.Command[0])
@@ -88,7 +89,7 @@ func BenchmarkNativeCautionReplan(b *testing.B) {
 	}
 }
 
-func cautionBenchService(b *testing.B, start time.Time, slots int, ev bool, k float64) *Service {
+func cautionBenchService(b *testing.B, start time.Time, slots int, ev, coversEV bool, k float64) *Service {
 	b.Helper()
 	st, err := state.Open(filepath.Join(b.TempDir(), "bench.db"))
 	if err != nil {
@@ -116,7 +117,7 @@ func cautionBenchService(b *testing.B, start time.Time, slots int, ev bool, k fl
 		svc.Loadpoint = func(int) *LoadpointSpec {
 			return &LoadpointSpec{ID: "car", CapacityWh: 75000, InitialSoC: .4, SoCMax: 1, PluggedIn: true,
 				TargetSoC: .8, TargetSlotIdx: 28, Levels: 101, MaxChargeW: 11000, MinChargeW: 4140,
-				AllowedStepsW: []float64{0, 4140, 6900, 11000}, ChargeEfficiency: .9, NoBatteryToEV: true}
+				AllowedStepsW: []float64{0, 4140, 6900, 11000}, ChargeEfficiency: .9, NoBatteryToEV: !coversEV}
 		}
 	}
 	solar := func(at time.Time) float64 {
