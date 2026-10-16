@@ -34,31 +34,54 @@ func validateForecastCaution(p Params) error {
 	return nil
 }
 
-// Keep a validated point plan before trying optional forecast caution. A risk
-// pass may neither shorten its horizon nor worsen any departure inside it.
+// Keep a validated point plan whenever optional forecast caution fails. A
+// risk pass may neither shorten its horizon nor worsen any departure inside it.
+//
+// With time for both passes, caution goes first. A full cautious plan that
+// misses no departure leaves nothing for a point plan to improve on, so it is
+// published after one solve rather than two: the worker spends its whole
+// budget on a plan with a car, and the second pass doubled plug-in-to-plan.
 func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, now func() time.Time, solve forecastSolve) (forecastChoice, error) {
 	started := time.Now()
-	plan, used, err := solve(ctx, point, p)
-	if err == nil {
-		err = ValidatePlan(used, p, &plan)
+	solvePoint := func() (forecastChoice, error) {
+		plan, used, err := solve(ctx, point, p)
+		if err == nil {
+			err = ValidatePlan(used, p, &plan)
+		}
+		return forecastChoice{plan: plan, slots: used}, err
 	}
-	choice := forecastChoice{plan: plan, slots: used}
-	if err != nil || len(point) == 0 || len(used) != len(point) || sameForecast(point, risk) {
-		return choice, err
+	if len(point) == 0 || sameForecast(point, risk) {
+		return solvePoint()
 	}
 	// ExecutionStartMs is the frozen energy snapshot, not the time left now.
 	// The service clock also makes historical test snapshots deterministic.
 	end, endErr := checkedSlotEndMs(point[0].StartMs, point[0].LenMin)
 	if endErr != nil {
-		return choice, endErr
+		choice, err := solvePoint()
+		if err == nil {
+			err = endErr
+		}
+		return choice, err
 	}
 	remaining := time.UnixMilli(end).Sub(now()) - energyplanPublishMargin
+	available := remaining
+	if deadline, ok := ctx.Deadline(); ok {
+		available = min(available, time.Until(deadline))
+	}
+	cautionFirst := available >= forecastRecoveryBudget
+	var choice forecastChoice
+	if !cautionFirst {
+		var err error
+		if choice, err = solvePoint(); err != nil || len(choice.slots) != len(point) {
+			return choice, err
+		}
+	}
 	budget := min(forecastRecoveryBudget-time.Since(started), remaining)
 	marginCtx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	var candidate Plan
 	var accepted []Slot
-	err = marginCtx.Err()
+	err := marginCtx.Err()
 	if err == nil && len(risk) != len(point) {
 		err = fmt.Errorf("forecast caution changed the planning horizon")
 	}
@@ -74,7 +97,8 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 	if err == nil {
 		candidate, accepted, err = solve(marginCtx, risk, p)
 	}
-	if err == nil && len(accepted) != len(used) {
+	// Both orders keep only a full point plan, so caution must be full too.
+	if err == nil && len(accepted) != len(point) {
 		err = fmt.Errorf("forecast caution shortened the planning horizon")
 	}
 	if err == nil {
@@ -83,8 +107,17 @@ func planWithForecastMargin(ctx context.Context, point, risk []Slot, p Params, n
 	if err == nil {
 		err = validateMarginPointLoad(point, accepted, p, candidate)
 	}
+	if cautionFirst {
+		if err == nil && missesNoDeparture(p, candidate) {
+			return forecastChoice{plan: candidate, slots: accepted}, nil
+		}
+		var pointErr error
+		if choice, pointErr = solvePoint(); pointErr != nil || len(choice.slots) != len(point) {
+			return choice, pointErr
+		}
+	}
 	if err == nil {
-		err = preservesDepartureGoals(p, plan, candidate)
+		err = preservesDepartureGoals(p, choice.plan, candidate)
 	}
 	if err != nil {
 		choice.marginErr, choice.withoutCaution = err, true
@@ -124,28 +157,45 @@ func preservesDepartureGoals(p Params, point, risk Plan) error {
 		if i >= len(risk.Actions) {
 			return fmt.Errorf("forecast caution omits departure for %s", lp.ID)
 		}
-		// The plans have passed Core replay. Compare their allocated Wh, not
-		// reported SoC or the notification's minimum-run shortfall threshold.
-		missing := func(plan Plan) float64 {
-			energy := lp.InitialSoC * lp.CapacityWh
-			efficiency := lp.ChargeEfficiency
-			if efficiency <= 0 {
-				efficiency = .9
-			}
-			for _, a := range plan.Actions[:i+1] {
-				power := a.LoadpointPowerW[lp.ID]
-				if len(a.LoadpointPowerW) == 0 && lpIdx == 0 {
-					power = a.LoadpointW
-				}
-				energy += power * a.DurationHours() * efficiency
-			}
-			return max(0, lp.TargetSoC*lp.CapacityWh-energy)
-		}
-		pointMissing, riskMissing := missing(point), missing(risk)
+		pointMissing, riskMissing := departureShortfallWh(point, lp, lpIdx), departureShortfallWh(risk, lp, lpIdx)
 		// One Wh is the worker's deadline-energy comparison tolerance.
 		if !finite(riskMissing) || riskMissing > pointMissing+1 {
 			return fmt.Errorf("forecast caution increases %s departure shortfall from %.3f to %.3f Wh", lp.ID, pointMissing, riskMissing)
 		}
 	}
 	return nil
+}
+
+// missesNoDeparture holds when the plan reaches every departure goal inside it
+// within the same tolerance, so preservesDepartureGoals accepts it against any
+// point plan.
+func missesNoDeparture(p Params, plan Plan) bool {
+	for lpIdx, lp := range p.activeLoadpoints() {
+		i := lp.TargetSlotIdx
+		if lp.TargetSoC <= 0 || i < 0 || i >= len(plan.Actions) {
+			continue
+		}
+		if missing := departureShortfallWh(plan, lp, lpIdx); !finite(missing) || missing > 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// The plans have passed Core replay. Compare their allocated Wh, not reported
+// SoC or the notification's minimum-run shortfall threshold.
+func departureShortfallWh(plan Plan, lp *LoadpointSpec, lpIdx int) float64 {
+	energy := lp.InitialSoC * lp.CapacityWh
+	efficiency := lp.ChargeEfficiency
+	if efficiency <= 0 {
+		efficiency = .9
+	}
+	for _, a := range plan.Actions[:lp.TargetSlotIdx+1] {
+		power := a.LoadpointPowerW[lp.ID]
+		if len(a.LoadpointPowerW) == 0 && lpIdx == 0 {
+			power = a.LoadpointW
+		}
+		energy += power * a.DurationHours() * efficiency
+	}
+	return max(0, lp.TargetSoC*lp.CapacityWh-energy)
 }

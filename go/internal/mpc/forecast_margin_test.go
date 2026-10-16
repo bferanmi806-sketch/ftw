@@ -23,7 +23,8 @@ func (*optionalMarginOptimizer) UsesDownsidePV() bool { return true }
 func (*optionalMarginOptimizer) Close() error         { return nil }
 func (o *optionalMarginOptimizer) Optimize(ctx context.Context, slots []Slot, p Params) (Plan, error) {
 	o.calls++
-	if o.calls == 1 {
+	// The fixture's point load is 1000 W and its caution load 1200 W.
+	if slots[0].LoadW != 1200 {
 		return o.worker.Optimize(ctx, slots, p)
 	}
 	switch o.fault {
@@ -181,8 +182,9 @@ func TestForecastMarginCannotTradeDepartureGoalsBetweenCars(t *testing.T) {
 	var point, candidate Plan
 	choice, err := planWithForecastMargin(context.Background(), slots, risk, p, func() time.Time { return time.UnixMilli(slots[0].ExecutionStart()) }, func(_ context.Context, inputs []Slot, p Params) (Plan, []Slot, error) {
 		calls++
+		cautious := inputs[0].LoadW == 1200
 		powers := [][2]float64{{0, 2000}, {2000, 2000}}
-		if calls == 2 {
+		if cautious {
 			powers = [][2]float64{{2000, 2000}, {2000, 1000}}
 		}
 		plan := Plan{CapacityWh: p.CapacityWh, InitialSoC: p.InitialSoC, HorizonSlots: 2, Mode: p.Mode}
@@ -209,10 +211,10 @@ func TestForecastMarginCannotTradeDepartureGoalsBetweenCars(t *testing.T) {
 		if err := ValidatePlan(inputs, p, &plan); err != nil {
 			t.Fatal(err)
 		}
-		if calls == 1 {
-			point = plan
-		} else {
+		if cautious {
 			candidate = plan
+		} else {
+			point = plan
 		}
 		return plan, inputs, nil
 	})

@@ -149,3 +149,55 @@ func TestRepeatedPlanningFailureIsWrittenOnce(t *testing.T) {
 		t.Fatal("current failure was not written")
 	}
 }
+
+// With time for both passes the caution plan is solved first. When it meets
+// every departure no point plan can do better, so one solve publishes it.
+// A missed departure needs the point plan to compare against, and so does a
+// slot about to end, where caution must not use up the point plan's time.
+func TestForecastCautionSolvesFirstWhenBothPassesFit(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		target   float64
+		leftover time.Duration
+		order    string
+		caution  bool
+	}{
+		{"battery only", 0, time.Hour, "caution", true},
+		{"reachable departure", .3, time.Hour, "caution", true},
+		{"missed departure", .99, time.Hour, "caution point", true},
+		{"slot about to end", 0, 5 * time.Second, "point caution", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slots, p := externalTestFixture()
+			p.SoCLevels, p.ActionLevels = 21, 11
+			if tc.target > 0 {
+				p.Loadpoint = &LoadpointSpec{ID: "car", CapacityWh: 10000, InitialSoC: .2, SoCMax: 1, Levels: 11,
+					PluggedIn: true, TargetSoC: tc.target, TargetSlotIdx: 0, AllowedStepsW: []float64{0, 1000}, MaxChargeW: 1000,
+					ChargeEfficiency: 1, NoBatteryToEV: true}
+				p.Loadpoints = []*LoadpointSpec{p.Loadpoint}
+			}
+			risk := append([]Slot(nil), slots...)
+			for i := range risk {
+				risk[i].LoadW += 100
+			}
+			end := time.UnixMilli(slots[0].StartMs + int64(slots[0].LenMin)*60000)
+			var order []string
+			choice, err := planWithForecastMargin(context.Background(), slots, risk, p,
+				func() time.Time { return end.Add(-tc.leftover) },
+				func(ctx context.Context, in []Slot, p Params) (Plan, []Slot, error) {
+					if in[0].LoadW == risk[0].LoadW {
+						order = append(order, "caution")
+					} else {
+						order = append(order, "point")
+					}
+					return corePlanWithRecovery(ctx, in, p)
+				})
+			if err != nil || strings.Join(order, " ") != tc.order {
+				t.Fatalf("solve order %q, want %q: %v", order, tc.order, err)
+			}
+			if got := choice.slots[0].LoadW == risk[0].LoadW; got != tc.caution || choice.withoutCaution {
+				t.Fatalf("caution plan chosen = %v, want %v: %s", got, tc.caution, choice.warning)
+			}
+		})
+	}
+}
