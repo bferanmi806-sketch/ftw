@@ -50,6 +50,10 @@ type Config struct {
 	// this build and the subsystem is what is missing.
 	Loadpoints Loadpoints
 
+	// Cars are the owners' cars (docs/cars.md), or nil on a box without
+	// them. The car ops then answer E_UNAVAILABLE.
+	Cars Cars
+
 	// PlannerPrefs applies the Plan card's safety factor and battery-export
 	// permission, or nil before the API server is bound. planner.prefs.set
 	// then answers E_UNAVAILABLE, the same 503 a passthrough meets in that
@@ -1146,6 +1150,8 @@ func (h *Handler) runCmd(ctx context.Context, cmd Cmd, by string) error {
 		return h.loadpointSoCSet(cmd, uptimeMs)
 	case OpLoadpointSurplusOnlySet:
 		return h.loadpointSurplusOnlySet(cmd, uptimeMs)
+	case OpCarGoalSet, OpCarSoCSet, OpSessionCarSet, OpCarAdd, OpCarUpdate, OpCarRemove:
+		return h.carOp(cmd, uptimeMs)
 	default:
 		return fmt.Errorf("appproto: op %q is in the table but has no handler", cmd.Op)
 	}
@@ -1412,6 +1418,15 @@ func (h *Handler) sendCmdResult(res CmdResult) error {
 	h.mu.Lock()
 	bucket := h.bucket
 	h.mu.Unlock()
+	if res.Car != nil || res.Charger != nil {
+		// A car rides lane 0 only when it fits the session's bucket: a full
+		// one with a long name does not fit 256 B. Without it the result
+		// still settles the command, and the app reads the car again.
+		const headerBytes = 6
+		if size, err := encodedSize(MsgCmdResult, res); err != nil || size+headerBytes > bucket {
+			res.Car, res.Charger = nil, nil
+		}
+	}
 	return h.sendControl(MsgCmdResult, nil, res, 0, bucket)
 }
 
