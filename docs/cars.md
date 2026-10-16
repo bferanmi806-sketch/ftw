@@ -119,9 +119,10 @@ At each plug-in the box asks, in this order (`carIdentifiedBy`):
    old settings has that charger as its usual one, and a plug-in there names
    it when no other car that could be here claims the charger, that is when
    each of them has a usual charger elsewhere. A car with none, as one an
-   owner added since, could be on any charger, and the box asks. If the car's source says, within a minute of the
-   plug-in, `at_site` false or that its cable is out, the session is a
-   visitor's (`none`). One car is on one charger at a time: rules 2 and 3
+   owner added since, could be on any charger, and the box asks. If the car's source read the car within a minute after
+   the plug-in and found `at_site` false or its cable out, the session is a
+   visitor's (`none`). A reading from before the plug-in does not count,
+   however late it arrives. One car is on one charger at a time: rules 2 and 3
    skip a car another session has.
 4. `tap`, after `asking`: with more than one car, the box waits a minute for
    rules 1 and 2, then raises `car.which` once per plug-in and says

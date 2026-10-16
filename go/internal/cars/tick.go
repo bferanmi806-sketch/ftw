@@ -496,9 +496,12 @@ func (r *Runtime) candidatesLocked(lpID string) []*Car {
 	return out
 }
 
-// notHereLocked reports whether one of the car's sources said, within
-// IdentifyWindow of the plug-in, that the car is not here: somewhere else,
-// or with its cable out.
+// notHereLocked reports whether one of the car's sources read the car within
+// IdentifyWindow after the plug-in and found it not here: somewhere else, or
+// with its cable out. The reading's own time counts, not when it arrived: a
+// source that replays a reading from before the plug-in, or reads the car
+// minutes apart, has not seen this plug-in, and its old "cable out" would
+// make the only car a visitor.
 func (r *Runtime) notHereLocked(car *Car, s *session) (time.Time, bool) {
 	plugAt := time.UnixMilli(s.PluggedMs)
 	for _, d := range car.Sources {
@@ -507,7 +510,7 @@ func (r *Runtime) notHereLocked(car *Car, s *session) (time.Time, bool) {
 			continue
 		}
 		o := ss.obs
-		at := o.ReportedAt
+		at := o.At
 		if at.Before(plugAt) || at.Sub(plugAt) > IdentifyWindow {
 			continue
 		}

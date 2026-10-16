@@ -113,3 +113,32 @@ func TestACarThatDoesNotKnowWhereItIsCountsOnlyByTheMinute(t *testing.T) {
 		t.Fatalf("a fresh plug-in with no place: %+v", st)
 	}
 }
+
+// A source that replays a reading from before the plug-in has not seen it:
+// its old "cable out" or "elsewhere" does not make the only car a visitor.
+// A reading made after the plug-in does.
+func TestAReadingFromBeforeThePlugInSaysNothingAboutIt(t *testing.T) {
+	h := newHarness(t, homeConfig(), nil, nil)
+	h.start()
+	car := h.only()
+	if _, err := h.rt.UpdateCar(car.ID, Update{Sources: &[]string{"tesla-ha"}}); err != nil {
+		t.Fatal(err)
+	}
+	readAt := h.now
+	h.tick(10 * time.Minute)
+	h.plug("easee", "s1")
+	// Home Assistant has not read the car since it came home.
+	h.obs["tesla-ha"] = telemetry.VehicleObservation{Driver: "tesla-ha", SoC: .4, At: readAt,
+		Plugged: boolp(false), AtSite: boolp(false), Stale: true, ReportedAt: h.now.Add(10 * time.Second)}
+	h.tick(10 * time.Second)
+	if st := h.state("easee"); st.CarID != car.ID || st.CarIdentifiedBy != protocol.CarIdentifiedByOnly {
+		t.Fatalf("an old reading turned the only car into a visitor: %+v", st)
+	}
+	// Then it reads the car, 20 s after the plug-in: elsewhere.
+	h.obs["tesla-ha"] = telemetry.VehicleObservation{Driver: "tesla-ha", SoC: .4, At: h.now.Add(10 * time.Second),
+		Plugged: boolp(false), AtSite: boolp(false), ReportedAt: h.now.Add(10 * time.Second)}
+	h.tick(10 * time.Second)
+	if st := h.state("easee"); st.CarID != "" || st.CarIdentifiedBy != protocol.CarIdentifiedByNone {
+		t.Fatalf("a reading after the plug-in says the car is elsewhere: %+v", st)
+	}
+}
