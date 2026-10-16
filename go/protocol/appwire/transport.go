@@ -29,10 +29,13 @@ const (
 	TransportOverhead = SeqBytes + TagBytes
 
 	// ReplayWindow is how far out of order a frame may arrive and still be
-	// accepted. Over QUIC, FTW Cloud carries one session's frames on two
-	// streams and in datagrams, so a burst of bulk frames, a few hundred at
-	// most, can overtake a frame on the control stream. 1024 covers that in
-	// 128 bytes, far beyond any reordering a DataChannel produces.
+	// accepted. Through FTW Cloud lane 0 goes up to five times a second,
+	// while a bulk frame the link paces waits at most cloudlink.MaxBulkWait,
+	// about 9 s (appuplink tests the two). Over QUIC one session's frames
+	// also travel on two streams and in datagrams, so a burst of bulk
+	// frames, a few hundred at most, can overtake a frame on the control
+	// stream. 1024 covers both in 128 bytes, far beyond any reordering a
+	// DataChannel produces.
 	ReplayWindow = 1024
 )
 
