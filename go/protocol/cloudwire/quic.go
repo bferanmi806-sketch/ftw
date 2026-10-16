@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/srcfl/ftw/go/protocol"
 )
 
 // QUIC: the uplink and the app session over QUIC on UDP 443, beside the
@@ -47,16 +48,21 @@ const (
 	RaceDelay = 250 * time.Millisecond
 	// EarlyDataFor is how long a session ticket allows 0-RTT data.
 	EarlyDataFor = 24 * time.Hour
+	// QUICProvenAfter is how long a QUIC session must last past its first
+	// session message before the path dropping it stops counting as QUIC
+	// failing on that network.
+	QUICProvenAfter = 60 * time.Second
 )
 
-// The transports under a carrier, the registry's cloud_transports.
+// The transports under a carrier, the registry's cloud_transports, as
+// generated from it.
 const (
-	TransportQUIC      = "quic"
-	TransportWebSocket = "websocket"
+	TransportQUIC      = protocol.CloudTransportQuic
+	TransportWebSocket = protocol.CloudTransportWebsocket
 )
 
 // Transports lists them in the registry's order.
-var Transports = []string{TransportQUIC, TransportWebSocket}
+var Transports = protocol.CloudTransports
 
 // ErrQUICMessage is a message the QUIC framing refuses: a length over the
 // limit, or one cut short.

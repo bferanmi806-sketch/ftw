@@ -65,11 +65,16 @@ func (l *Link) once(ctx context.Context, snap grantSnapshot) (time.Duration, err
 	err = l.serve(ctx, conn, snap)
 	l.mu.Lock()
 	up := l.connected
+	upFor := time.Since(l.upAt)
 	l.connected = false
 	if time.Since(connectedAt) >= backoffCap {
 		l.attempt = 0
 	}
 	l.mu.Unlock()
+	if q, ok := conn.(*quicConn); ok && q.network != "" && quicFailed(err, up, upFor) {
+		l.demote(q.network)
+		l.log.Info("QUIC failed on this network; the WebSocket goes first here for a day", "err", err)
+	}
 	if errors.Is(err, errLinkEnded) || errors.Is(err, errClosed) {
 		return 0, nil
 	}
@@ -298,6 +303,7 @@ func (l *Link) serve(ctx context.Context, conn uplinkConn, snap grantSnapshot) e
 	tunOut, tunBulk := make(chan []byte, tunQueue), make(chan []byte, tunBulkQueue)
 	l.mu.Lock()
 	l.connected = true
+	l.upAt = time.Now()
 	l.transport = transportOf(conn)
 	l.shardHops, l.hostFails = 0, 0
 	if l.opts.Tunnel != nil {

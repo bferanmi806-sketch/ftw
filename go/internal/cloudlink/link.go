@@ -235,9 +235,14 @@ type Link struct {
 	transport string
 	quicOn    bool
 	winners   map[string]winner
-	// tickets holds the service's TLS tickets, so a reconnect resumes and,
-	// over QUIC, sends its target as early data.
-	tickets  tls.ClientSessionCache
+	// tickets and quicTickets hold the service's TLS tickets, one cache for
+	// each transport, so a reconnect resumes and, over QUIC, sends its
+	// target as early data. A ticket from TLS over TCP cannot carry 0-RTT
+	// into QUIC, nor the other way.
+	tickets     tls.ClientSessionCache
+	quicTickets tls.ClientSessionCache
+	// upAt is when the service's hello_ok arrived on this connection.
+	upAt     time.Time
 	lastSend time.Time
 	budget   budget
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
@@ -326,7 +331,7 @@ func New(opts Options) (*Link, error) {
 	l := &Link{
 		opts: opts, log: opts.Logger.With("component", "cloudlink"), boot: boot,
 		wake: make(chan struct{}, 1), sent: map[string]sentFrame{}, quicOn: quicOn,
-		tickets: tls.NewLRUClientSessionCache(4),
+		tickets: tls.NewLRUClientSessionCache(4), quicTickets: tls.NewLRUClientSessionCache(4),
 	}
 	if err := l.load(); err != nil {
 		return nil, err
@@ -1037,6 +1042,13 @@ func (l *Link) caps(snap grantSnapshot) []string {
 // build adds its own.
 func (l *Link) tlsConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: l.opts.RootCAs, ClientSessionCache: l.tickets}
+}
+
+// quicTLSConfig is tlsConfig with QUIC's own ticket cache.
+func (l *Link) quicTLSConfig() *tls.Config {
+	c := l.tlsConfig()
+	c.ClientSessionCache = l.quicTickets
+	return c
 }
 
 // now is the wall clock, or a test's.

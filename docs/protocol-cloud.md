@@ -109,6 +109,10 @@ service also serves over HTTP/3 (RFC 9114); they need nothing here.
 | `ftw-cloud-app/1` | App session | `/v1/app?home=<id>` |
 | `h3` | HTTP/3 | — |
 
+The service offers only the ALPNs it serves. With the sessions turned off it
+offers `h3` alone, so a client's QUIC handshake fails at once and it takes
+the WebSocket.
+
 - **TLS 1.3 inside QUIC.** `ekm` is the exporter of that TLS session, with the
   label and length of [Handshake](#handshake), and a box binds `hello` to it
   as it does over TCP. Nothing may end QUIC in front of the service; a load
@@ -142,8 +146,12 @@ service also serves over HTTP/3 (RFC 9114); they need nothing here.
   does: lane 0 carries commands, their answers and deltas that must arrive,
   and two paths for lane 0 would show the service which frames are which.
   - The service closes the uplink with 4400 on a datagram that is not `hb`
-    or a `live` without `sources`. It keeps one only when its `seq` is above
-    the newest of its type on this connection, and drops a late one.
+    or a `live` without `sources`. It keeps an `hb` or `live`, on either
+    path, only when its `seq` is above the newest of its type on this
+    connection, and drops a late one, with one exception: a late `live`
+    whose `srcRev` is above the table it holds still gives its table, and
+    nothing else. A phone does the same (Freshness case 17), so a table
+    overtaken by a datagram is not lost.
   - Each end offers datagrams in its transport parameters. A sender whose
     peer does not uses the control stream.
   - Until a phone's first transport message arrives, the service sends it
@@ -151,10 +159,14 @@ service also serves over HTTP/3 (RFC 9114); they need nothing here.
     stacks send datagrams ahead of stream data, so an early `hb` could
     otherwise reach a phone before the message 2 it needs to read it.
 - **Order.** Messages on one stream arrive in order; across streams and
-  datagrams they may not. Noise transport carries its own counter and a
-  window of 64 (`appwire.ReplayWindow`), so the app session and the tunnel
-  take messages out of order. The service's rule to forward a home's messages
-  in the order it received them holds per stream.
+  datagrams they may not. Noise transport carries its own counter, one for
+  all three paths, so a burst on the bulk stream can overtake a control
+  message by a few hundred. A receiver of a session that can travel over
+  QUIC keeps a window of at least 1024 (`appwire.ReplayWindow`), so the app
+  session and the tunnel take messages out of order. It drops a datagram
+  that falls outside the window or repeats; the same on a stream ends the
+  session, as over the WebSocket. The service's rule to forward a home's
+  messages in the order it received them holds per stream.
 - **Streams.** A peer that opens a second bidirectional stream, or a second
   unidirectional one, breaks the protocol. The service grants one of each.
 - **Closing.** A close code becomes the QUIC application error code, with
@@ -177,9 +189,17 @@ next time with that one, giving the other the same 250 ms; after a day QUIC
 goes first again, so a network that blocked UDP once is tried again. A QUIC
 dial that loses to the WebSocket goes on for up to 3 s, only to learn: if it
 opens, QUIC goes first next time, so one lost packet does not keep QUIC
-second for a day. The session stays on the WebSocket either way. A box
-names its network by its local address; a phone by its path's interfaces
-and gateways, kept as a hash. A client
+second for a day. The session stays on the WebSocket either way.
+
+A QUIC handshake that finishes proves less than a session that works. A
+QUIC connection that ends before the first session message (the `challenge`
+for a box, message 2 for a phone), or that the path drops within 60 s of
+it, counts as QUIC failing on that network: the client starts there with
+the WebSocket for a day, and a learning dial in that day does not move QUIC
+first. A close the service sends on purpose, with a code from 1000 up, and a
+stateless reset after a restart, do not count. A box names its network by
+its local address; a phone by its path's interfaces and gateways, kept as a
+hash. A client
 says which carries it, by the registry's `cloud_transports`: `quic` or
 `websocket`. Core shows it in `GET /api/cloud`; the app shows it beside the
 carrier. The carrier stays `tunnel` or `cloud` over both.
@@ -196,15 +216,18 @@ rides in early data. A box puts only its target there, and the service's
 
 The network can replay early data. These rules make a replay change nothing:
 
-- **Each message 1 once.** The service answers a message 1 that came in
-  early data only for the first copy with its initiator ephemeral key (the
-  first 32 bytes). A second copy waits for the QUIC handshake, which its
-  sender cannot finish, and the connection times out. Nothing of it is
-  forwarded, opened or answered.
+- **A phone's session waits for the handshake.** The service reads a phone's
+  message 1 from early data but acts on it only once the QUIC handshake has
+  finished, which the sender of a replay cannot do. Until then nothing is
+  forwarded, opened or answered: no session is replaced, no pairing code
+  spent, no `watch` sent. This holds for the first copy too, which matters
+  when the network dropped the original and the phone dialled again.
+- **A box's target is all it sends early.** The service may answer it with a
+  `challenge` before the handshake ends. A challenge changes nothing, and
+  only the box can answer it with a `hello`.
 - **For a day.** A ticket allows early data for 24 hours after the service
-  issued it, and resumption without early data after that. The service
-  remembers each ephemeral key for as long. A restart draws new ticket keys,
-  so every client makes a full handshake once.
+  issued it, and resumption without early data after that. A restart draws
+  new ticket keys, so every client makes a full handshake once.
 - **The box holds a tunnel session as pending** until its first transport
   message decrypts (see [Tunnel](#tunnel)), so a `now.tun` takes no slot
   and spends no code, whoever sent it.
@@ -1198,6 +1221,11 @@ In all of them the phone uses rule N with 100 ms in transit unless stated.
     the generic line with no buttons.
 16. **The box's state wins.** The box reports a source as `down`, and t = 1 s.
     The source shows `down`.
+17. **A late table still counts.** The box changes the table: a `live` with
+    `seq` 2 and `srcRev` 2 goes on the stream, and a `live` without a table,
+    `seq` 3 and `srcRev` 2, overtakes it as a datagram. The source shows
+    `stale` (rule 1) until the late `live` arrives; the phone then takes its
+    table, keeps `seq` 3's values, and the source shows `live`.
 
 ## Grant on the box
 

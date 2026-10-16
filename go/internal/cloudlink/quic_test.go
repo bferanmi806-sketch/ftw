@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -381,4 +383,79 @@ func (c *countingConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	c.recvPkts++
 	c.mu.Unlock()
 	return n, addr, err
+}
+
+// What counts as QUIC failing on a network, and what does not.
+func TestWhatCountsAsQUICFailing(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		err   error
+		up    bool
+		upFor time.Duration
+		want  bool
+	}{
+		{"closed before hello_ok, below 1000", &websocket.CloseError{Code: 0x110}, false, 0, true},
+		{"a path error before hello_ok", errors.New("timeout: no recent network activity"), false, 0, true},
+		{"the path dropped it soon after", errors.New("timeout: no recent network activity"), true, 10 * time.Second, true},
+		{"the path dropped it after a while", errors.New("timeout: no recent network activity"), true, 2 * time.Minute, false},
+		{"the service restarts", &websocket.CloseError{Code: cloudwire.CloseRestart}, true, time.Second, false},
+		{"the service refuses on purpose", &websocket.CloseError{Code: cloudwire.CloseDenied}, false, 0, false},
+		{"a reset after a restart", &quic.StatelessResetError{}, true, time.Second, false},
+		{"the link stopped", errLinkEnded, false, 0, false},
+	} {
+		if got := quicFailed(c.err, c.up, c.upFor); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// A service whose QUIC side finishes the handshake and then closes before
+// the challenge, as a door with the sessions turned off once did, does not
+// hold the box on QUIC: the box goes over to the WebSocket, and QUIC stays
+// second on this network even when a QUIC dial wins again.
+func TestAQUICSessionThatEndsBeforeHelloOKDemotesQUIC(t *testing.T) {
+	svc := newFakeService(t)
+	addr := svc.srv.Listener.Addr().String()
+	pc, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	tr := &quic.Transport{Conn: pc}
+	t.Cleanup(func() { _ = tr.Close() })
+	tc := svc.srv.TLS.Clone()
+	tc.NextProtos = []string{cloudwire.ALPNBox}
+	ln, err := tr.Listen(tc, &quic.Config{MaxIdleTimeout: cloudwire.QUICIdleTimeout})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refused atomic.Int32
+	go func() {
+		for {
+			qc, err := ln.Accept(context.Background())
+			if err != nil {
+				return
+			}
+			refused.Add(1)
+			_ = qc.CloseWithError(0x110, "")
+		}
+	}()
+
+	h := newQUICHarness(t, svc)
+	h.grant(t, protocol.ScopeLiveRead)
+	waitWithin(t, 20*time.Second, "the uplink up", func() bool { return h.link.Status().Connected })
+	if got := h.link.Status().Transport; got != cloudwire.TransportWebSocket {
+		t.Fatalf("transport %q", got)
+	}
+	if refused.Load() == 0 {
+		t.Fatal("QUIC was never tried")
+	}
+	network := localNetwork(addr)
+	if got := h.link.preferred(network); got != cloudwire.TransportWebSocket {
+		t.Fatalf("after QUIC failed, %q goes first", got)
+	}
+	h.link.rememberWinner(network, cloudwire.TransportQUIC)
+	if got := h.link.preferred(network); got != cloudwire.TransportWebSocket {
+		t.Fatalf("a QUIC win moved %q first within the day", got)
+	}
 }

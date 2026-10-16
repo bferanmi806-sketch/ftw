@@ -26,10 +26,12 @@ import (
 // nothing from the service. While it lives, quicConn calls the ping handler
 // on the keepalive's period, as the service's pings would.
 type quicConn struct {
-	qc   *quic.Conn
-	tr   *quic.Transport
-	ctrl *quic.Stream
-	r    *bufio.Reader
+	qc *quic.Conn
+	tr *quic.Transport
+	// network is where the race dialled it, for demote.
+	network string
+	ctrl    *quic.Stream
+	r       *bufio.Reader
 
 	start sync.Once
 	in    chan inbound

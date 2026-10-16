@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/gorilla/websocket"
+	"github.com/quic-go/quic-go"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
@@ -23,6 +25,10 @@ const winnerHolds = 24 * time.Hour
 type winner struct {
 	transport string
 	at        time.Time
+	// demoted marks a network where QUIC failed after its handshake (see
+	// quicFailed): the WebSocket goes first, and no QUIC win moves QUIC
+	// back until the entry is a day old.
+	demoted bool
 }
 
 type dialed struct {
@@ -58,7 +64,8 @@ func (l *Link) dial(ctx context.Context) (uplinkConn, error) {
 			var err error
 			if transport == cloudwire.TransportQUIC {
 				var q *quicConn
-				if q, err = dialQUIC(quicCtx, addr, l.tlsConfig(), nil); err == nil {
+				if q, err = dialQUIC(quicCtx, addr, l.quicTLSConfig(), nil); err == nil {
+					q.network = network
 					conn = q
 				}
 			} else {
@@ -195,5 +202,38 @@ func (l *Link) rememberWinner(network, transport string) {
 	if l.winners == nil {
 		l.winners = map[string]winner{}
 	}
+	if w, ok := l.winners[network]; ok && w.demoted && time.Since(w.at) < winnerHolds {
+		return
+	}
 	l.winners[network] = winner{transport: transport, at: time.Now()}
+}
+
+// demote puts the WebSocket first on network for a day, whatever a QUIC
+// dial wins there meanwhile.
+func (l *Link) demote(network string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.winners == nil {
+		l.winners = map[string]winner{}
+	}
+	l.winners[network] = winner{transport: cloudwire.TransportWebSocket, at: time.Now(), demoted: true}
+}
+
+// quicFailed reports whether a QUIC uplink that ended with err counts as QUIC
+// failing on its network (docs/protocol-cloud.md, "Racing the WebSocket"): a
+// handshake that finished proves less than a session that works. It counts
+// when the uplink ended before hello_ok, or when the path dropped it within
+// QUICProvenAfter of it. A close the service sent on purpose, with a code
+// from 1000 up, and a stateless reset after a restart do not count.
+func quicFailed(err error, up bool, upFor time.Duration) bool {
+	if err == nil || errors.Is(err, errLinkEnded) || errors.Is(err, errClosed) {
+		return false
+	}
+	if closed, ok := errors.AsType[*websocket.CloseError](err); ok && closed.Code >= 1000 {
+		return false
+	}
+	if _, ok := errors.AsType[*quic.StatelessResetError](err); ok {
+		return false
+	}
+	return !up || upFor < cloudwire.QUICProvenAfter
 }
