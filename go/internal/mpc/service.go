@@ -349,6 +349,16 @@ func overlayLiveHouseLoad(slots []Slot, loadW float64, ok bool) {
 	slots[0].LoadW = loadW
 }
 
+// recoveredLoads marks the published loads Core replaced after the selected
+// forecast failed. point already holds the live meter's in-flight load.
+func recoveredLoads(point, published []Slot) []bool {
+	out := make([]bool, len(published))
+	for i := range published {
+		out[i] = i < len(point) && published[i].LoadW != point[i].LoadW
+	}
+	return out
+}
+
 // New constructs a service. Caller wires it in main.go after store + telemetry.
 func New(st *state.Store, tl *telemetry.Store, zone string, p Params) *Service {
 	s := &Service{
@@ -1620,6 +1630,9 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	liveLoadW, liveLoadOK := s.liveHouseLoadW()
 	liveLoadOK = liveLoadOK && finite(liveLoadW) && liveLoadW >= 0
 	overlayLiveHouseLoad(slots, liveLoadW, liveLoadOK)
+	// The point forecast as selected, with the live meter's in-flight load.
+	// A published load that differs from it is Core's recovery.
+	pointInputs := append([]Slot(nil), slots...)
 	var forecastWarnings []string
 	admitted, forecastErr := recoverInvalidForecastLoads(slots, legacySlots, baseLoad)
 	if forecastErr != nil {
@@ -2200,7 +2213,7 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	s.mu.Unlock()
 	tell(changed)
 	if captured.Record != nil {
-		captured.Record(baseForecastSlots, fallbackSlots, plan.DecisionID, replanAtMs)
+		captured.Record(baseForecastSlots, fallbackSlots, recoveredLoads(pointInputs, baseForecastSlots), plan.DecisionID, replanAtMs)
 	}
 	// Horizon statistics — surfaced in logs so operators can
 	// reconstruct "what did the DP know?" without pulling the full
