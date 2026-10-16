@@ -186,6 +186,12 @@ func (c *cloudSite) loadpoint(st loadpoint.State, now time.Time) cloudwire.Loadp
 		// since the box started, as before cars.
 		lp.Session = c.session(st.ID, st.PluggedIn)
 	}
+	if st.PluggedIn {
+		// The session's car by the box's id; the link cuts it per grant
+		// (cloudlink.ProjectLP), and an agent's read under the agent key.
+		lp.CarID, lp.CarIdentifiedBy = st.CarID, st.CarIdentifiedBy
+		lp.CarCorrected, lp.CarCorrectedFrom, lp.Choose = st.CarCorrected, st.CarCorrectedFrom, st.Choose
+	}
 	if st.PluggedIn && !st.SoCUnknown {
 		// A visitor's car has no level; its delivered energy is not one.
 		lp.SocPermille = ptr(units.PermilleFromFraction(st.CurrentSoC))

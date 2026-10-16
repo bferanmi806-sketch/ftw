@@ -206,6 +206,8 @@ type Loadpoints interface {
 // Cars is the box's cars (docs/cars.md): the car ops, behind the same calls
 // GET /api/cars reads.
 type Cars interface {
+	// Cars is every car, as GET /api/cars carries it.
+	Cars() []protocol.Car
 	Add(c protocol.Car) (protocol.Car, error)
 	UpdateCar(id string, u cars.Update) (protocol.Car, error)
 	Remove(id string) error

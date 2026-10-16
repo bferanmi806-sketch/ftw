@@ -587,7 +587,7 @@ func (a *appPlans) CeilingW() *int64 {
 
 // appPlanChargers is each charger's share of the plan, read from the same plan
 // snapshot and the same windows GET /api/loadpoints serves. Keyed by the
-// charger; CarID stays empty until Core keeps cars.
+// charger, with the session's car while the box knows it.
 type appPlanChargers struct {
 	planner *mpc.Service
 	mgr     *loadpoint.Manager
@@ -606,7 +606,7 @@ func (a *appPlanChargers) PlanChargers(now time.Time) []appproto.PlanCharger {
 	out := make([]appproto.PlanCharger, 0, len(states))
 	for _, st := range states {
 		ch := appproto.PlanCharger{
-			ID: st.ID, PluggedIn: st.PluggedIn,
+			ID: st.ID, CarID: st.CarID, PluggedIn: st.PluggedIn,
 			Pending: snap.Pending, Outdated: snap.Outdated,
 			Windows: []appproto.PlanChargerWindow{},
 			GoalRev: goalRev(st),
@@ -788,7 +788,7 @@ func startAppLink(
 	caps = append(caps, appproto.CapAccessAgents)
 	// One view for every agent session, so a charger's plug-in count is
 	// the same whichever session reads it.
-	views := agentViews{site: &cloudSite{site: site, api: gateway}}
+	views := agentViews{site: &cloudSite{site: site, api: gateway}, cars: carsRT}
 
 	// handlerFor builds one handler for one session: a phone's stream, or a
 	// watch's exchange. They share the ports above, which are read-only

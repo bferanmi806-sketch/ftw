@@ -46,6 +46,11 @@ The Go types are in [`go/protocol/cars.go`](../go/protocol/cars.go).
 | `GET /api/cars` with `ftw.cars.read` | The owner role | Every field |
 | `GET /api/cars` without it | Viewers and watches | `id`, `name`, the level fields, `goal`, `surplusOnly` |
 | FTW Cloud's `car` class | Phones with `ftw.live.read` | Opaque `id`, the level fields, `goal`, `surplusOnly` |
+| `cars.get` | Agents with `ftw.live.read` | The car class under the agent key ([agents.md](agents.md)) |
+
+An agent asks for a car's goal or level with `car.goal.set` and
+`car.soc.set` as `agent.request`, which waits for an owner, naming the car
+by the id `cars.get` gave it. It never taps and never keeps the list.
 
 `car.add`, `car.update` and `car.remove` need `ftw.cars.write`, which only
 the owner role carries. They change no hardware, so they need no passkey
@@ -223,7 +228,11 @@ by default: until someone taps, the car charges as a visitor.
   each do not fit, and the last is left out with TRUNC, as for any `now`.
 - FTW Cloud's `lp` carries the same charger fields with opaque car ids, and
   its `car` class carries each car's level and goal and nothing that names
-  it ([protocol-cloud.md](protocol-cloud.md)).
+  it ([protocol-cloud.md](protocol-cloud.md)). An agent's `loadpoints.get`
+  and `cars.get` are the same bodies under the agent key.
+- The plan a phone reads or is pushed names each charger's car in
+  `chargers[].carId`; a change of car replans, and the plan reaches the
+  phone pending at once.
 
 ## One release of overlap
 

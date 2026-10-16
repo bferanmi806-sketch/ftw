@@ -194,6 +194,30 @@ func carRefusal(cmd Cmd, err error) (CmdResult, bool) {
 	}, true
 }
 
+// carIntentArgs checks car.goal.set's and car.soc.set's arguments as carOp
+// reads them, for an agent.request before an owner is asked.
+func carIntentArgs(op string, args map[string]any) *ErrorBody {
+	id, _ := args["id"].(string)
+	charger, _ := args["charger_id"].(string)
+	if (id == "") == (charger == "") {
+		return badArg(op, "id", args["id"])
+	}
+	switch op {
+	case OpCarGoalSet:
+		if _, _, bad := goalArgs(args); bad != "" {
+			return badArg(op, bad, args[bad])
+		}
+		if _, bad := optBool(args, "surplus_only"); bad != "" {
+			return badArg(op, bad, args[bad])
+		}
+	case OpCarSoCSet:
+		if soc, ok := argNum(args, "soc"); !ok || soc < 0 || soc > 1 {
+			return badArg(op, "soc", args["soc"])
+		}
+	}
+	return nil
+}
+
 // goalArgs reads car.goal.set's goal, flat as the box's other ops take
 // theirs: target, a fraction, and ready_by_min, with days and
 // finish_at_limit, replace it; clear: true removes it. With none of them the

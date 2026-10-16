@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -1327,6 +1328,16 @@ func (h *Handler) writePlan(id *uint32, skipSame bool) error {
 	)
 	if h.cfg.PlanChargers != nil {
 		body.Chargers = h.cfg.PlanChargers.PlanChargers(h.cfg.Clock.Now())
+		if h.isAgent() {
+			// An agent knows chargers and cars by the ids loadpoints.get
+			// and cars.get gave it, never by the box's names. A copy: the
+			// source may hand every session the same slice.
+			body.Chargers = slices.Clone(body.Chargers)
+			for i := range body.Chargers {
+				body.Chargers[i].ID = h.agentLoadpointID(body.Chargers[i].ID)
+				body.Chargers[i].CarID = h.agentCarID(body.Chargers[i].CarID)
+			}
+		}
 	}
 	same := body
 	same.UptimeMs = 0

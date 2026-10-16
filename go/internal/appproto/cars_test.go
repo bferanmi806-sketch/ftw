@@ -18,6 +18,14 @@ type fakeCars struct {
 	sessionGoal *protocol.CarGoal
 }
 
+func (f *fakeCars) Cars() []protocol.Car {
+	out := make([]protocol.Car, 0, len(f.cars))
+	for _, c := range f.cars {
+		out = append(out, c)
+	}
+	return out
+}
+
 func newFakeCars() *fakeCars {
 	return &fakeCars{cars: map[string]protocol.Car{"c1": {ID: "c1", Name: "Tesla"}, "c2": {ID: "c2", Name: "Volvo"}}, plugged: true}
 }

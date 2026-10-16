@@ -60,8 +60,8 @@ func (r *Runtime) Tick() {
 		r.deps.Bus.Publish(ev)
 	}
 	if changed || levelChanged {
-		r.notify()
 		r.replan("car_changed")
+		r.notify()
 	}
 }
 

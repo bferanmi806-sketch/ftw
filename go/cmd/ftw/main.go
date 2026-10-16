@@ -2394,7 +2394,7 @@ func main() {
 	// Owners hear about agents through the notification service, bound
 	// below once it exists, as FTW Cloud's grant notices are.
 	cloudNotify := &cloudNotices{}
-	agents := &agentPorts{logs: logRing, cfg: cfg, cfgMu: cfgMu, st: st, notices: cloudNotify}
+	agents := &agentPorts{logs: logRing, cfg: cfg, cfgMu: cfgMu, st: st, notices: cloudNotify, cars: carsRT}
 	appEnroll, appUplink, appLinkEnabled, appLinkErr := startAppLink(
 		ctx, cfg, identityKeyPath, boxID, Version,
 		st, tel, mpcSvc, lpMgr, lpController, carsRT, priceSvc, ctrl, ctrlMu, plannerPrefs,

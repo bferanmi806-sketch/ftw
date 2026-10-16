@@ -260,4 +260,13 @@ func TestCloudSessionIsTheCarsRuntimes(t *testing.T) {
 	if lp := c.loadpoint(st, time.Now()); lp.Session == "" {
 		t.Fatal("without the cars runtime the plug-in count is the session")
 	}
+	// The session's car by the box's id: the link cuts it per grant.
+	st.CarID, st.CarIdentifiedBy, st.Choose = "0123456789abcdef0123456789abcdef", "tap", nil
+	if lp := c.loadpoint(st, time.Now()); lp.CarID != st.CarID || lp.CarIdentifiedBy != "tap" {
+		t.Fatalf("car %q by %q", lp.CarID, lp.CarIdentifiedBy)
+	}
+	st.PluggedIn = false
+	if lp := c.loadpoint(st, time.Now()); lp.CarID != "" {
+		t.Fatal("an unplugged charger names a car")
+	}
 }
