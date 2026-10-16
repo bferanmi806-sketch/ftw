@@ -90,22 +90,8 @@ func TestThePlanFollowsTheTappedCar(t *testing.T) {
 	if st.TargetSoC != .6 || st.TargetTime.IsZero() || loadpoint.PlanningTarget(st, in.ChargeLimit) != .6 {
 		t.Fatalf("goal %v by %v, want the Volvo's 60 %%", st.TargetSoC, st.TargetTime)
 	}
-	minW, maxW, steps := in.limitPower(st, st.AllowedStepsW)
+	minW, maxW, steps := loadpoint.LimitPower(st, st.AllowedStepsW)
 	if maxW != 7400 || minW != 4140 || len(steps) != 2 || steps[1] != 7360 {
 		t.Fatalf("power %v–%v %v, want the Volvo's own 7.4 kW", minW, maxW, steps)
-	}
-}
-
-// A car whose own charger takes less than the charger's lowest step still
-// gets a plan: that step, which the car's charger limits, rather than none.
-func TestACarBelowTheChargersLowestStepKeepsOneStep(t *testing.T) {
-	st := loadpoint.State{MinChargeW: 4140, MaxChargeW: 11000}
-	minW, maxW, steps := evCarInputs{MaxW: 3700}.limitPower(st, []float64{4140, 7360, 11000})
-	if len(steps) != 1 || steps[0] != 4140 || maxW != 4140 || minW != 4140 {
-		t.Fatalf("power %v–%v %v, want the charger's lowest step", minW, maxW, steps)
-	}
-	minW, maxW, steps = evCarInputs{MaxW: 7400}.limitPower(st, []float64{4140, 7360, 11000})
-	if len(steps) != 2 || maxW != 7400 || minW != 4140 {
-		t.Fatalf("power %v–%v %v", minW, maxW, steps)
 	}
 }

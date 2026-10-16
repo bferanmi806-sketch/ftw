@@ -38,15 +38,14 @@ type evCarInputs struct {
 	ChargeLimit float64
 	// Source names where the level comes from, for the planner's log.
 	Source string
-	// MaxW is the car's own charger, 0 when unknown.
-	MaxW float64
 }
 
 // evPlanCar reads the session's car off the loadpoint state the cars runtime
 // keeps (docs/cars.md). Before cars the planner read the charger's configured
 // capacity here, whatever car was plugged in.
 func evPlanCar(st loadpoint.State, rt *cars.Runtime) evCarInputs {
-	in := evCarInputs{CapacityWh: st.VehicleCapacityWh, InitialSoC: st.CurrentSoC, Source: "session", MaxW: st.CarMaxW}
+	// The charge limit is the one the reserve reads too (loadpoint.DeadlineNeed).
+	in := evCarInputs{CapacityWh: st.VehicleCapacityWh, InitialSoC: st.CurrentSoC, Source: "session", ChargeLimit: st.CarChargeLimit}
 	if rt == nil {
 		return in
 	}
@@ -54,39 +53,7 @@ func evPlanCar(st loadpoint.State, rt *cars.Runtime) evCarInputs {
 		in.Source = "car:" + view.Source
 		in.InitialSoC = view.Shown
 	}
-	in.ChargeLimit = rt.PlanningLimit(st.ID)
 	return in
-}
-
-// limitPower holds a loadpoint's planned power to the session car's own
-// charger: the lower of the charger's and the car's maximum. A step above the
-// car's maximum is one the car cannot take. When the charger's lowest step
-// is above it, the plan keeps that one step: the car takes what it can, and
-// a plan with no step would never charge.
-func (in evCarInputs) limitPower(st loadpoint.State, steps []float64) (minW, maxW float64, out []float64) {
-	minW, maxW = st.MinChargeW, st.MaxChargeW
-	if in.MaxW <= 0 || (maxW > 0 && in.MaxW >= maxW) {
-		return minW, maxW, steps
-	}
-	maxW = in.MaxW
-	lowest, kept := 0.0, false
-	for _, w := range steps {
-		if w <= maxW {
-			out = append(out, w)
-			kept = kept || w > 0
-		}
-		if w > 0 && (lowest == 0 || w < lowest) {
-			lowest = w
-		}
-	}
-	if !kept && lowest > 0 {
-		out = append(out, lowest)
-		maxW = lowest
-	}
-	if minW > maxW {
-		minW = maxW
-	}
-	return minW, maxW, out
 }
 
 // configuredVehicleDrivers names the enabled drivers whose catalog entry

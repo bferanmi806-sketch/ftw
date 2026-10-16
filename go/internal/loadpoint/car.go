@@ -29,9 +29,13 @@ type CarBinding struct {
 	// holds. Zero is config.yaml's vehicle_capacity_wh, or the default when
 	// that is unset: a visitor's capacity is not known either.
 	CapacityWh float64
-	// MaxW and Phases are the car's own charger. Zero is unknown.
-	MaxW   float64
-	Phases int
+	// MaxW is the most the car's own charger takes, zero when unknown. Its
+	// phases are in the rating already, so they bound nothing further.
+	MaxW float64
+	// ChargeLimit is the car's own charge limit as the plan and the reserve
+	// read it: only while the level is the car's own exact reading. Zero is
+	// none.
+	ChargeLimit float64
 }
 
 // LevelSeed starts a session's level from the car's.

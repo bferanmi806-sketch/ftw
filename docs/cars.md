@@ -152,10 +152,14 @@ At each plug-in the box asks, in this order (`carIdentifiedBy`):
 
 The plan is made per session, from the session's car: its level, its
 capacity, its goal and its surplus-only choice. Planned power is held to the
-lower of the charger's maximum and the car's own (`maxW`). The charge limit
-the car reports caps the plan only while the level is the car's own and
-still exact. `phases` is the owner's note for now: the controller follows
-the charger's phase mode.
+lower of the charger's maximum and the car's own (`maxW`), keeping the
+charger's lowest step when that is above the car's maximum. The charge
+limit the car reports caps the plan only while the level is the car's own
+and still exact. The reserve that keeps a goal charging while no plan is
+accepted holds to the same power and limit. `phases` is the owner's note:
+`maxW` already counts the car's phases, and the controller follows the
+charger's phase mode. A change of car or goal rolls the charger's deadline
+before the replan, so that plan has the car's goal in it.
 
 - **One goal per car**, used wherever the car is plugged in. `readyByMin` is
   in the box's time zone.
@@ -167,9 +171,12 @@ the charger's phase mode.
   charger's `vehicle_capacity_wh`, so energy delivered still counts toward a
   goal, though the box shows no level. `car.goal.set` and
   `car.soc.set` with `charger_id` set them, and so do the charger routes;
-  neither ever touches a car. Until then the car charges from surplus only,
-  with no level. A goal set for it plans from empty, and the car stops when
-  it is full. The design's "or the cheapest quarters" without a goal is not
+  neither ever touches a car. Until someone sets a goal it charges from
+  surplus only, with no level. Someone who sets a goal wants it met: the
+  session no longer charges from surplus alone, and the plan and the reserve
+  plan from empty, while the level stays unknown and is never shown as a
+  number. The car stops when it is full. Clearing the goal brings
+  surplus-only back. The design's "or the cheapest quarters" without a goal is not
   built: with neither a level nor a goal there is no amount of energy to
   place.
 

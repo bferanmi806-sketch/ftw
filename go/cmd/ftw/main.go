@@ -1738,7 +1738,7 @@ func main() {
 				noBatteryToEV := !(ctrl.BatteryCoversEV || boostActive)
 				ctrlMu.Unlock()
 				charging, chargeDuration := lpMgr.ChargingPeriod(st.ID)
-				minW, maxW, steps := car.limitPower(st, planningStepsForLoadpoint(st, cfg))
+				minW, maxW, steps := loadpoint.LimitPower(st, planningStepsForLoadpoint(st, cfg))
 				specs = append(specs, &mpc.LoadpointSpec{
 					ID:               st.ID,
 					CapacityWh:       capWh,

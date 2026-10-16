@@ -225,6 +225,9 @@ type Runtime struct {
 	// bound to a car before their first reading so an asleep car can be
 	// woken.
 	vehicleDrivers []string
+	// intentMoved is set while a sync hands a loadpoint a goal or surplus
+	// choice, so the tick replans.
+	intentMoved bool
 }
 
 // SetVehicleDrivers names the configured vehicle drivers. Each binds to the
@@ -330,8 +333,12 @@ func (r *Runtime) Start(profiles []Profile) error {
 		err = r.saveLocked()
 	}
 	acts := r.syncLocked(r.deps.Now())
+	r.intentMoved = false
 	r.mu.Unlock()
 	run(acts)
+	// The goals the sync handed the loadpoints have no deadline until the
+	// schedules roll; the planner may run before the first control tick.
+	r.deps.Loadpoints.RollSchedules(r.deps.Now().UTC())
 	return err
 }
 
@@ -647,7 +654,11 @@ func (r *Runtime) notify() {
 	}
 }
 
+// replan rolls the loadpoints' schedules and asks the planner to plan again.
+// A goal a car brings clears the loadpoint's rolled deadline until the
+// schedules roll, and a replan before that plans without the car.
 func (r *Runtime) replan(reason string) {
+	r.deps.Loadpoints.RollSchedules(r.deps.Now().UTC())
 	if r.deps.Replan != nil {
 		r.deps.Replan(reason)
 	}

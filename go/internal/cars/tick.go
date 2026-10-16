@@ -42,12 +42,16 @@ func (r *Runtime) Tick() {
 		changed = true
 	}
 	asks := r.askLocked(now)
+	r.intentMoved = false
 	if len(asks) > 0 {
 		// The chargers now say asking: listeners such as the plan push
 		// should see it.
 		changed = true
 	}
 	acts = append(acts, r.syncLocked(now)...)
+	// A goal or surplus choice the sync hands a loadpoint, as when someone
+	// set a visitor's goal through a charger route, is a plan input.
+	intentMoved := r.intentMoved
 	if r.dirty || (r.levelSave && now.Sub(r.lastSave) >= levelSaveEvery) {
 		if err := r.saveLocked(); err != nil {
 			slog.Warn("cars: could not save; kept in memory", "err", err)
@@ -59,7 +63,7 @@ func (r *Runtime) Tick() {
 	for _, ev := range asks {
 		r.deps.Bus.Publish(ev)
 	}
-	if changed || levelChanged {
+	if changed || levelChanged || intentMoved {
 		r.replan("car_changed")
 		r.notify()
 	}
@@ -700,7 +704,9 @@ const maxChoose = 4
 func (r *Runtime) syncLocked(now time.Time) []func() {
 	lps := r.deps.Loadpoints
 	var acts []func()
-	for _, st := range lps.States() {
+	states := lps.States()
+	byID := statesByID(states)
+	for _, st := range states {
 		id := st.ID
 		s := r.rec.Sessions[id]
 		var (
@@ -714,6 +720,7 @@ func (r *Runtime) syncLocked(now time.Time) []func() {
 			car = r.carLocked(s.CarID)
 			if car != nil {
 				b, goal, surplus = bindingFor(car), car.Goal, car.SurplusOnly
+				b.ChargeLimit = r.planningLimitLocked(car, byID)
 			} else {
 				// A visitor charges from surplus only until someone sets a
 				// goal for the session.
@@ -745,9 +752,11 @@ func (r *Runtime) syncLocked(now time.Time) []func() {
 				// lands, not the one read here.
 				next := goalOnly(goal)
 				acts = append(acts, func() { lps.ApplyCarGoal(id, next, sameGoal) })
+				r.intentMoved = true
 			}
 			if st.SurplusOnly != surplus {
 				acts = append(acts, func() { lps.ApplySurplusOnly(id, surplus) })
+				r.intentMoved = true
 			}
 		}
 		if s != nil && st.PluggedIn && !s.seeded {
@@ -764,7 +773,19 @@ func (r *Runtime) syncLocked(now time.Time) []func() {
 }
 
 func bindingFor(car *Car) loadpoint.CarBinding {
-	return loadpoint.CarBinding{ID: car.ID, Name: car.Name, CapacityWh: car.CapacityWh, MaxW: car.MaxW, Phases: car.Phases}
+	return loadpoint.CarBinding{ID: car.ID, Name: car.Name, CapacityWh: car.CapacityWh, MaxW: car.MaxW}
+}
+
+// planningLimitLocked is the car's charge limit as the plan and the reserve
+// read it: only while its level is its own exact reading.
+func (r *Runtime) planningLimitLocked(car *Car, byID map[string]loadpoint.State) float64 {
+	if car.Level.Source != protocol.CarSoCVehicle {
+		return 0
+	}
+	if _, energy := r.levelNowLocked(car, byID); estimate(car, energy) {
+		return 0
+	}
+	return car.Level.ChargeLimit
 }
 
 // seedLocked is the level a session starts from. A car's level carries into

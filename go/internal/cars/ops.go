@@ -353,6 +353,11 @@ func (r *Runtime) SetSessionGoal(chargerID string, goal *protocol.CarGoal, clear
 		if _, err := lps.SetScheduleChecked(chargerID, next); err != nil {
 			return protocol.ChargerCar{}, err
 		}
+		if st.CarID == "" && surplusOnly == nil {
+			// A visitor's goal ends its surplus-only charging (GoalSaved);
+			// the loadpoint hears it now, before the replan.
+			lps.ApplySurplusOnly(chargerID, !next.HasTarget())
+		}
 	}
 	if surplusOnly != nil {
 		if _, _, err := lps.SetSurplusOnlyChecked(chargerID, *surplusOnly); err != nil {
@@ -559,7 +564,16 @@ func (r *Runtime) GoalSaved(lpID string, s loadpoint.Schedule) (*loadpoint.Sched
 	switch {
 	case visitor:
 		goal := goalOnly(s)
-		r.rec.Sessions[lpID].goal = &goal
+		sess := r.rec.Sessions[lpID]
+		sess.goal = &goal
+		// Someone who sets a visitor's goal wants it met: the session no
+		// longer charges from surplus alone, and plans from empty. With the
+		// goal gone it charges from surplus again.
+		sess.surplus = nil
+		if goal.HasTarget() {
+			off := false
+			sess.surplus = &off
+		}
 		row := r.rowFor(lpID, s)
 		return row, nil
 	case car == nil:

@@ -197,10 +197,12 @@ type State struct {
 	// one plug-in from the next.
 	PluggedAt  time.Time `json:"-"`
 	SessionKey string    `json:"-"`
-	// CarMaxW and CarPhases are the session car's own charger, zero when
-	// unknown. The planner holds power below them.
-	CarMaxW   float64 `json:"-"`
-	CarPhases int     `json:"-"`
+	// CarMaxW is the most the session car's own charger takes, and
+	// CarChargeLimit the car's charge limit while its level is exact; zero
+	// when unknown. The plan and the reserve hold to them (LimitPower,
+	// PlanningTarget).
+	CarMaxW        float64 `json:"-"`
+	CarChargeLimit float64 `json:"-"`
 
 	// MinChargeW / MaxChargeW / AllowedStepsW are repeated here so the
 	// UI has everything for rendering in one fetch.
@@ -1348,7 +1350,7 @@ func (lp *loadpointRuntime) snapshot() State {
 		ChargingDeclined:         lp.chargingDeclined,
 		SoCRetention:             lp.socRetention,
 		CarMaxW:                  lp.car.MaxW,
-		CarPhases:                lp.car.Phases,
+		CarChargeLimit:           lp.car.ChargeLimit,
 		CommandedW:               lp.commandedW,
 		CommandedReason:          lp.commandedReason,
 		CommandedKnown:           lp.commandedKnown,
