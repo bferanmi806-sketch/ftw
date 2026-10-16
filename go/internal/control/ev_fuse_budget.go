@@ -29,6 +29,7 @@ type evFuseBalance struct {
 // EVFuseBudget refreshes the common EV cap before a charger command, also
 // without batteries. The shared freshness gate must already allow dispatch.
 // Other EVs remain measured household demand. Callers hold the control lock.
+// The controller also applies its final tick's phase choice before sending.
 func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State, configs []loadpoint.Config, fuseMaxW float64) (float64, bool) {
 	if store == nil || state == nil || !finiteFuseValue(fuseMaxW) || fuseMaxW <= 0 {
 		return 0, true
@@ -186,7 +187,9 @@ func evPhaseIncreaseW(meter *telemetry.DerReading, state *State, configs []loadp
 	phases := state.SiteFusePhases
 	unknownPhase := false
 	for _, cfg := range configs {
-		if cfg.PhaseMode != "3p" {
+		// Empty retains the config's declared three-phase default. The
+		// controller's final guard covers runtime auto/manual phase changes.
+		if cfg.PhaseMode != "" && cfg.PhaseMode != "3p" {
 			phases = 1 // No promise about an auto charger's current phase dwell.
 			unknownPhase = true
 		}

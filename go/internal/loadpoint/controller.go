@@ -55,6 +55,7 @@ type Controller struct {
 	fusePhaseCapA map[string]float64
 	// tickFuseCaps belongs to the serial tick, after one shared budget read.
 	tickFuseCaps        map[string]float64
+	tickFusePhases      int
 	tickDirectiveActive bool
 	tickDirectiveOK     bool
 	tickDirective       Directive
@@ -1262,12 +1263,15 @@ func (c *Controller) TickWithDispatch(ctx context.Context, now time.Time, dispat
 		observed.wasPlugged = previous.PluggedIn
 		observed.wasDelivering = previous.CurrentPowerW >= DeliveringW
 		c.observeTick(now, observed.config, observed.sample, dispatchAllowed)
+		if dispatchAllowed && observed.sample.Connected && !observed.sample.ConnectionUnknown && c.driverCanDispatch(observed.config.DriverName) {
+			c.releaseCompletedManualHold(now, observed.config, observed.sample)
+		}
 	}
 	if dispatchAllowed {
 		c.tickDirective, c.tickDirectiveOK = c.currentDirective(now)
 		c.tickDirectiveActive = true
 		c.freezeFuseBudget(now, samples)
-		defer func() { c.tickFuseCaps = nil; c.tickDirectiveActive = false }()
+		defer func() { c.tickFuseCaps = nil; c.tickFusePhases = 0; c.tickDirectiveActive = false }()
 	}
 	for _, observed := range observations {
 		c.tickOne(ctx, now, observed.config, observed.sample, dispatchAllowed, observed.wasPlugged, observed.wasDelivering)
@@ -1293,6 +1297,43 @@ func (c *Controller) observeTick(now time.Time, cfg Config, sample EVSample, dis
 	c.manager.ObserveSample(cfg.ID, sample)
 	c.restoreManualHoldForSession(cfg.ID)
 	c.evaluateBatteryBoost(cfg.ID, now, sample.Connected, dispatchAllowed && !sample.PowerUnavailable)
+}
+
+// Release before freezing the shared budget so its phase matches the order.
+func (c *Controller) releaseCompletedManualHold(now time.Time, lpCfg Config, sample EVSample) {
+	// Auto-release an operator manual hold once the vehicle has stopped
+	// requesting current (it hit its own charge limit / is full). Without
+	// this a "Start" hold pins the wallbox at a fixed amperage and the
+	// loadpoint shows "charging" at 0 W until the operator presses Stop.
+	// Debounced by SessionCompletionTimeout so a brief ramp/handshake dip
+	// — or a car that hasn't woken yet — doesn't drop the hold early. Only
+	// trips for drivers that distinguish "explicitly not requesting" from
+	// "throttled to 0" (RequestActive); others leave it true and never
+	// auto-release. Done before the dispatch branch below so the freed
+	// tick falls straight through to automatic (surplus/plan) dispatch.
+	if hold, held := c.GetManualHold(lpCfg.ID, now); held && hold.PowerW > 0 {
+		if !sample.RequestActive {
+			if c.manualHoldIdleFor(lpCfg.ID, now) >= SessionCompletionTimeout && c.releaseManualHoldIfCurrent(lpCfg.ID, hold) {
+				slog.Info("loadpoint manual hold auto-released — vehicle stopped requesting current (full/declined)",
+					"lp", lpCfg.ID, "idle", SessionCompletionTimeout)
+			}
+		} else {
+			c.resetManualIdle(lpCfg.ID)
+		}
+	}
+
+	// Release a "charge now" hold at its target SoC. The operator asked
+	// for immediate charge up to a level, not a pin-forever: clearing
+	// here lets this same tick fall straight through to automatic
+	// surplus/plan dispatch instead of holding the wallbox at a fixed
+	// amperage the rest of the session.
+	if hold, held := c.GetManualHold(lpCfg.ID, now); held && hold.ReleaseAtSoC > 0 {
+		if st, ok := c.manager.State(lpCfg.ID); ok && st.CurrentSoC >= hold.ReleaseAtSoC && c.releaseManualHoldIfCurrent(lpCfg.ID, hold) {
+			slog.Info("loadpoint manual hold released — charge-now target reached",
+				"lp", lpCfg.ID, "soc", st.CurrentSoC, "release_at_soc", hold.ReleaseAtSoC)
+		}
+	}
+
 }
 
 func (c *Controller) standDownBeforeStorage(ctx context.Context, now time.Time, cfg Config, sample EVSample) {
@@ -1379,39 +1420,6 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 	// by the wake HTTP roundtrip.
 	if sample.PowerW >= DeliveringW && !wasDelivering {
 		go c.wakeVehicleAuto(context.Background(), lpCfg.ID, "delivering_edge")
-	}
-
-	// Auto-release an operator manual hold once the vehicle has stopped
-	// requesting current (it hit its own charge limit / is full). Without
-	// this a "Start" hold pins the wallbox at a fixed amperage and the
-	// loadpoint shows "charging" at 0 W until the operator presses Stop.
-	// Debounced by SessionCompletionTimeout so a brief ramp/handshake dip
-	// — or a car that hasn't woken yet — doesn't drop the hold early. Only
-	// trips for drivers that distinguish "explicitly not requesting" from
-	// "throttled to 0" (RequestActive); others leave it true and never
-	// auto-release. Done before the dispatch branch below so the freed
-	// tick falls straight through to automatic (surplus/plan) dispatch.
-	if hold, held := c.GetManualHold(lpCfg.ID, now); held && hold.PowerW > 0 {
-		if !sample.RequestActive {
-			if c.manualHoldIdleFor(lpCfg.ID, now) >= SessionCompletionTimeout && c.releaseManualHoldIfCurrent(lpCfg.ID, hold) {
-				slog.Info("loadpoint manual hold auto-released — vehicle stopped requesting current (full/declined)",
-					"lp", lpCfg.ID, "idle", SessionCompletionTimeout)
-			}
-		} else {
-			c.resetManualIdle(lpCfg.ID)
-		}
-	}
-
-	// Release a "charge now" hold at its target SoC. The operator asked
-	// for immediate charge up to a level, not a pin-forever: clearing
-	// here lets this same tick fall straight through to automatic
-	// surplus/plan dispatch instead of holding the wallbox at a fixed
-	// amperage the rest of the session.
-	if hold, held := c.GetManualHold(lpCfg.ID, now); held && hold.ReleaseAtSoC > 0 {
-		if st, ok := c.manager.State(lpCfg.ID); ok && st.CurrentSoC >= hold.ReleaseAtSoC && c.releaseManualHoldIfCurrent(lpCfg.ID, hold) {
-			slog.Info("loadpoint manual hold released — charge-now target reached",
-				"lp", lpCfg.ID, "soc", st.CurrentSoC, "release_at_soc", hold.ReleaseAtSoC)
-		}
 	}
 
 	cmd := map[string]any{"action": "ev_set_current"}
@@ -1603,6 +1611,13 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 		cmd["power_w"] = limitedW
 		if reason != "" {
 			cmdReason = reason
+		}
+	}
+	// A new API choice can change phase after the shared budget was frozen.
+	// Do not spend a 3p share on one phase; the next tick uses the new choice.
+	if w, ok := cmd["power_w"].(float64); ok && w > 0 && c.tickFusePhases > 1 {
+		if mode, _ := cmd["phase_mode"].(string); mode != "" && mode != "3p" {
+			cmd["power_w"], cmdReason = float64(0), "fuse_limit"
 		}
 	}
 	c.applyPerPhaseFuseClamp(lpCfg, cmd)

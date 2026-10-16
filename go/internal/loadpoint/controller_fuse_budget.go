@@ -19,6 +19,7 @@ type fuseRequest struct {
 // already offered share. Metered reductions earn new room only next tick.
 func (c *Controller) freezeFuseBudget(now time.Time, samples map[string]EVSample) {
 	c.tickFuseCaps = nil
+	c.tickFusePhases = 0
 	if c.fuseEVMax == nil {
 		clear(c.fuseResumeTicks)
 		return
@@ -145,21 +146,48 @@ func (c *Controller) sharedPhaseIncreaseW(now time.Time, requests []fuseRequest,
 	phaseCount := site.Phases()
 	unknownPhase := false
 	for _, request := range requests {
-		mode := request.cfg.PhaseMode
-		if hold, ok := c.GetManualHold(request.cfg.ID, now); ok && hold.PhaseMode != "" {
-			mode = hold.PhaseMode
-		}
+		mode := c.phaseModeForFuse(now, request.cfg)
 		if mode != "3p" {
 			phaseCount = 1
 			unknownPhase = true
 		}
 	}
+	c.tickFusePhases = phaseCount
 	worst := math.Max(math.Abs(l1), math.Max(math.Abs(l2), math.Abs(l3)))
 	deltaA := site.MaxAmps - fusePhaseMarginA - worst
 	if deltaA < 0 && unknownPhase {
 		return -liveTotal, true
 	}
 	return deltaA * site.Voltage * float64(phaseCount), true
+}
+
+// Empty is the driver's locked-3p default unless the command branch selects
+// auto or the surplus day lock selects 1p. Do not advance surplus hysteresis
+// here: an enabled unlock may arm later in this tick, so retain its 1p bound.
+func (c *Controller) phaseModeForFuse(now time.Time, cfg Config) string {
+	sched, _ := c.manager.GetSchedule(cfg.ID)
+	surplus := cfg.SurplusOnly
+	if !sched.HasTarget() && sched.SurplusUnlockBatSoC > 0 && c.batSoC != nil &&
+		!(c.tickDirectiveActive && c.tickDirectiveOK && c.tickDirective.LoadpointFallback[cfg.ID]) {
+		surplus = true
+	}
+	mode := cfg.PhaseMode
+	if hold, held := c.GetManualHold(cfg.ID, now); held {
+		if hold.PhaseMode != "" {
+			mode = hold.PhaseMode
+		}
+		if mode == "" && surplus {
+			mode = "auto"
+		}
+	} else {
+		// A surplus dwell can change while the offer is computed. Only a
+		// fixed 3p mode earns three phases of new headroom in this guard.
+		mode = resolvePhaseMode(mode, sched.HasTarget(), c.surplusLockedTo1P(cfg.ID), surplus, "")
+	}
+	if mode == "" {
+		return "3p"
+	}
+	return mode
 }
 
 func (c *Controller) currentDirective(now time.Time) (Directive, bool) {
