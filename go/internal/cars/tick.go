@@ -59,12 +59,16 @@ func (r *Runtime) Tick() {
 	}
 	r.mu.Unlock()
 
-	run(acts)
+	replan := changed || levelChanged || intentMoved
+	if replan {
+		r.applyAndReplan(acts, "car_changed")
+	} else {
+		run(acts)
+	}
 	for _, ev := range asks {
 		r.deps.Bus.Publish(ev)
 	}
-	if changed || levelChanged || intentMoved {
-		r.replan("car_changed")
+	if replan {
 		r.notify()
 	}
 }

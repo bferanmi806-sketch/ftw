@@ -654,6 +654,19 @@ func (r *Runtime) notify() {
 	}
 }
 
+// applyAndReplan hands the loadpoints what changed between two replan
+// requests. The first marks the plan pending before any charger shows the
+// change, so a phone that reads the plan in between sees it updating, never
+// a new car beside the old plan as if that were current. The second, after
+// the schedules roll, plans with the change and supersedes the first.
+func (r *Runtime) applyAndReplan(acts []func(), reason string) {
+	if len(acts) > 0 && r.deps.Replan != nil {
+		r.deps.Replan(reason)
+	}
+	run(acts)
+	r.replan(reason)
+}
+
 // replan rolls the loadpoints' schedules and asks the planner to plan again.
 // A goal a car brings clears the loadpoint's rolled deadline until the
 // schedules roll, and a replan before that plans without the car.

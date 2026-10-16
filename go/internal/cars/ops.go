@@ -461,10 +461,7 @@ func (r *Runtime) commit(reason string, car *Car) (protocol.Car, error) {
 		out = r.viewLocked(car, statesByID(r.deps.Loadpoints.States()))
 	}
 	r.mu.Unlock()
-	run(acts)
-	// The replan first: it tells the plan's listeners at once, so a phone
-	// sees the new car on its charger with the plan pending.
-	r.replan(reason)
+	r.applyAndReplan(acts, reason)
 	r.notify()
 	return out, nil
 }
