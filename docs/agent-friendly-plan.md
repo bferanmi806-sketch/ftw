@@ -7,7 +7,8 @@ Agents write most of FTW. 919 of the 2,250 commits on `master` carry a
 Claude co-author trailer, and 346 of the 1,415 pull requests come from
 `agent/`, `codex/`, `claude/` or `cursor/` branches. Both counts are lower
 bounds, since many agent PRs carry no marker. Review bots then raised
-1,150 inline findings on 573 of those pull requests. 760 of the 1,735
+1,150 inline findings on 573 pull requests. These are bot comments, not
+1,150 confirmed, distinct defects. 760 of the 1,735
 conventional commits on `master` are `fix` commits.
 
 Agents copy the nearest example and take the shortest path that compiles.
@@ -52,15 +53,20 @@ in the repository, not in the agent.
 
 ## The data
 
-`docs/agent-pitfalls/findings.py` is the lever. It extracts the findings,
-classifies them, backtests them and prints the report. Classification and
-backtest are LLM judgements, made in batches of 40.
+`docs/agent-pitfalls/findings.py` extracts the findings, classifies them,
+estimates which structures would prevent them and prints the report. Classification and
+backtest are LLM judgements, made in batches of 40 from excerpts of up to
+450 characters. The judge did not compile or run each historical change.
 `docs/agent-pitfalls/findings.csv` holds every label, so a reviewer can
 spot-check any row.
 
 Codex labelled all 1,150 findings, and Grok labelled 920 of them
 independently as a second rater. The two agreed on 78.9 % of those 920
-(726). Both raters put the same four classes in their top five.
+(726). Both raters put the same four classes in their top five. Agreement
+measures consistency between these labels; it does not establish that the
+comments describe real defects or that the proposed fixes prevent them.
+The sample can contain duplicate reports, false alarms and findings that
+reviewers later resolved. It excludes mistakes that these bots missed.
 
 | Class | Findings | PRs | P1 or High |
 |---|---:|---:|---:|
@@ -123,13 +129,16 @@ telemetry summed into the dispatch EV total (#36); stale PV readings used
 as the live prediction anchor (#85); `siteLoadW` built from stale readings
 and returning 0 when the meter is missing (#310). `telemetry.Store` keeps a
 reading after its driver goes stale, and `Get`, `ReadingsByType` and
-`ReadingsByDriver` return it unfiltered. Health filtering is opt-in. There
-are 147 direct reads outside the package, 35 of them `ReadingsByType`
+`ReadingsByDriver` return it unfiltered. Health filtering is opt-in. The
+original grep found 147 matching lines outside the package, 35 of them `ReadingsByType`
 calls, against 11 `TelemetryLive()` checks. Direct reads of `RawW` and
 `SmoothedW` alone grew from 44 in 8 files (1 May) to 101 in 20 files
 (17 October).
-- **Level: lint now (step 2), then types (step 3).** The ratchet stops new
-  cases today. Step 3 makes the safe accessor the only one.
+- **Level: lint now (step 2), then types (step 3).** The revised ratchet
+  counts 150 occurrences on the proposal's base, including several on one
+  line. It stops per-file count increases for four named read forms; it
+  does not prove that an existing or replacement read uses live data.
+  Step 3 aims to make the safe accessor the only one.
 
 **5. Duplicated truth (95).** 40 of these findings are in `docs/`, where
 prose restates code and drifts from it. Others are web constants that copy
@@ -143,10 +152,11 @@ Go, or Lua host helpers that docs promise but the host does not expose
 For every finding, the backtest asked: had this structure existed before
 the PR, would the mistake fail to compile, fail CI, or be impossible to
 write? The judge (Codex) was told to be strict, so "might help" counts as
-no. Because this is an LLM judgement, treat the counts as a ranking, not a
-precise rate.
+no. Treat the counts as hypotheses for setting priorities. They are not
+an observed prevention rate, a causal estimate or a test of these draft
+PRs. Each structure needs its own executable test and failure case.
 
-| Structure | Caught | P1 or High | Mostly in |
+| Proposed structure | Judged caught | P1 or High | Mostly in |
 |---|---:|---:|---|
 | S5 one source of truth, generated or deleted docs | 85 | 14 | duplicated-truth 54, incomplete-wiring 18 |
 | S1 one write path into Core, shared case table per adapter | 69 | 28 | incomplete-wiring 36, concurrency 9 |
@@ -156,18 +166,31 @@ precise rate.
 | S6 distinct unit types for W, Wh, SoC, A, money | 8 | 1 | power-units-sign 7 |
 | Any of the six | 257 of 1,150 | | |
 
-Besides the LLM judge, two checks were tested against git history
-directly:
-- The race detector fails on the parent commits of #787 and #789, and
-  passes on `master`.
-- The telemetry ratchet fails on the merged commits of #36, #85, #310 and
-  #647. Over 1,423 first-parent commits it would have fired 42 times. Of the
-  33 of those that came from numbered PRs, 10 had an unknown-as-value
-  finding.
+The 257 total covers all six hypothetical structures. After dropping S6,
+the union is 249 findings. Overlap means the rows must not be added. The
+remaining 901 received no prevention label among S1–S5; that does not prove
+that the labelled 249 would be prevented in practice.
 
-S6 is dropped for now. It would have caught 8 findings, and the existing
-`internal/units` reflection tests already cover kWp and SoC scale. The
-other 893 findings (78 %) need judgement, or a structure not on this list.
+The executable evidence has a narrower scope:
+
+| Check | Evidence and limit |
+|---|---|
+| #1676 race detector | It fails on the parents of #787 and #789. Both races were in test fixtures, not production code. The new CI job passed at `bcc32d7d` in 4 min 20 s. This tests the detector on exercised paths; it does not prove absence of races, ordering bugs or shutdown bugs. |
+| #1677 telemetry ratchet | Both the original line counter and the revised occurrence counter reject #36, #85, #310 and #647 against their parents. Rejection proves that a read count grew, not that the check identified the stale value itself. The revision adds tests for fields, multiple reads per line, exclusions, exceptions and Git errors on macOS and Linux. |
+| #1678 simulator skill | The initial Linux run covered launch, doctor, idle and cleanup. Review then reproduced false success with missing feedback and with another instance answering the port. The revision adds process and port checks and requires fresh command evidence for both batteries. A macOS run on 17 October 2026 passed launch, doctor, idle and cleanup: both drivers accepted 0 W commands, all five ports closed, and the evidence remained. Helper tests cover missing feedback, stale commands, wrong listeners and reused PIDs on macOS and Linux. No hardware result follows from a simulator run. |
+
+S2 includes a lifecycle harness as well as `-race`; #1676 adds only the race
+detector. S3 assumes typed values that prevent unsafe number access;
+#1677 adds only a count check. S1, S4 and S5 remain designs. None of their
+model counts measures the protection shipped by these four drafts.
+
+The earlier cost estimate (42 rejections over 1,423 first-parent commits,
+33 from numbered PRs and 10 with an unknown-as-value label) used the old
+line counter. It is not a measured cost for the revised occurrence check.
+
+S6 remains out of scope. The model assigned it eight findings; the existing
+`internal/units` reflection tests cover kWp and SoC scale. This is a scope
+choice, not evidence that unit types have no further value.
 
 ## Steps
 
@@ -175,18 +198,23 @@ Each step merges on its own and leaves `master` working. They are ordered
 by what the backtest and the proofs support, cheapest first.
 
 1. **Race detector in CI.** Draft #1676. One job, one script, no product
-   code. It catches the concurrency class at the CI level.
-2. **Telemetry read ratchet.** Draft #1677. It stops unknown-as-value from
-   growing, and its error names the safe accessor.
+   code. It catches data races on paths the tests execute. Changes to
+   `race.sh` itself must select the Core CI job.
+2. **Telemetry read ratchet.** Draft #1677. It rejects per-file increases
+   in the four counted read forms, and its error names the safe accessor.
 3. **Health-gated telemetry accessors** (S3, types). Add
    `Store.Live(driver, type) (Reading, bool)` and
    `Store.LiveByType(type) []Reading`. They return copies and skip stale,
-   offline and faulted drivers. Migrate the 147 reads package by package,
+   offline and faulted drivers. Migrate the counted reads package by package,
    with the ratchet proving each count only falls. Then make `Get` and
-   `ReadingsByType` unexported, and delete the ratchet once the count is 0.
+   `ReadingsByType` unexported. Returning `Reading` and `bool` alone does
+   not provide S3's type guarantee: callers can ignore the flag or retain
+   a reading past its freshness window. Prove the stronger boundary before
+   removing the ratchet or claiming S3's predicted coverage.
 4. **verify-ftw skill.** Draft #1678. It is a scripted launch, doctor,
-   drive and cleanup over the simulators, proved end to end. Agents use it
-   before claiming behaviour.
+   drive and cleanup over the simulators. The supported assertion is idle
+   dispatch for both batteries. Other modes, driver fallback, UI and real
+   hardware each need their own run and evidence.
 5. **One write path into Core** (S1, architecture). Settings and control
    requests become typed commands handled by one Core service that owns the
    locks. The API, web, HA, app protocol, CLI and watchdog become adapters.
@@ -226,23 +254,27 @@ cover a rule indirectly.
 | Planner output is never sent directly to hardware | No check found. `internal/mpc` does not depend on `internal/drivers` today, so an import check would pass |
 | Sign conversion only at the driver boundary | No check found |
 | Stale site-meter data stops dispatch | Control tests; seen live in the verify-ftw run |
-| No new race | Step 1 |
-| No new direct telemetry read | Step 2, then step 3 types |
+| No data race on exercised test paths | Step 1; logical lifecycle errors still need tests |
+| No per-file increase in four counted telemetry read forms | Step 2; freshness itself needs step 3 |
 
 The two "no check found" rules that pass today (planner and database)
 cost one import check each, written the same way as the cloudlink check.
 They are good first follow-ups once steps 1 and 2 land.
 
-## Open questions settled by prototypes
+## What the prototypes establish
 
 - *Does the race detector find anything today, or would the CI job be red
-  on day one?* It passes on all 16 package trees on `master`. It fails on
-  the two historical races.
+  on day one?* It passed on all 16 package trees at `3789764a` and in the
+  draft's CI job. It fails on the two historical test-fixture races.
 - *Can a check for stale reads be precise enough?* As a ratchet on new
-  reads, it fired on 42 of 1,423 commits, and it caught four of the PRs
-  where review found the stale-read bug.
+  reads, the old counter rejected four historical PRs with stale-read
+  findings. Negative tests exposed portability, same-line and exception
+  gaps. The revised counter tests those cases; it still does not prove
+  the health of a reading.
 - *Can an agent run Core end to end without hardware?* Yes, with the
-  simulators on isolated ports, in about 15 seconds after the build.
+  simulators on isolated ports. The initial Linux run reported about 15
+  seconds after the build. That run alone did not test false success or
+  establish support on other operating systems.
 
 ## Left for the owner
 
