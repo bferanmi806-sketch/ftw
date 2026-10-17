@@ -238,11 +238,7 @@ jobs:
           release_info=$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" \
             --json tagName,isDraft,isPrerelease,body)
           expected_prerelease=false
-          make_latest=true
-          if [ "${CHANNEL}" = beta ]; then
-            expected_prerelease=true
-            make_latest=false
-          fi
+          if [ "${CHANNEL}" = beta ]; then expected_prerelease=true; fi
           jq -e --arg tag "${TAG}" --argjson prerelease "${expected_prerelease}" \
             --arg marker "<!-- ftw-state-schema-v2:${{ steps.source.outputs.schema }} -->" '
               .tagName == $tag and .isPrerelease == $prerelease and
@@ -262,7 +258,7 @@ jobs:
               "${release_dir}/ftw-native-release.json"
           if jq -e '.isDraft == true' <<<"${release_info}" >/dev/null; then
             gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" \
-              --draft=false --latest="${make_latest}" --verify-tag --notes-file "${release_dir}/notes.md"
+              --draft=false --latest=false --verify-tag --notes-file "${release_dir}/notes.md"
           fi
       - name: Report verified dry run
         if: ${{ inputs.dry_run }}

@@ -63,8 +63,8 @@ Read the new policy.
         self.assertLess(checkout, run)
         self.assertIn('--notes-file "${release_dir}/notes.md"', workflow)
         self.assertNotIn('/releases/latest', workflow)
-        self.assertIn('make_latest=false', workflow)
-        self.assertIn('--latest="${make_latest}"', workflow)
+        self.assertIn('--draft=false --latest=false --verify-tag', workflow)
+        self.assertNotIn('--latest=true', workflow)
 
 
 if __name__ == "__main__":
