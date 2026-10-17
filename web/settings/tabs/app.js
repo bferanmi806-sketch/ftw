@@ -445,8 +445,10 @@
         if (toggle) toggle.addEventListener("change", function () { refreshStatus(ctx); });
 
         refreshStatus(ctx);
-        var statistics=document.querySelector("[data-project-statistics-settings]");
-        if(statistics && window.FTWStatistics)window.FTWStatistics.mount(statistics);
+        if(window.FTWStatistics) {
+          var statistics=document.querySelector("[data-project-statistics-settings]");
+          if(statistics)window.FTWStatistics.mount(statistics);
+        }
       }, 0);
 
       return (
