@@ -47,12 +47,9 @@ const (
 	MaxLANHintChars = 64
 )
 
-// QRNamesHome is the one switch that puts the home id in the QR, as v3. It
-// stays false until the apps parse v3 and those builds are out: ftw-app's
-// Enrollment.swift and Enrollment.kt, and ftw-webapp's enrollment.ts. A v3
-// QR before then stops pairing on every shipped app. Until it flips, a new
-// phone learns the home id from hello_ok.cloud on its first session.
-const QRNamesHome = false
+// QRNamesHome puts the Cloud home id in the QR, as v3. The web client needs
+// it to pair through Cloud; iPhone also reads v3. An unlinked box keeps v2.
+const QRNamesHome = true
 
 // SetHome tells enrolment where to find the home id at FTW Cloud, for a QR
 // that names it. fn returns "" while the box is not linked.
