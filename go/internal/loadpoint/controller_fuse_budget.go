@@ -10,7 +10,7 @@ type fuseRequest struct {
 	cfg      Config
 	deadline time.Time
 	wantW    float64
-	liveW    float64
+	baseW    float64
 	goal     bool
 }
 
@@ -34,16 +34,21 @@ func (c *Controller) freezeFuseBudget(now time.Time, samples map[string]EVSample
 	}
 	d, _ := c.currentDirective(now)
 	var requests []fuseRequest
-	var liveTotal float64
+	var baseTotal float64
 	for _, cfg := range c.manager.Configs() {
 		sample := samples[cfg.DriverName]
 		st, _ := c.manager.State(cfg.ID)
 		st.PluggedIn = sample.Connected && !sample.ConnectionUnknown
 		request := fuseRequest{cfg: c.fuseConfig(now, cfg), deadline: st.TargetTime}
 		if sample.Connected && finite(sample.PowerW) {
-			request.liveW = math.Max(0, sample.PowerW)
-			liveTotal += request.liveW
+			request.baseW = math.Max(0, sample.PowerW)
 		}
+		// Keeping the current offer on the same phases is not an increase,
+		// even while a late or lone reading says the car draws less.
+		if st.PluggedIn && st.CommandedKnown && finite(st.CommandedW) && c.offerPhase[cfg.ID] == c.phaseModeForFuse(now, request.cfg) {
+			request.baseW = math.Max(request.baseW, st.CommandedW)
+		}
+		baseTotal += request.baseW
 		if st.PluggedIn && c.driverCanDispatch(cfg.DriverName) {
 			if hold, held := c.GetManualHold(cfg.ID, now); held {
 				request.wantW = clampManualPower(cfg, hold, c.siteFuse())
@@ -79,23 +84,19 @@ func (c *Controller) freezeFuseBudget(now time.Time, samples map[string]EVSample
 		return a.cfg.ID < b.cfg.ID
 	})
 	c.tickFuseCaps = make(map[string]float64, len(requests))
-	remaining, increase := total, math.Max(0, total-liveTotal)
-	if phaseIncrease, known := c.sharedPhaseIncreaseW(now, requests, liveTotal); known {
-		if phaseIncrease < 0 {
-			total = math.Min(total, math.Max(0, liveTotal+phaseIncrease))
-			remaining = total
-		}
+	remaining, increase := total, math.Max(0, total-baseTotal)
+	if phaseIncrease, known := c.sharedPhaseIncreaseW(now, requests); known {
 		increase = math.Max(0, math.Min(increase, phaseIncrease))
 	}
 	for _, request := range requests {
 		target := floorChargeW(math.Min(request.wantW, remaining), request.cfg.MinChargeW, request.cfg.MaxChargeW, request.cfg.AllowedStepsW)
 		remaining -= target
 		// Do not spend another car's curtailment before its meter confirms it.
-		want := math.Min(target, request.liveW+increase)
+		want := math.Min(target, request.baseW+increase)
 		cap := floorChargeW(want, request.cfg.MinChargeW, request.cfg.MaxChargeW, request.cfg.AllowedStepsW)
 		cap = c.recoverFuseCap(request.cfg.ID, request.wantW, cap)
 		c.tickFuseCaps[request.cfg.ID] = cap
-		increase -= math.Max(0, cap-request.liveW)
+		increase -= math.Max(0, cap-request.baseW)
 	}
 }
 
@@ -129,9 +130,9 @@ func (c *Controller) recoverFuseCap(id string, wantW, capW float64) float64 {
 	return capW
 }
 
-// A new single-phase offer can land on the busiest phase. Do not spend a
-// different car's still-measured draw to move power between phases.
-func (c *Controller) sharedPhaseIncreaseW(now time.Time, requests []fuseRequest, liveTotal float64) (float64, bool) {
+// A new single-phase offer can land on the busiest phase, so an increase
+// needs measured room there. Cutting an overage is the shared budget's job.
+func (c *Controller) sharedPhaseIncreaseW(now time.Time, requests []fuseRequest) (float64, bool) {
 	if c.perPhaseMeterAmps == nil {
 		return 0, false
 	}
@@ -141,24 +142,17 @@ func (c *Controller) sharedPhaseIncreaseW(now time.Time, requests []fuseRequest,
 		return 0, false
 	}
 	if !finite(l1) || !finite(l2) || !finite(l3) {
-		return -liveTotal, true
+		return 0, true
 	}
 	phaseCount := site.Phases()
-	unknownPhase := false
 	for _, request := range requests {
-		mode := c.phaseModeForFuse(now, request.cfg)
-		if mode != "3p" {
+		if c.phaseModeForFuse(now, request.cfg) != "3p" {
 			phaseCount = 1
-			unknownPhase = true
 		}
 	}
 	c.tickFusePhases = phaseCount
 	worst := math.Max(math.Abs(l1), math.Max(math.Abs(l2), math.Abs(l3)))
-	deltaA := site.MaxAmps - fusePhaseMarginA - worst
-	if deltaA < 0 && unknownPhase {
-		return -liveTotal, true
-	}
-	return deltaA * site.Voltage * float64(phaseCount), true
+	return (site.MaxAmps - fusePhaseMarginA - worst) * site.Voltage * float64(phaseCount), true
 }
 
 // Empty is the driver's locked-3p default unless the command branch selects

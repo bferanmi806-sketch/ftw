@@ -111,7 +111,8 @@ func TestEVPendingBatteryMissingPowerCannotInventRoom(t *testing.T) {
 	pendingEVOrder(store, 8000, now.Add(-4*time.Second), "accepted")
 	data := []byte(`{"control_power_available":false}`)
 	store.Update("battery", telemetry.DerBattery, 0, nil, data)
-	if got := pendingEVBudget(store, state); got != 0 {
+	// The meter alone cuts; the car keeps its 3 kW but cannot rise.
+	if got := pendingEVBudget(store, state); got > 3000.01 {
 		t.Fatalf("missing battery power earned %.1fW EV room", got)
 	}
 }
@@ -139,17 +140,19 @@ func TestEVPendingBatteryFirstSampleWaitsForSiteCorrespondence(t *testing.T) {
 		store.RecordDriverSuccess(driver)
 	}
 	emit("battery", telemetry.DerBattery, now.Add(-3*time.Second), 0)
-	if got := pendingEVBudget(store, state); got > 1560.01 {
+	if got := pendingEVBudget(store, state); got > 3000.01 {
 		t.Fatalf("unknown earlier discharge financed %.1fW EV room", got)
 	}
-	// The next bracket proves the new balance and releases that startup bound.
+	// The next bracket proves the new balance; the cap then rises one step
+	// once the last change has had time to reach the meter.
 	amps := 13000.0 / 690
 	data, _ := json.Marshal(map[string]any{"control_power_observed_at": now.Add(-2 * time.Second).Format(time.RFC3339Nano),
 		"l1_a": amps, "l2_a": amps, "l3_a": amps})
 	store.Update("meter", telemetry.DerMeter, 13000, nil, data)
 	emit("battery", telemetry.DerBattery, now.Add(-time.Second), 0)
 	emit("car", telemetry.DerEV, now.Add(-time.Second), 3000)
-	if got := pendingEVBudget(store, state); math.Abs(got-6560) > .01 {
+	state.evLimit.changedAt = now.Add(-evSettle)
+	if got := pendingEVBudget(store, state); math.Abs(got-3690) > .01 {
 		t.Fatalf("matching fresh readings did not restore room: %.1fW", got)
 	}
 }
@@ -165,8 +168,10 @@ func TestEVPendingBatteryOrderArrivalKeepsPhysicalImportBounded(t *testing.T) {
 		}
 		store, state, now := pendingEVFixture(t, house, actual, 3000, actual)
 		pendingEVOrder(store, target, now.Add(-4*time.Second), "accepted")
+		// The car already draws 3 kW. Only the meter may cut it; a pending
+		// order must not fund a rise.
 		ev := pendingEVBudget(store, state)
-		if grid := house + math.Max(actual, target) + ev; grid > 16560.01 {
+		if grid := house + math.Max(actual, target) + ev; ev > 3000.01 && grid > 16560.01 {
 			t.Fatalf("case %d: late signed order gives %.1fW import; house %.1f actual %.1f target %.1f EV %.1f", i, grid, house, actual, target, ev)
 		}
 	}

@@ -371,6 +371,8 @@ type State struct {
 	// battery charging yields even when the EV cannot start yet.
 	evFuseDemands    []evFuseDemand
 	evFuseDemandsSet bool
+	// evLimit is the EVs' meter-driven hard cap, kept between site readings.
+	evLimit evMeterLimit
 
 	// PI controller (outer, site-level)
 	PI *PIController

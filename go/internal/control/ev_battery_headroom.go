@@ -1,7 +1,6 @@
 package control
 
 import (
-	"encoding/json"
 	"math"
 	"sort"
 	"time"
@@ -282,6 +281,38 @@ func capBatteryOffersToHeadroom(targets []DispatchTarget, baselines, uppers map[
 	return out
 }
 
+// A managed EV earns replacement credit only across a site observation that
+// its raw power brackets. A later start or an earlier stop cannot invent
+// spare capacity for an optional battery increase.
+func bracketedEVPower(points []telemetry.ControlObservation, at time.Time, latest float64) (float64, bool) {
+	var before, after telemetry.ControlObservation
+	hasBefore, hasAfter := false, false
+	for _, p := range points {
+		if !finiteFuseValue(p.PowerW) || p.PowerW < 0 {
+			continue
+		}
+		if !p.At.After(at) && (!hasBefore || p.At.After(before.At)) {
+			before, hasBefore = p, true
+		}
+		if !p.Seen().Before(at) && (!hasAfter || p.At.Before(after.At)) {
+			after, hasAfter = p, true
+		}
+	}
+	if !hasBefore || !hasAfter {
+		return 0, false
+	}
+	baseline := math.Max(0, math.Min(latest, math.Min(before.PowerW, after.PowerW)))
+	// Another slow device may force an older common site observation. A
+	// later observed stop still removes its replacement credit, even if
+	// the charger has since started again.
+	for _, point := range points {
+		if !point.Seen().Before(at) && finiteFuseValue(point.PowerW) && point.PowerW >= 0 {
+			baseline = math.Min(baseline, point.PowerW)
+		}
+	}
+	return baseline, true
+}
+
 // A source sample before this site sample may hold its current level. A
 // later start needs bracketed replacement credit before it can fund change.
 func evPowerAtLatestSite(points []telemetry.ControlObservation, at time.Time, current telemetry.ControlObservation) float64 {
@@ -395,23 +426,12 @@ func bracketedBatteryPower(points []telemetry.ControlObservation, at time.Time, 
 }
 
 func evBatteryPhaseSpareW(meter *telemetry.DerReading, state *State, evIncreaseA float64) (float64, bool) {
-	var data struct {
-		L1 *float64 `json:"l1_a"`
-		L2 *float64 `json:"l2_a"`
-		L3 *float64 `json:"l3_a"`
-	}
-	if json.Unmarshal(meter.Data, &data) != nil || (data.L1 == nil && data.L2 == nil && data.L3 == nil) {
+	worst, present, valid := worstPhaseA(meter, state)
+	if !present {
 		return 0, false
 	}
-	if state.SiteFusePhases < 1 || state.SiteFusePhases > 3 || state.SiteFuseVoltage <= 0 || state.SiteFuseAmps <= 0 {
+	if !valid {
 		return math.Inf(-1), true
-	}
-	worst := 0.0
-	for _, amps := range []*float64{data.L1, data.L2, data.L3}[:state.SiteFusePhases] {
-		if amps == nil || !finiteFuseValue(*amps) {
-			return math.Inf(-1), true
-		}
-		worst = math.Max(worst, math.Abs(*amps))
 	}
 	margin := math.Max(1, state.SiteFuseSafetyA) // Same working margin as the EV phase guard.
 	return (state.SiteFuseAmps - margin - worst - evIncreaseA) * state.SiteFuseVoltage * float64(state.SiteFusePhases), true

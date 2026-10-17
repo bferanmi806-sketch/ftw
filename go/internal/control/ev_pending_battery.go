@@ -65,32 +65,18 @@ func pendingBatterySeriesForFuse(store *telemetry.Store, state *State, windows m
 	return series
 }
 
-// Reserve orders against the same site observation as the EV replacement
-// credit. Signed subtraction also reserves a loss of existing discharge.
-func pendingBatteryIncreaseAt(series []pendingBatterySeries, siteAt time.Time) (reserve float64, coherent bool) {
-	coherent = true
-	for _, battery := range series {
-		baseline, known := battery.fallbackW, false
-		if battery.fresh {
-			if value, ok := bracketedBatteryPower(battery.points, siteAt, battery.current.PowerW); ok {
-				baseline, known = value, true
-			}
-		}
-		coherent = coherent && known
-		if !finiteFuseValue(battery.upperW) || !finiteFuseValue(baseline) {
-			return math.Inf(1), false
-		}
-		reserve += math.Max(0, battery.upperW-baseline)
-	}
-	return reserve, coherent
-}
-
+// A first battery sample after the site read cannot show how much earlier
+// discharge the meter contains; it keeps the full fallback.
 func pendingBatteryIncreaseAtLatestSite(series []pendingBatterySeries, siteAt time.Time) float64 {
 	var reserve float64
 	for _, battery := range series {
 		baseline := battery.fallbackW
-		if battery.fresh {
-			baseline = batteryPowerAtLatestSite(battery.points, siteAt, battery.current, battery.fallbackW)
+		if battery.fresh && !battery.current.Seen().After(siteAt) {
+			baseline = battery.current.PowerW
+		} else if battery.fresh {
+			if value, ok := bracketedBatteryPower(battery.points, siteAt, battery.current.PowerW); ok {
+				baseline = value
+			}
 		}
 		if !finiteFuseValue(battery.upperW) || !finiteFuseValue(baseline) {
 			return math.Inf(1)
