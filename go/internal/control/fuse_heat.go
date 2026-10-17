@@ -24,33 +24,37 @@ const fuseInstantFactor = 1.2
 // trip at 1.13 × In, a gG fuse does not blow at 1.25 × In), and gives no
 // budget above fuseInstantFactor.
 //
-// A Core restart starts the model at the first reading's current, with no
-// memory of the minutes before.
+// A reading stands for the time until the next one. A meter gap counts at
+// the last current seen: the reading after it neither fills the gap with its
+// own current nor erases an overload from before it. A Core restart starts
+// the model at the first reading's current, with no memory of the minutes
+// before.
 type fuseHeat struct {
-	set bool
-	at  time.Time  // the reading the model last stepped on
-	sq  [3]float64 // filtered I² per phase, A²
+	set  bool
+	at   time.Time  // the last reading
+	amps [3]float64 // its phase currents, held until the next
+	sq   [3]float64 // filtered I² per phase up to at, A²
 }
 
-// step folds one reading into the model over the real time since the last.
-// Between readings the heat holds.
+// step folds the time since the last reading into the model at that
+// reading's currents, then holds the new ones.
 func (h *fuseHeat) step(at time.Time, amps []float64) {
 	if !h.set {
 		for i, a := range amps {
 			h.sq[i] = a * a
 		}
-		h.set, h.at = true, at
-		return
+	} else {
+		dt := at.Sub(h.at)
+		if dt <= 0 {
+			return
+		}
+		k := -math.Expm1(-dt.Seconds() / fuseHeatTau.Seconds())
+		for i, a := range h.amps {
+			h.sq[i] += (a*a - h.sq[i]) * k
+		}
 	}
-	dt := at.Sub(h.at)
-	if dt <= 0 {
-		return
-	}
-	k := -math.Expm1(-dt.Seconds() / fuseHeatTau.Seconds())
-	for i, a := range amps {
-		h.sq[i] += (a*a - h.sq[i]) * k
-	}
-	h.at = at
+	h.set, h.at, h.amps = true, at, [3]float64{}
+	copy(h.amps[:], amps)
 }
 
 // overA is how far the phases the budget no longer covers sit above limitA

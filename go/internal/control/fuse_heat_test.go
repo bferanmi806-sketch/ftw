@@ -11,7 +11,8 @@ import (
 )
 
 // secondsToSpend runs the model at 1 s readings from fromA to atA and
-// returns the first second the filtered current is over limitA.
+// returns how long after the first reading at atA the filtered current is
+// over limitA.
 func secondsToSpend(fromA, atA, limitA float64) int {
 	var h fuseHeat
 	t := time.Unix(0, 0)
@@ -19,7 +20,7 @@ func secondsToSpend(fromA, atA, limitA float64) int {
 	for s := 1; s <= 3600; s++ {
 		h.step(t.Add(time.Duration(s)*time.Second), []float64{atA})
 		if h.sq[0] > limitA*limitA {
-			return s
+			return s - 1
 		}
 	}
 	return -1
@@ -40,8 +41,12 @@ func TestFuseHeatSpendsBudgetFrom20A(t *testing.T) {
 	var h fuseHeat
 	t0 := time.Unix(0, 0)
 	h.step(t0, []float64{20})
-	for s := 1; s <= 10; s++ {
-		h.step(t0.Add(time.Duration(s)*time.Second), []float64{32})
+	for s := 1; s <= 11; s++ {
+		a := 32.0
+		if s == 11 {
+			a = 20 // the reading that ends the spike
+		}
+		h.step(t0.Add(time.Duration(s)*time.Second), []float64{a})
 	}
 	if got := h.worstA(); math.Abs(got-22.3) > .05 {
 		t.Fatalf("10 s at 32 A left %.2f A of heat, want 22.3 A", got)
@@ -63,30 +68,42 @@ func meterAt(store *telemetry.Store, at time.Time, phaseA [3]float64) *telemetry
 	return r
 }
 
-// While the meter is silent the heat holds. The first reading after a gap
-// longer than evSettle steps it over the whole gap.
-func TestFuseHeatHoldsThroughGapAndStepsRealTime(t *testing.T) {
-	store, state := fuseHeatState()
-	t0 := time.Unix(1_800_000_000, 0)
-	state.stepFuseHeat(meterAt(store, t0, [3]float64{20, 20, 20}))
-	silent := store.Get("meter", telemetry.DerMeter)
-	for range 30 {
-		state.stepFuseHeat(silent) // ticks with no new reading
-	}
-	if got := state.fuseHeat.worstA(); got != 20 {
-		t.Fatalf("heat moved to %.3f A without a reading", got)
-	}
+// While the meter is silent the heat holds. A gap counts at the last
+// current seen: the reading after it neither fills the gap with its own
+// current nor erases an overload from before it.
+func TestFuseHeatCountsGapAtLastCurrentSeen(t *testing.T) {
 	gap := 30 * time.Second
 	if gap <= evSettle {
 		t.Fatalf("test gap %v must exceed evSettle %v", gap, evSettle)
 	}
-	state.stepFuseHeat(meterAt(store, t0.Add(gap), [3]float64{26, 20, 20}))
-	want := 676 - 276*math.Exp(-gap.Seconds()/60)
-	if got := state.fuseHeat.sq[0]; math.Abs(got-want) > 1e-9 {
-		t.Fatalf("heat after a %v gap %.3f A², want %.3f A²", gap, got, want)
-	}
-	if state.fuseHeat.sq[1] != 400 {
-		t.Fatalf("a steady phase moved to %.3f A²", state.fuseHeat.sq[1])
+	for _, tc := range []struct {
+		name          string
+		before, after float64
+	}{
+		{"spike_after_gap", 20, 28},
+		{"overload_before_gap", 28, 20},
+	} {
+		store, state := fuseHeatState()
+		t0 := time.Unix(1_800_000_000, 0)
+		state.stepFuseHeat(meterAt(store, t0.Add(-time.Hour), [3]float64{20, 20, 20}))
+		state.stepFuseHeat(meterAt(store, t0, [3]float64{tc.before, 20, 20}))
+		held := state.fuseHeat.sq
+		silent := store.Get("meter", telemetry.DerMeter)
+		for range 30 {
+			state.stepFuseHeat(silent) // ticks with no new reading
+		}
+		if state.fuseHeat.sq != held {
+			t.Fatalf("%s: heat moved to %v without a reading", tc.name, state.fuseHeat.sq)
+		}
+		state.stepFuseHeat(meterAt(store, t0.Add(gap), [3]float64{tc.after, 20, 20}))
+		a := tc.before
+		want := a*a - (a*a-held[0])*math.Exp(-gap.Seconds()/60)
+		if got := state.fuseHeat.sq[0]; math.Abs(got-want) > 1e-9 {
+			t.Fatalf("%s: heat after a %v gap %.3f A², want %.3f A²", tc.name, gap, got, want)
+		}
+		if state.fuseHeat.sq[1] != 400 {
+			t.Fatalf("%s: a steady phase moved to %.3f A²", tc.name, state.fuseHeat.sq[1])
+		}
 	}
 }
 
@@ -120,14 +137,15 @@ func (s *evMeterSite) addHouseA(l1, l2, l3 float64) {
 	s.houseW += (l1 + l2 + l3) * 230
 }
 
-// firstCut runs until the offer drops below 10,350 W and returns when.
+// firstCut runs until the offer drops below 10,350 W and returns how long
+// after the first reading of the run that was.
 func (s *evMeterSite) firstCut(limit time.Duration) (time.Duration, float64) {
 	s.t.Helper()
-	from := s.now
-	for s.now.Sub(from) < limit {
+	first := s.now.Add(time.Second)
+	for s.now.Sub(first) < limit {
 		s.step()
 		if s.offer() < 10350 {
-			return s.now.Sub(from), s.offer()
+			return s.now.Sub(first), s.offer()
 		}
 	}
 	return -1, s.offer()
@@ -229,14 +247,16 @@ func TestEVHardLimitCutsAtOnceAboveInstantLimit(t *testing.T) {
 		s := fuseHeatSite(t)
 		s.addHouseA(tc.atA-20, 0, 0)
 		took, offer := s.firstCut(10 * time.Second)
-		if took != time.Second || offer != tc.offerW {
+		if took != 0 || offer != tc.offerW {
 			t.Fatalf("%.0f A cut after %v to %.0f W, want the first reading to %.0f W", tc.atA, took, offer, tc.offerW)
 		}
 	}
 }
 
-// A silent meter holds the heat, and its first reading back steps it over
-// the gap: the cut lands when it would have with readings all along.
+// A silent meter holds the heat and counts the gap at the last current it
+// showed. A house step during the gap starts to count from the first reading
+// that shows it, so the cut lands a budget after the meter returns. An
+// overload the meter never showed is not counted.
 func TestEVHardLimitHeatBudgetAcrossMeterGap(t *testing.T) {
 	s := fuseHeatSite(t)
 	s.addHouseA(6, 0, 0) // 26 A on L1
@@ -248,8 +268,8 @@ func TestEVHardLimitHeatBudgetAcrossMeterGap(t *testing.T) {
 	}
 	s.meterSilent = false
 	took, offer := s.firstCut(2 * time.Minute)
-	if took += 30 * time.Second; took < 59*time.Second || took > 63*time.Second || offer != 8970 {
-		t.Fatalf("26 A with a 30 s gap cut after %v to %.0f W, want ~61 s to 8,970 W", took, offer)
+	if took < 59*time.Second || took > 63*time.Second || offer != 8970 {
+		t.Fatalf("26 A after a 30 s gap cut %v after the meter returned, to %.0f W; want ~61 s to 8,970 W", took, offer)
 	}
 }
 
@@ -265,14 +285,14 @@ func TestEVHardLimitRestartStartsHeatAtFirstReading(t *testing.T) {
 	}
 	s.boot()
 	took, offer := s.firstCut(5 * time.Second)
-	if took != time.Second || offer != 8970 {
+	if took != 0 || offer != 8970 {
 		t.Fatalf("restart at 26 A cut after %v to %.0f W, want the first reading to 8,970 W", took, offer)
 	}
 }
 
 // peaks runs the model on 17 A for 10 s and 14 A for gap, 30 times from
-// 14 A, at 1 s readings, and returns the highest filtered current and the
-// first second it was over limitA.
+// 14 A, at 1 s readings, and returns the highest filtered current and how
+// long after the first 17 A reading it was first over limitA.
 func peaks(gap int, limitA float64) (maxA float64, firstOver int) {
 	var h fuseHeat
 	t := time.Unix(0, 0)
@@ -285,7 +305,7 @@ func peaks(gap int, limitA float64) (maxA float64, firstOver int) {
 		h.step(t.Add(time.Duration(s)*time.Second), []float64{a})
 		maxA = math.Max(maxA, h.worstA())
 		if firstOver == 0 && h.sq[0] > limitA*limitA {
-			firstOver = s
+			firstOver = s - 1
 		}
 	}
 	return maxA, firstOver
@@ -295,8 +315,8 @@ func peaks(gap int, limitA float64) (maxA float64, firstOver int) {
 // 10 s peaks to 17 A with 14 A between them may be fine in total, since a
 // fuse trips on heat. The working limit is 15 A. A phase cuts when its
 // filtered current is strictly over the limit; exactly on it is inside, as
-// for a reading. The 30 s pattern goes 0.011 A over in its seventh peak, so
-// either rule would cut it.
+// for a reading. The 30 s pattern goes 0.011 A over at the end of its
+// seventh peak, so either rule counts it as over.
 func TestFuseHeatSixteenAmpPeaks(t *testing.T) {
 	for _, tc := range []struct {
 		gap       int
@@ -336,8 +356,8 @@ func fuse16Site(t *testing.T) *evMeterSite {
 }
 
 // The same peaks on L1 with the car charging: patterns whose heat stays
-// under 15 A never move the offer; the others cut once when the budget is
-// spent and settle where the peaks fit. A rise reads the heat as well as
+// under 15 A while the meter shows a peak never move the offer; the others
+// cut once when the budget is spent and settle where the peaks fit. A rise reads the heat as well as
 // the reading, so the car does not climb back between peaks and cut again.
 func TestEVHardLimitSixteenAmpPeaksCutOnceAndSettle(t *testing.T) {
 	for _, tc := range []struct {
@@ -347,7 +367,9 @@ func TestEVHardLimitSixteenAmpPeaksCutOnceAndSettle(t *testing.T) {
 		settleW  float64
 	}{
 		{"14A_50s", 50 * time.Second, 0, 6900},
-		{"14A_30s", 30 * time.Second, 250 * time.Second, 6210},
+		// The heat passes 15 A only as the peak ends, when the meter
+		// already shows 14 A: nothing is left to cut.
+		{"14A_30s", 30 * time.Second, 0, 6900},
 		{"14A_20s", 20 * time.Second, 98 * time.Second, 6210},
 		{"14A_10s", 10 * time.Second, 48 * time.Second, 5520},
 		{"steady_17A", 0, 23 * time.Second, 5520},
@@ -387,7 +409,8 @@ func TestEVHardLimitSixteenAmpPeaksCutOnceAndSettle(t *testing.T) {
 				t.Fatalf("cuts %v, want %d", offerWatts(cuts), want)
 			}
 			if tc.cutAfter > 0 {
-				if took := cuts[0].at.Sub(from); took < tc.cutAfter-3*time.Second || took > tc.cutAfter+3*time.Second {
+				// From the first reading of the first peak.
+				if took := cuts[0].at.Sub(from) - time.Second; took < tc.cutAfter-2*time.Second || took > tc.cutAfter+2*time.Second {
 					t.Errorf("cut after %v, want ~%v", took, tc.cutAfter)
 				}
 			}
