@@ -62,7 +62,7 @@ var ClassScope = map[string]string{
 }
 
 // ServiceOnly are box messages the service acts on and never forwards.
-var ServiceOnly = []string{MsgHello, MsgRoster, MsgBye, MsgNotice}
+var ServiceOnly = []string{MsgHello, MsgRoster, MsgBye, MsgNotice, MsgStats}
 
 // Clock values for hello.clock and hb.clock.
 const (
@@ -393,10 +393,13 @@ type Pending struct {
 // id, scopes or purposes. While a revoke waits for its receipt it keeps the
 // id and has neither scopes nor purposes.
 type Grant struct {
-	ID         []byte   `cbor:"id"`
-	Scopes     []string `cbor:"scopes"`
-	Purposes   []string `cbor:"purposes"`
-	Controller string   `cbor:"controller"`
+	ID           []byte   `cbor:"id"`
+	Scopes       []string `cbor:"scopes"`
+	Purposes     []string `cbor:"purposes"`
+	Controller   string   `cbor:"controller"`
+	StatsID      []byte   `cbor:"statsId,omitempty"`
+	StatsPolicy  string   `cbor:"statsPolicy,omitempty"`
+	StatsSinceMs int64    `cbor:"statsSinceMs,omitempty"`
 }
 
 // Notice is a security notice for the owners: a push kind from the

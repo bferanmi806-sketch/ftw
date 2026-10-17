@@ -1169,11 +1169,11 @@ func TestStatisticsAreASecondConsentUnderTheGrant(t *testing.T) {
 		t.Fatalf("grant record %+v", g)
 	}
 
-	// Asked again, the same id.
+	// A new policy needs a new id and consent start.
 	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-11"}); err != nil {
 		t.Fatal(err)
 	}
-	if again := h.record(t); !bytes.Equal(again.StatsID, g.StatsID) || again.StatsPolicy != "stats-2026-11" {
+	if again := h.record(t); bytes.Equal(again.StatsID, g.StatsID) || again.StatsPolicy != "stats-2026-11" {
 		t.Fatalf("statsId %x became %x", g.StatsID, again.StatsID)
 	}
 
