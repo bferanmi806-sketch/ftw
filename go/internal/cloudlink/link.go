@@ -471,13 +471,14 @@ func (l *Link) RosterChanged() {
 // tunnel, an agent an owner let in, or a pairing code on the screen. An agent
 // row has no tunnel, but it reaches the box only through FTW Cloud, which
 // learns of it from the roster; an owner with no phone grants one on the box
-// page. A grant needs the link too, and makes it itself.
+// page. A box that takes no tun cannot serve an agent, so its rows want no
+// link. A grant needs the link too, and makes it itself.
 func (l *Link) wantsLink() bool {
 	if _, _, ok := l.opts.Roster.Pending(); ok {
 		return true
 	}
 	for _, d := range l.opts.Roster.Devices() {
-		if d.Tun || d.Agent != nil {
+		if d.Tun || (d.Agent != nil && l.opts.Tunnel != nil) {
 			return true
 		}
 	}

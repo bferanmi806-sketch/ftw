@@ -551,6 +551,28 @@ func TestAnAgentRowLinksTheBox(t *testing.T) {
 	}
 }
 
+// With the app link off the box takes no tun, so it cannot serve an agent.
+// A row left from before must not dial FTW Cloud, make a home id or send a
+// roster that names its client.
+func TestAnAgentRowLinksNoBoxThatTakesNoTun(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarnessWith(t, svc, []*ecdsa.PublicKey{&svc.key.PublicKey}, nil, func(o *Options) { o.Tunnel = nil })
+	h.setRoster(func(r *fakeRosterState) { r.agent = true })
+	time.Sleep(300 * time.Millisecond)
+	svc.mu.Lock()
+	conns := svc.conns
+	svc.mu.Unlock()
+	if conns != 0 {
+		t.Fatalf("the box dialled FTW Cloud %d times for an agent it cannot serve", conns)
+	}
+	if st := h.link.Status(); st.Link == "on" || st.Home != "" {
+		t.Fatalf("status %+v", st)
+	}
+	if _, err := os.Stat(h.keyPath); !os.IsNotExist(err) {
+		t.Fatal("cloud.key exists for an agent the box cannot serve")
+	}
+}
+
 func TestGrantStreamsSignedStateWithoutNames(t *testing.T) {
 	svc := newFakeService(t)
 	h := newHarness(t, svc)

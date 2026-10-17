@@ -91,6 +91,24 @@ describe("names from outside", () => {
     assert.equal(P.cleanName("x".repeat(100)).length, 64);
   });
 
+  it("lose the marks that hide letters: soft hyphen, joiners, variation selectors and tags", () => {
+    const hidden = [0xad, 0x34f, 0x61c, 0xfe0f, 0xe0041, 0xe007f].map((c) => String.fromCodePoint(c)).join("");
+    assert.equal(P.cleanName("Cl" + hidden + "aude"), "Claude");
+  });
+
+  it("lose double quote marks, so a name cannot end the page's quotes early", () => {
+    assert.equal(P.cleanName('Claude" into your home? Yes. "Evil'), "Claude into your home? Yes. Evil");
+    assert.equal(P.cleanName("“Claude”"), "Claude");
+    assert.equal(P.cleanName("Fred's helper"), "Fred's helper");
+  });
+
+  it("are cut by character, never through an emoji", () => {
+    const cut = P.cleanName("x".repeat(62) + String.fromCodePoint(0x1f600, 0x1f600, 0x1f600));
+    assert.equal(Array.from(cut).length, 64);
+    assert.ok(cut.endsWith("…"));
+    assert.ok(!/[\ud800-\udbff]…$/.test(cut));
+  });
+
   it("are flagged when an unknown client borrows Sourceful's or FTW's name", () => {
     assert.equal(P.borrowsOurName("FTW Helper", false), true);
     assert.equal(P.borrowsOurName("sourceful support", false), true);
@@ -167,10 +185,26 @@ describe("what the owner grants", () => {
     assert.deepEqual(P.lengthOptions(3 * 86400), [86400]);
     assert.deepEqual(P.lengthOptions(3600), [3600]);
   });
+
+  it("chooses a week unless the offer asks for less", () => {
+    assert.equal(P.defaultLength(P.lengthOptions(30 * 86400)), 7 * 86400);
+    assert.equal(P.defaultLength(P.lengthOptions(3 * 86400)), 86400);
+    assert.equal(P.defaultLength(P.lengthOptions(3600)), 3600);
+  });
+
+  it("keeps a power cap exact to the watt, so the default is never refused", () => {
+    // A phone may approve 3,680 W, which one decimal of kW would round up to
+    // 3,700 W, past the row's own cap.
+    for (const w of [3680, 11000, 7400, 1, 99999, 16560]) {
+      const g = P.chosenGrant({ reads: [], ops: ["loadpoint.hold"], holdMin: 30, maxKW: P.kwExact(w), ttlS: 86400 }, 6, registry);
+      assert.equal(g.caps.maxW, w, String(w));
+      assert.equal(P.choiceProblem(g, { holdS: 1800, maxW: w }), "", String(w));
+    }
+  });
 });
 
 describe("what stops a grant before a code is spent", () => {
-  const ok = { box: { offers: true, clock: "ok", lookup: "https://cloud.ftw.energy/oauth/requests" } };
+  const ok = { box: { offers: true, clock: "ok", lookup: "https://cloud.ftw.energy/oauth/requests", widen: true } };
   const on = { lan_auth: true, configured: true };
 
   it("is nothing once the house password is on and the box can take an offer", () => {
@@ -183,6 +217,8 @@ describe("what stops a grant before a code is spent", () => {
     assert.equal(P.readiness(ok, "", { lan_auth: false, configured: true }).kind, "password");
     assert.equal(P.readiness(ok, "", { lan_auth: true, configured: false }).kind, "password");
     assert.equal(P.readiness(ok, "", null).kind, "password");
+    // On the box itself, or through a tunnel, the password does not count.
+    assert.equal(P.readiness({ box: { ...ok.box, widen: false } }, "", on).kind, "here");
     assert.equal(P.readiness({ box: { ...ok.box, offers: false } }, "", on).kind, "keys");
     assert.equal(P.readiness({ box: { ...ok.box, clock: "behind", nowMs: 1, markMs: 2 } }, "", on).kind, "behind");
     assert.equal(P.readiness({ box: { ...ok.box, clock: "unsynced" } }, "", on).kind, "clock");
@@ -236,6 +272,12 @@ describe("a request waiting for the owner", () => {
       { label: "Charge from solar only", value: "no" },
       { label: "extra", value: "x" },
     ]);
+  });
+
+  it("cleans an argument's name that the registry does not know", () => {
+    const rlo = String.fromCharCode(0x202e);
+    const rows = P.requestArgs({ op: "x", args: { ["evil" + rlo + "gnp"]: 1 } }, registry);
+    assert.equal(rows[0].label, "evilgnp");
   });
 
   it("shows power, length and odd numbers plainly", () => {

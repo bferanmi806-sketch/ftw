@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -302,6 +303,38 @@ func TestTheAgentListCarriesTheBoxFacts(t *testing.T) {
 	if len(args) < 2 || args[0].Name != "id" || args[1].Name != "power_w" || args[1].Label == "" ||
 		args[1].Unit != "W" || args[1].Cap != "maxW" {
 		t.Errorf("loadpoint.hold's arguments, in the registry's order: %+v", args)
+	}
+}
+
+// On the box itself the house password does not count, so the list tells the
+// page that this request cannot widen access before the owner spends a code
+// on a grant the box would refuse. Another device signed in can.
+func TestTheListSaysWhetherThisRequestCanWiden(t *testing.T) {
+	resetLANGuesses(t)
+	policy := lanAuthPolicy(testHousePassword)
+	s := New(&Deps{Agents: newStubAgents("")})
+	widen := func(url, remote string) (bool, int) {
+		var after *http.Request
+		serveLANAuth(policy, lanAuthRequest(http.MethodGet, url, remote, "Bearer "+testHousePassword),
+			func(r *http.Request) { after = r })
+		w := httptest.NewRecorder()
+		s.handleAgentsList(w, after)
+		var got struct {
+			Box AgentFacts `json:"box"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		add := httptest.NewRecorder()
+		post := after.Clone(after.Context())
+		post.Method = http.MethodPost
+		post.Body = io.NopCloser(strings.NewReader(offerBody(t, "")))
+		s.handleAgentsAdd(add, post)
+		return got.Box.Widen, add.Code
+	}
+	if ok, code := widen("http://127.0.0.1:8080/api/agents", "127.0.0.1:1234"); ok || code != http.StatusForbidden {
+		t.Errorf("on the box itself, with the house password: widen %v, grant %d", ok, code)
+	}
+	if ok, code := widen("http://192.168.1.1:8080/api/agents", "192.168.1.5:1234"); !ok || code != http.StatusCreated {
+		t.Errorf("another device, signed in: widen %v, grant %d", ok, code)
 	}
 }
 

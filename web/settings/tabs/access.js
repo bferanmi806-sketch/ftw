@@ -8,12 +8,13 @@
 // owner sees here is what the box read, not what a web page claimed. The
 // owner then grants it, or less of it, never more.
 //
-// Granting needs the house password. With it off, every device on the Wi-Fi
-// is an owner with no sign-in, and letting the outside world in must not be
-// one click from any of them. The box refuses; this page says so before it
-// asks for a code, because a code works once and should not be spent on a
-// refusal. Removing access and declining a request stay open, as removing a
-// phone does.
+// Granting needs another device on the home network, signed in with the
+// house password. With it off, every device on the Wi-Fi is an owner with no
+// sign-in, and letting the outside world in must not be one click from any of
+// them; on the box itself the password does not count. The box refuses; this
+// page says so before it asks for a code, because a code works once and
+// should not be spent on a refusal. Removing access and declining a request
+// stay open, as removing a phone does.
 //
 // Names that come from outside — the assistant's name, its host, its own
 // words in a request — only ever go into the page as text.
@@ -69,17 +70,22 @@
     return /^[A-Z0-9]{8}$/.test(code) ? code : "";
   }
 
-  // Text from outside the box. Control and direction marks go, so it cannot
-  // turn the page's own words around it, and it is cut to max characters.
+  // Text from outside the box. Control, direction, joining, variation and tag
+  // marks go, so it cannot turn the page's own words around it or hide
+  // letters, and it is cut to max characters.
   function cleanText(s, max) {
     var text = String(s || "")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, "")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}]/gu, "")
       .trim();
-    return text.length > max ? text.slice(0, max - 1) + "…" : text;
+    // By code point, so a cut never splits an emoji into half a character.
+    var chars = Array.from(text);
+    return chars.length > max ? chars.slice(0, max - 1).join("") + "…" : text;
   }
 
-  // An assistant names itself, at a length a row can hold.
-  function cleanName(s) { return cleanText(s, 64); }
+  // An assistant names itself, at a length a row can hold. Double quote marks
+  // go too: the page puts the name in quotes, and one in the name could end
+  // them early and make the page's own words look like the name's.
+  function cleanName(s) { return cleanText(String(s || "").replace(/["“”„‟«»″＂]/g, ""), 64); }
 
   // A name like Sourceful's or FTW's, from a client FTW Cloud does not know.
   function borrowsOurName(name, verified) {
@@ -161,7 +167,7 @@
         return "A hold lasts from 1 to " + Math.floor(limits.holdS / 60) + " minutes.";
       }
       if (grant.caps.maxW < 1 || grant.caps.maxW > limits.maxW) {
-        return "The power goes up to " + kw(limits.maxW) + " kW.";
+        return "The power goes up to " + kwExact(limits.maxW) + " kW.";
       }
     }
     if (grant.ttlS < 60) return "Choose how long it may last.";
@@ -173,12 +179,26 @@
     return v % 1 === 0 ? String(v) : v.toFixed(1);
   }
 
+  // A power cap in kW, exact to the watt, for a field the owner edits: a cap
+  // of 3,680 W must read back as 3,680 W, not as 3.7 kW the box refuses.
+  function kwExact(w) {
+    return String(Math.round(Number(w) || 0) / 1000);
+  }
+
   // How long a grant may last: the lengths the page offers, none longer than
   // the offer asked for.
   function lengthOptions(maxS) {
     var out = [DAY_S, 7 * DAY_S, 30 * DAY_S].filter(function (s) { return s <= maxS; });
     if (!out.length && maxS >= 60) out.push(maxS);
     return out;
+  }
+
+  // The length chosen until the owner picks another: a week, or less when the
+  // offer asks for less. A week is long enough to try an assistant and short
+  // enough that one forgotten here ends; renewing is a button on this page.
+  function defaultLength(options) {
+    var week = options.filter(function (s) { return s <= 7 * DAY_S; });
+    return week.length ? week[week.length - 1] : options[0];
   }
 
   function lengthText(s) {
@@ -214,6 +234,9 @@
     if (!list) return { kind: "loading" };
     if (!auth || !auth.lan_auth || !auth.configured) return { kind: "password" };
     var box = list.box || {};
+    // The box's answer for this very request: on the box itself, or through
+    // an SSH tunnel to it, the house password does not count.
+    if (!box.widen) return { kind: "here" };
     if (!box.offers) return { kind: "keys" };
     if (box.clock === "behind") return { kind: "behind", nowMs: box.nowMs, markMs: box.markMs };
     if (box.clock !== "ok") return { kind: "clock" };
@@ -223,6 +246,9 @@
 
   var KEYS_TEXT = "This version of FTW cannot let assistants in yet: it does not know FTW " +
     "Cloud's signing key. An update brings it.";
+  var HERE_TEXT = "Open this page from another device on your home network, and sign in with " +
+    "the house password there. On the box itself, or through a tunnel to it, the password " +
+    "does not count, because anything running on the box could use it too.";
   var CLOCK_TEXT = "The box's clock is not set, so it cannot time an assistant's access. It sets " +
     "itself over the internet; check that the box is online.";
 
@@ -318,7 +344,7 @@
       }
     });
     Object.keys(args).sort().forEach(function (name) {
-      if (!known.some(function (a) { return a.name === name; })) out.push({ label: name, value: argValue(args[name], {}) });
+      if (!known.some(function (a) { return a.name === name; })) out.push({ label: cleanText(name, 40), value: argValue(args[name], {}) });
     });
     return out;
   }
@@ -441,6 +467,9 @@
         box.appendChild(el("p", { className: "access-quiet", text: "It is under System, LAN password. " +
           "Come back here once it is on." }));
         return;
+      case "here":
+        box.appendChild(el("p", { text: HERE_TEXT }));
+        return;
       case "keys":
         box.appendChild(el("p", { text: KEYS_TEXT }));
         return;
@@ -533,8 +562,8 @@
     return el("label", { className: "checkbox-row access-check" }, [box, el("span", { text: label }), extra || null]);
   }
 
-  function numberField(id, label, value, max, step, unit) {
-    var input = el("input", { type: "number", id: id, min: step, max: String(max), step: String(step), value: String(value) });
+  function numberField(id, label, value, max, min, step, unit) {
+    var input = el("input", { type: "number", id: id, min: String(min), max: String(max), step: String(step), value: String(value) });
     return el("div", { className: "access-cap" }, [
       el("label", { for: id, text: label }),
       el("div", { className: "access-cap-input" }, [input, el("span", { className: "access-quiet", text: unit + ", at most " + max })]),
@@ -568,9 +597,9 @@
         if (g.ops.some(function (op) { return capped(op, registry); })) {
           var holdMin = Math.floor((given.caps.holdS || 0) / 60);
           detail.appendChild(numberField("access-hold-" + (current ? current.id : "new"), "Longest hold",
-            holdMin, holdMin, 1, "minutes"));
+            holdMin, holdMin, 1, 1, "minutes"));
           detail.appendChild(numberField("access-power-" + (current ? current.id : "new"), "Highest power",
-            kw(given.caps.maxW), kw(given.caps.maxW), 0.1, "kW"));
+            kwExact(given.caps.maxW), kwExact(given.caps.maxW), 0.001, "any", "kW"));
         }
       });
       if (given.caps.perMin) {
@@ -642,10 +671,11 @@
 
     var form = grantForm(card, v, registry, null);
     var lengths = lengthOptions(v.ttlS || 0);
+    var chosen = defaultLength(lengths);
     var select = el("select", { name: "length", id: "access-length" });
     lengths.forEach(function (s) {
       var opt = el("option", { value: String(s), text: lengthText(s) });
-      if (s === lengths[lengths.length - 1]) opt.selected = true;
+      if (s === chosen) opt.selected = true;
       select.appendChild(opt);
     });
     card.appendChild(el("label", { for: "access-length", text: "For how long" }));
@@ -708,7 +738,7 @@
   // Renewing, narrowing and approving need the house password, as granting
   // does. Without it the buttons say so rather than meet a refusal.
   function canWiden() {
-    return !!(state.auth && state.auth.lan_auth && state.auth.configured);
+    return !!(state.list && state.list.box && state.list.box.widen);
   }
 
   function drawRows() {
@@ -750,7 +780,7 @@
       var actions = el("div", { className: "access-actions" });
       var change = el("button", { type: "button", className: "btn-ghost", text: state.editing === row.id ? "Close" : "Renew or narrow" });
       change.disabled = !canWiden();
-      if (change.disabled) change.title = "Changing access needs the house password.";
+      if (change.disabled) change.title = "Changing access needs another device on your network, signed in with the house password.";
       change.addEventListener("click", function () {
         state.editing = state.editing === row.id ? "" : row.id;
         drawRows();
@@ -832,7 +862,10 @@
     var rows = (state.list && state.list.agents) || [];
     pending.forEach(function (req) {
       var row = rows.filter(function (a) { return a.id === req.agent; })[0];
-      var who = row ? rowName(row) : "An assistant";
+      // Two assistants may call themselves the same, so the host goes beside
+      // the name, as in the list below.
+      var host = row ? clientHost((row.principal || {}).clientId) : "";
+      var who = (row ? rowName(row) : "An assistant") + (host ? " (" + host + ")" : "");
       var item = el("div", { className: "access-row access-request" });
       item.appendChild(el("p", { className: "access-row-name", text: who + " asks to: " + opWords(req.op).replace(/^./, function (c) { return c.toLowerCase(); }) }));
       var args = requestArgs(req, registry);
@@ -855,7 +888,7 @@
       var approve = el("button", { type: "button", className: "btn-send", text: "Approve" });
       var decline = el("button", { type: "button", className: "btn-ghost", text: "Decline" });
       approve.disabled = !canWiden();
-      if (approve.disabled) approve.title = "Approving needs the house password.";
+      if (approve.disabled) approve.title = "Approving needs another device on your network, signed in with the house password.";
       function decide(yes) {
         approve.disabled = decline.disabled = true;
         postJSON("/api/agent-requests/" + encodeURIComponent(req.reqId), { approve: yes }).then(function (r) {
@@ -958,6 +991,8 @@
     chosenGrant: chosenGrant,
     choiceProblem: choiceProblem,
     lengthOptions: lengthOptions,
+    defaultLength: defaultLength,
+    kwExact: kwExact,
     readiness: readiness,
     lookupFailureText: lookupFailureText,
     offerRefusalText: offerRefusalText,
