@@ -1,0 +1,270 @@
+package control
+
+import (
+	"encoding/json"
+	"math"
+	"testing"
+	"time"
+
+	"github.com/srcfl/ftw/go/internal/telemetry"
+)
+
+// secondsToSpend runs the model at 1 s readings from fromA to atA and
+// returns the first second the filtered current is over limitA.
+func secondsToSpend(fromA, atA, limitA float64) int {
+	var h fuseHeat
+	t := time.Unix(0, 0)
+	h.step(t, []float64{fromA})
+	for s := 1; s <= 3600; s++ {
+		h.step(t.Add(time.Duration(s)*time.Second), []float64{atA})
+		if h.sq[0] > limitA*limitA {
+			return s
+		}
+	}
+	return -1
+}
+
+// From 20 A on a 25 A fuse the budget runs out at the working limit of
+// 24 A after about a minute at 26 A, 37 s at 28 A and 26 s at 30 A. A 10 s
+// spike to 32 A leaves 22.3 A of heat.
+func TestFuseHeatSpendsBudgetFrom20A(t *testing.T) {
+	for _, tc := range []struct {
+		atA  float64
+		want int
+	}{{26, 61}, {28, 37}, {30, 26}} {
+		if got := secondsToSpend(20, tc.atA, 24); math.Abs(float64(got-tc.want)) > 1 {
+			t.Errorf("%.0f A spent the budget after %d s, want ~%d s", tc.atA, got, tc.want)
+		}
+	}
+	var h fuseHeat
+	t0 := time.Unix(0, 0)
+	h.step(t0, []float64{20})
+	for s := 1; s <= 10; s++ {
+		h.step(t0.Add(time.Duration(s)*time.Second), []float64{32})
+	}
+	if got := h.worstA(); math.Abs(got-22.3) > .05 {
+		t.Fatalf("10 s at 32 A left %.2f A of heat, want 22.3 A", got)
+	}
+}
+
+// fuseHeatState is a 25 A three-phase site with phase currents on the meter.
+func fuseHeatState() (*telemetry.Store, *State) {
+	state := NewState(0, 0, "meter")
+	state.SiteFuseAmps, state.SiteFuseVoltage, state.SiteFusePhases = 25, 230, 3
+	return telemetry.NewStore(), state
+}
+
+func meterAt(store *telemetry.Store, at time.Time, phaseA [3]float64) *telemetry.DerReading {
+	raw, _ := json.Marshal(map[string]float64{"l1_a": phaseA[0], "l2_a": phaseA[1], "l3_a": phaseA[2]})
+	store.Update("meter", telemetry.DerMeter, (phaseA[0]+phaseA[1]+phaseA[2])*230, nil, raw)
+	r := store.Get("meter", telemetry.DerMeter)
+	r.UpdatedAt = at
+	return r
+}
+
+// While the meter is silent the heat holds. The first reading after a gap
+// longer than evSettle steps it over the whole gap.
+func TestFuseHeatHoldsThroughGapAndStepsRealTime(t *testing.T) {
+	store, state := fuseHeatState()
+	t0 := time.Unix(1_800_000_000, 0)
+	state.stepFuseHeat(meterAt(store, t0, [3]float64{20, 20, 20}))
+	silent := store.Get("meter", telemetry.DerMeter)
+	for range 30 {
+		state.stepFuseHeat(silent) // ticks with no new reading
+	}
+	if got := state.fuseHeat.worstA(); got != 20 {
+		t.Fatalf("heat moved to %.3f A without a reading", got)
+	}
+	gap := 30 * time.Second
+	if gap <= evSettle {
+		t.Fatalf("test gap %v must exceed evSettle %v", gap, evSettle)
+	}
+	state.stepFuseHeat(meterAt(store, t0.Add(gap), [3]float64{26, 20, 20}))
+	want := 676 - 276*math.Exp(-gap.Seconds()/60)
+	if got := state.fuseHeat.sq[0]; math.Abs(got-want) > 1e-9 {
+		t.Fatalf("heat after a %v gap %.3f A², want %.3f A²", gap, got, want)
+	}
+	if state.fuseHeat.sq[1] != 400 {
+		t.Fatalf("a steady phase moved to %.3f A²", state.fuseHeat.sq[1])
+	}
+}
+
+// A Core restart has no memory: the first reading sets the heat.
+func TestFuseHeatStartsAtFirstReadingAfterRestart(t *testing.T) {
+	store, state := fuseHeatState()
+	state.stepFuseHeat(meterAt(store, time.Unix(1_800_000_000, 0), [3]float64{26, 3, 0}))
+	if state.fuseHeat.sq != [3]float64{676, 9, 0} {
+		t.Fatalf("first reading set %v", state.fuseHeat.sq)
+	}
+}
+
+// fuseHeatSite charges at 15 A beside 5 A of house load on each phase of a
+// 25 A fuse with no import ceiling: 20 A per phase, long enough for the heat
+// to settle there.
+func fuseHeatSite(t *testing.T) *evMeterSite {
+	t.Helper()
+	s := newEVMeterSite(t, 0, 3450)
+	s.run(10 * time.Minute)
+	if s.offer() != 10350 || s.evW != 10350 || math.Abs(s.state.fuseHeat.worstA()-20) > .01 {
+		t.Fatalf("setup: offer %.0f draw %.0f heat %.2f A", s.offer(), s.evW, s.state.fuseHeat.worstA())
+	}
+	return s
+}
+
+// addHouseA adds current to the house on each phase.
+func (s *evMeterSite) addHouseA(l1, l2, l3 float64) {
+	s.housePhaseA[0] += l1
+	s.housePhaseA[1] += l2
+	s.housePhaseA[2] += l3
+	s.houseW += (l1 + l2 + l3) * 230
+}
+
+// firstCut runs until the offer drops below 10,350 W and returns when.
+func (s *evMeterSite) firstCut(limit time.Duration) (time.Duration, float64) {
+	s.t.Helper()
+	from := s.now
+	for s.now.Sub(from) < limit {
+		s.step()
+		if s.offer() < 10350 {
+			return s.now.Sub(from), s.offer()
+		}
+	}
+	return -1, s.offer()
+}
+
+// A house step on L1 from 20 A cuts once the heat budget is spent, not on
+// the first reading over the working limit, and the cut brings L1 back
+// under it.
+func TestEVHardLimitPhaseCutWaitsForHeatBudget(t *testing.T) {
+	for _, tc := range []struct {
+		atA    float64
+		after  time.Duration
+		offerW float64
+	}{
+		{26, 61 * time.Second, 8970}, // 2 A over
+		{28, 37 * time.Second, 7590}, // 4 A over
+		{30, 26 * time.Second, 6210}, // 6 A over, at 1.2 × In exactly
+	} {
+		s := fuseHeatSite(t)
+		s.addHouseA(tc.atA-20, 0, 0)
+		took, offer := s.firstCut(3 * time.Minute)
+		if took < tc.after-2*time.Second || took > tc.after+2*time.Second {
+			t.Errorf("%.0f A on L1 cut after %v, want ~%v", tc.atA, took, tc.after)
+		}
+		if offer != tc.offerW {
+			t.Errorf("%.0f A on L1 cut to %.0f W, want %.0f W", tc.atA, offer, tc.offerW)
+		}
+		s.run(time.Minute)
+		if a := s.phaseA(); a[0] > 24+1e-9 {
+			t.Errorf("%.0f A on L1: L1 at %.2f A after the cut", tc.atA, a[0])
+		}
+	}
+}
+
+// Short house spikes, even past the fuse on all three phases at once, fit
+// in the heat budget and never move the offer.
+func TestEVHardLimitHeatBudgetCarriesHouseSpikes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		l1, l2, l3 float64
+		lasts      time.Duration
+	}{
+		// A three-phase heat pump compressor start: 28 A on every phase,
+		// 19.3 kW in total against 16.9 kW of fuse, for 5 s.
+		{"heat_pump_start", 8, 8, 8, 5 * time.Second},
+		// 29.5 A on L1, just under 1.2 × In, for 10 s.
+		{"l1_10s_under_instant", 9.5, 0, 0, 10 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fuseHeatSite(t)
+			from := s.now
+			s.addHouseA(tc.l1, tc.l2, tc.l3)
+			s.run(tc.lasts)
+			if s.maxGridW <= 16905 && tc.l2 > 0 {
+				t.Fatalf("setup: the spike never passed the total fuse ceiling (%.0f W)", s.maxGridW)
+			}
+			s.addHouseA(-tc.l1, -tc.l2, -tc.l3)
+			s.run(2 * time.Minute)
+			for _, w := range offerWatts(s.offersSince(from)) {
+				if w != 10350 {
+					t.Fatalf("spike moved the offer: %v", offerWatts(s.offersSince(from)))
+				}
+			}
+		})
+	}
+}
+
+// A three-phase oven that stays on spends the budget once and cuts once,
+// by what the meter shows over the working limit, then holds.
+func TestEVHardLimitSustainedOvenCutsOnceAfterBudget(t *testing.T) {
+	s := fuseHeatSite(t)
+	from := s.now
+	s.addHouseA(5.5, 5.5, 5.5) // 25.5 A per phase, 17.6 kW against 16.9 kW
+	took, offer := s.firstCut(3 * time.Minute)
+	// θ goes from 400 toward 650.25 A² and passes 576 after
+	// 60 × ln(250.25/74.25) = 72.9 s.
+	if took < 71*time.Second || took > 75*time.Second || offer != 8970 {
+		t.Fatalf("oven cut after %v to %.0f W, want ~73 s to 8,970 W", took, offer)
+	}
+	s.run(5 * time.Minute)
+	got := offerWatts(s.offersSince(from))
+	for i, w := range got {
+		if w != 10350 && w != 8970 || i > 0 && w > got[i-1] {
+			t.Fatalf("oven gave offers %v, want one cut to 8,970 W", got)
+		}
+	}
+	if a := s.phaseA(); a[0] > 24 || s.state.fuseHeat.worstA() > 24 {
+		t.Fatalf("after the cut L1 %.2f A, heat %.2f A", a[0], s.state.fuseHeat.worstA())
+	}
+}
+
+// Above 1.2 × In a phase gets no budget: the first reading cuts it back to
+// the working limit, even for a spike that would fit in the heat budget.
+func TestEVHardLimitCutsAtOnceAboveInstantLimit(t *testing.T) {
+	for _, tc := range []struct {
+		atA    float64
+		offerW float64
+	}{{31, 5520}, {32, 4830}} {
+		s := fuseHeatSite(t)
+		s.addHouseA(tc.atA-20, 0, 0)
+		took, offer := s.firstCut(10 * time.Second)
+		if took != time.Second || offer != tc.offerW {
+			t.Fatalf("%.0f A cut after %v to %.0f W, want the first reading to %.0f W", tc.atA, took, offer, tc.offerW)
+		}
+	}
+}
+
+// A silent meter holds the heat, and its first reading back steps it over
+// the gap: the cut lands when it would have with readings all along.
+func TestEVHardLimitHeatBudgetAcrossMeterGap(t *testing.T) {
+	s := fuseHeatSite(t)
+	s.addHouseA(6, 0, 0) // 26 A on L1
+	s.meterSilent = true
+	held := s.state.fuseHeat.sq
+	s.run(30 * time.Second)
+	if s.offer() != 10350 || s.state.fuseHeat.sq != held {
+		t.Fatalf("during the gap: offer %.0f W heat %v, want %v", s.offer(), s.state.fuseHeat.sq, held)
+	}
+	s.meterSilent = false
+	took, offer := s.firstCut(2 * time.Minute)
+	if took += 30 * time.Second; took < 59*time.Second || took > 63*time.Second || offer != 8970 {
+		t.Fatalf("26 A with a 30 s gap cut after %v to %.0f W, want ~61 s to 8,970 W", took, offer)
+	}
+}
+
+// After a Core restart the heat starts at the first reading. Restarting
+// 30 s into 26 A on L1 counts the fuse as already at 26 A and cuts at once,
+// which is conservative only because that reading is high.
+func TestEVHardLimitRestartStartsHeatAtFirstReading(t *testing.T) {
+	s := fuseHeatSite(t)
+	s.addHouseA(6, 0, 0)
+	s.run(30 * time.Second)
+	if s.offer() != 10350 {
+		t.Fatalf("setup: cut before the budget: %.0f W", s.offer())
+	}
+	s.boot()
+	took, offer := s.firstCut(5 * time.Second)
+	if took != time.Second || offer != 8970 {
+		t.Fatalf("restart at 26 A cut after %v to %.0f W, want the first reading to 8,970 W", took, offer)
+	}
+}
