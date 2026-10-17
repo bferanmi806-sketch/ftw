@@ -497,8 +497,9 @@ key ends as from a stranger. The watch exchange refuses it too.
 - **A warning first.** A day before a grant runs out, the box pushes
   `agent.expiring` to every owner, whatever the grant's length.
 - **The owner picks the length.** For an `agent`, the app and the box page
-  offer 1, 7, 30 and 90 days and a year, and start at 30 days. They offer
-  nothing past the offer's `ttlS` or the box's `longestMs` for the role.
+  offer 1, 7, 30 and 90 days and a year. The app starts at 30 days, the box
+  page at a week. Neither offers more than the offer's `ttlS` or the box's
+  `longestMs` for the role.
 
 ### Mixed versions
 
@@ -585,9 +586,10 @@ above and its approval key, and an agent can never reach them.
   every route, the narrowing ones too.
 - **The page checks before it asks for a code,** since a code works once.
   `GET /api/agents` carries `box {offers, lookup, clock, nowMs, markMs,
-  widen}`: whether this build pins an offer key, FTW Cloud's code lookup on
-  the host this build links to, whether the clock is `ok`, `unsynced` or
-  `behind` its mark, and whether this request could widen access. It also
+  widen, longestMs}`: whether this build pins an offer key, FTW Cloud's code
+  lookup on the host this build links to, whether the clock is `ok`,
+  `unsynced` or `behind` its mark, whether this request could widen access,
+  and the longest grant the box takes for each role. It also
   carries `registry {agentOps, writeScopes,
   agentArgs}`, so the page names no scope, op or argument by hand.
 - **The box says why it will not take an offer.** `POST /api/agents/offer`

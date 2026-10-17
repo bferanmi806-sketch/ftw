@@ -83,3 +83,12 @@ func TestAYearLongGrantWarnsInItsLastDay(t *testing.T) {
 		t.Fatalf("%d warnings in the last day, want 1", expiring)
 	}
 }
+
+// The box page learns from the box's facts how long it may let each kind of
+// access last, so it offers nothing the box would refuse.
+func TestTheBoxPageIsToldTheLongestGrant(t *testing.T) {
+	got := boxPageAgents{&agentPorts{}}.Facts().LongestMs
+	if got[protocol.RoleAgent] != protocol.AgentMaxMs || got[protocol.RoleSupport] != protocol.SupportMaxMs {
+		t.Fatalf("longestMs = %v", got)
+	}
+}

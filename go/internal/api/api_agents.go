@@ -78,6 +78,9 @@ type AgentFacts struct {
 	// The list sets it per request, so the page stops before a code is
 	// spent on a grant the box would refuse.
 	Widen bool `json:"widen"`
+	// LongestMs is the longest grant the box takes for each role, so the
+	// page offers no length the box would refuse.
+	LongestMs map[string]int64 `json:"longestMs"`
 }
 
 // The agent clock as the box page reports it.
