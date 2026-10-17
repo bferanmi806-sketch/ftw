@@ -6,7 +6,11 @@
 # commits this command fails with WARNING: DATA RACE.
 set -euo pipefail
 cd "$(dirname "$0")/../../go"
-exec go test -race -count=1 -timeout 900s \
+# Wall-clock budget tests assert speed, not memory safety. The race
+# detector makes code 5-10x slower, so they fail here without a bug; the
+# plain test job still runs them.
+skip='^TestForecastRetentionLargeOverflowWithinScoringBudget$'
+exec go test -race -count=1 -timeout 900s -skip "$skip" \
   ./internal/control/... ./internal/loadpoint/... ./internal/telemetry/... \
   ./internal/drivers/... ./internal/api/... ./internal/state/... \
   ./internal/mpc/... ./internal/cars/... ./internal/appproto/... \
