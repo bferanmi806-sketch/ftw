@@ -18,24 +18,26 @@ The helpers live in `scripts/`. Run them from the repository root.
 .cursor/skills/verify-ftw/scripts/launch.sh
 ```
 
+It needs Python 3, `lsof` and the repo's Go toolchain on macOS or Linux.
 It builds `ftw`, `sim-ferroamp` and `sim-sungrow` with the repo's Go
 toolchain, writes a config from `config.local.example.yaml` with the
 ports below, and starts all three. It fetches the bundled drivers first if
-`drivers/` is empty. Ready means `GET /api/status` reports at least one
-driver with `status: ok` and a `grid_w` value, not just that the port
-answers. A cold start takes about 15 seconds after the build.
+`drivers/` is empty. Ready means all three recorded processes are alive,
+Core owns the API port, both simulator drivers report `status: ok`, and
+`grid_w` is numeric. A cold start takes about 15 seconds after the build.
 
 | What | Default | Override |
 |---|---|---|
 | API and web UI | `127.0.0.1:18080` | `FTW_VERIFY_API_PORT` |
-| Ferroamp MQTT broker | `:21883` | `FTW_VERIFY_MQTT_PORT` |
+| Ferroamp MQTT broker | `127.0.0.1:21883` | `FTW_VERIFY_MQTT_PORT` |
 | Sungrow Modbus TCP | `127.0.0.1:25502` | `FTW_VERIFY_MODBUS_PORT` |
 | OCPP 1.6 / 2.0.1 | `18887` / `18888` | `FTW_VERIFY_OCPP_PORT`, `FTW_VERIFY_OCPP201_PORT` |
 | Scratch state, logs, pids | `$TMPDIR/ftw-verify` | `FTW_VERIFY_DIR` |
 | Evidence | `.verify-evidence/` | `FTW_VERIFY_EVIDENCE` |
 
 Two instances can run side by side when every port and `FTW_VERIFY_DIR`
-differ. `launch.sh` refuses to start over an instance it already started.
+differ. `launch.sh` refuses occupied ports or an existing scratch directory.
+It stops its child processes if startup fails and keeps the logs for diagnosis.
 
 ## Doctor
 
@@ -45,7 +47,8 @@ differ. `launch.sh` refuses to start over an instance it already started.
 
 Read-only. It checks that every process this skill started is alive, that
 our `ftw` process owns the API port, and prints each driver's status, the
-grid power and the mode. Run it first whenever anything looks off.
+grid power and the mode. Process checks include start time and command, so
+a reused PID fails the check. Run it first whenever anything looks off.
 
 ## Drive
 
@@ -57,13 +60,18 @@ registered in `go/internal/api/api.go` (`s.handle("POST /api/mode", ...)`).
 - `GET /api/modes` lists valid modes; `POST /api/mode {"mode": "..."}`
   changes it.
 
-`scripts/drive-mode.sh <mode>` runs the mode journey end to end. See
+`scripts/drive-mode.sh idle` runs the supported mode journey end to end.
+Other modes need their own dispatch assertions. The helper checks process
+identity and API-port ownership before each request, including the POST. See
 `features/` for what each feature's end state must show.
 
 ## Evidence
 
-Each drive writes a directory under `.verify-evidence/` with the request
-response, `/api/status` before and after, and the Core log. A proof must:
+Each drive writes a directory under `.verify-evidence/` with the request,
+its time and response, `/api/status` before and after, and the Core log.
+It requires both batteries in dispatch and feedback, accepted 0 W commands,
+fresh readings, and command and observation times after this action.
+A proof must:
 
 - use the public API path, never internal setters or test-only endpoints;
 - capture the action and the resulting state, including what Core sent to
@@ -80,8 +88,11 @@ same MQTT and Modbus boundary that real devices use.
 .cursor/skills/verify-ftw/scripts/cleanup.sh
 ```
 
-It stops only the pids `launch.sh` recorded and deletes the scratch state.
+It checks recorded process identities before signalling them and deletes the scratch state.
 It never kills by process name and keeps `.verify-evidence/`.
+It refuses reused PIDs or a run directory without a valid instance record.
+If startup failed before writing that record, the launcher already stopped
+its children; inspect the retained logs and choose a new scratch directory.
 
 ## Gotchas
 

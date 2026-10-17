@@ -18,6 +18,9 @@ Web UI mode selector, or the app.
 `.cursor/skills/verify-ftw/scripts/drive-mode.sh idle`. It passes when
 `/api/status` reports `mode: idle`, every `dispatch[].target_w` is 0 and every
 battery's `control_feedback[].sent_w` is 0 after three control ticks.
+Both named batteries must appear exactly once in each list. The feedback
+must show an accepted command and fresh readings, with command and
+observation times after this request. Missing feedback is a failure.
 
 ## Gotchas
 
