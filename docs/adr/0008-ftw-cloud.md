@@ -313,3 +313,11 @@ only the existing group thresholds. Withdrawal deletes unpublished rows
 when Cloud receives the signed roster; offline withdrawal takes effect on
 reconnect. Published group totals remain. Native consent UI must adopt the
 new policy before it can enable this scope.
+
+C8 stays off until its signed DPIA is recorded. The service starts with no
+approved statistics policy. Only an explicit operator setting enables the
+exact policy in signed `hello_ok`; Core sends no hours without that signal,
+even if an owner previously chose to contribute. The owner policy response
+reports this readiness so native clients can explain the wait. Pausing the
+service policy stops collection while withdrawal and retention still run.
+Deploying this code does not sign the DPIA or accept a household's consent.
