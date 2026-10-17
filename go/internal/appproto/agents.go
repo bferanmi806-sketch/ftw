@@ -626,7 +626,7 @@ func (h *Handler) onAgentList(env Envelope) error {
 	}
 	defer h.cfg.Agents.tell("", protocol.AgentDecided{})
 	now, _ := h.wall()
-	out := protocol.AgentList{Agents: []protocol.AgentRow{}, Keys: []protocol.ApprovalKeyInfo{}}
+	out := protocol.AgentList{Agents: []protocol.AgentRow{}, Keys: []protocol.ApprovalKeyInfo{}, LongestMs: protocol.LongestMs()}
 	if h.isAgent() {
 		for _, row := range h.cfg.Access.Agents() {
 			if row.ID == h.selfID() {
