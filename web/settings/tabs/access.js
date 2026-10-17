@@ -566,7 +566,8 @@
     var input = el("input", { type: "number", id: id, min: String(min), max: String(max), step: String(step), value: String(value) });
     return el("div", { className: "access-cap" }, [
       el("label", { for: id, text: label }),
-      el("div", { className: "access-cap-input" }, [input, el("span", { className: "access-quiet", text: unit + ", at most " + max })]),
+      el("div", { className: "access-cap-input" }, [input, el("span", { className: "access-quiet",
+        text: unit + ", at most " + Number(max).toLocaleString(undefined, { maximumFractionDigits: 3 }) })]),
     ]);
   }
 
