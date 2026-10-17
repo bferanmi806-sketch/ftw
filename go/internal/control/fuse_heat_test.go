@@ -400,3 +400,50 @@ func TestEVHardLimitSixteenAmpPeaksCutOnceAndSettle(t *testing.T) {
 		})
 	}
 }
+
+// Göran, 14:20:34Z on v0.147.2-beta.1: one Pixii reading gave 19,174 W of
+// total import while its worst phase was 5.7 A on a 25 A fuse. The total
+// against 16,905 W cut the car from 10,350 W to 8,081 W, and it took about a
+// minute to climb back. With phase currents the phases judge the fuse, so
+// the offer holds; without them the same total still cuts.
+func TestEVHardLimitHoldsWhenTotalImportDisagreesWithPhases(t *testing.T) {
+	store, state, points, configs := evMeterBudgetFixture(t, 0, nil, 10350, "3p")
+	state.SiteFuseSafetyA = 0.5 // 17,250 - 345 = 16,905 W, as on the site
+	t0 := time.Unix(1_792_246_834, 0)
+	now := t0
+	state.clock = func() time.Time { return now }
+	read := func(at time.Time, gridW float64, phaseA []float64) float64 {
+		t.Helper()
+		now = at
+		data := map[string]any{"control_power_available": true, "control_power_observed_at": at.Format(time.RFC3339Nano)}
+		if phaseA != nil {
+			data["l1_a"], data["l2_a"], data["l3_a"] = phaseA[0], phaseA[1], phaseA[2]
+		}
+		raw, _ := json.Marshal(data)
+		store.Update("meter", telemetry.DerMeter, gridW, nil, raw)
+		store.Get("meter", telemetry.DerMeter).UpdatedAt = at
+		capW, _ := EVFuseBudget(store, state, points, configs, 17250)
+		return capW
+	}
+	for i, r := range []struct {
+		gridW  float64
+		phaseA []float64
+	}{
+		{15334, []float64{12.3, 9.5, 7.9}},
+		{19174, []float64{5.7, 4.9, 4.1}}, // the reading that cut
+		{15334, []float64{12.3, 9.5, 7.9}},
+	} {
+		if capW := read(t0.Add(time.Duration(i)*time.Second), r.gridW, r.phaseA); capW < 10350 {
+			t.Fatalf("reading %d (%.0f W, worst phase %.1f A) cut the cap to %.0f W", i, r.gridW, r.phaseA[0], capW)
+		}
+	}
+
+	store, state, points, configs = evMeterBudgetFixture(t, 0, nil, 10350, "3p")
+	state.SiteFuseSafetyA = 0.5
+	now = t0
+	state.clock = func() time.Time { return now }
+	read(t0, 15334, nil)
+	if capW := read(t0.Add(time.Second), 19174, nil); math.Abs(capW-8081) > .01 {
+		t.Fatalf("without phase currents 19,174 W gave %.1f W, want 10,350 - 2,269 = 8,081 W", capW)
+	}
+}
