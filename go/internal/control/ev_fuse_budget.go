@@ -144,26 +144,31 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	if _, high, _, ok := s.evOffers.span(now); ok {
 		peakW = math.Max(peakW, high)
 	}
-	roomW, measured, worstA := s.evMeterRoomW(meter, gridW, pool.phases, fuseMaxW)
-	if roomW < 0 {
+	cutRoomW, riseRoomW, measured, worstA := s.evMeterRoomW(meter, gridW, pool.phases, fuseMaxW)
+	if cutRoomW < 0 {
 		// The meter may still show any offer of the last evSettle. Taking
 		// the overage from the highest cuts each measured watt once.
-		lim.capW, lim.roomSince = math.Min(prev, math.Max(0, peakW+roomW)), time.Time{}
+		lim.capW, lim.roomSince = math.Min(prev, math.Max(0, peakW+cutRoomW)), time.Time{}
 		if lim.capW < prev {
 			lim.changedAt, lim.raised = now, false
 			slog.Info("EV hard limit: site meter over limit", "grid_w", gridW, "worst_phase_a", worstA,
-				"overage_w", -roomW, "offer_w", peakW, "cap_w", lim.capW)
+				"import_limit_w", s.effectiveImportCeilingW(fuseMaxW), "overage_w", -cutRoomW, "offer_w", peakW, "cap_w", lim.capW)
 		}
 		return
 	}
-	// An increase needs a fresh reading and room left after our own battery
-	// commands that the meter may not show yet.
+	// An increase needs a fresh reading and room below the level increases
+	// may reach, left after our own battery commands that the meter may not
+	// show yet. Between that level and the import limit the cap holds.
 	room := 0.0
 	if _, fresh := qualifiedFuseObservation(meter, now); fresh && measured {
-		room = math.Max(0, roomW-s.pendingBatteryCommandsW(now))
+		room = math.Max(0, riseRoomW-s.pendingBatteryCommandsW(now))
 	}
 	step := evPhaseMarginA * s.SiteFuseVoltage * pool.phases
 	if pool.offerW <= 0 {
+		// A start needs room under the import ceiling itself. A car that
+		// could run only on the hour's slack would stop when the next hour
+		// starts.
+		room = math.Min(room, math.Max(0, s.importStartCeilingW(fuseMaxW)-gridW-s.pendingBatteryCommandsW(now)))
 		lim.capW, lim.changedAt, lim.raised = 0, now, false
 		if room < pool.minW+step {
 			lim.roomSince = time.Time{}
@@ -198,18 +203,20 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 }
 
 // evMeterRoomW is the measured room below the nearer limit, total import or
-// worst phase, in EV watts. Negative is an overage. measured is false when
-// the meter reports phase currents that cannot be read.
-func (s *State) evMeterRoomW(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64) (roomW float64, measured bool, worstA float64) {
-	roomW = s.effectiveImportCeilingW(fuseMaxW) - gridW
+// worst phase, in EV watts. cutW is below the import limit, negative on an
+// overage; riseW is below the level an increase may reach. measured is false
+// when the meter reports phase currents that cannot be read.
+func (s *State) evMeterRoomW(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64) (cutW, riseW float64, measured bool, worstA float64) {
+	cutW, riseW = s.effectiveImportCeilingW(fuseMaxW)-gridW, s.importRiseCeilingW(fuseMaxW)-gridW
 	worstA, present, valid := worstPhaseA(meter, s)
 	if !present {
-		return roomW, true, 0
+		return cutW, riseW, true, 0
 	}
 	if !valid {
-		return roomW, false, 0
+		return cutW, riseW, false, 0
 	}
-	return math.Min(roomW, (s.SiteFuseAmps-evPhaseMarginA-worstA)*s.SiteFuseVoltage*phases), true, worstA
+	phaseW := (s.SiteFuseAmps - evPhaseMarginA - worstA) * s.SiteFuseVoltage * phases
+	return math.Min(cutW, phaseW), math.Min(riseW, phaseW), true, worstA
 }
 
 // worstPhaseA reads the site's configured phases. present is false when the
