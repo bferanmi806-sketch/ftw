@@ -255,7 +255,7 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 // evMeterRoom is the measured room in EV watts. The fuse's part holds on
 // every reading. The import ceiling's parts are +Inf while it is off.
 type evMeterRoom struct {
-	fuseW       float64 // below the fuse less its margin and the worst phase; rises and starts
+	fuseW       float64 // below the fuse less its margin and the worst phase, read or heat; rises and starts
 	fuseCutW    float64 // what the fuse needs cut now, negative; see fuseHeat
 	limitW      float64 // below the hour's import limit; negative is an overage
 	riseW       float64 // below the level an increase may reach
@@ -285,7 +285,7 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 		for _, a := range amps {
 			r.worstA = math.Max(r.worstA, a)
 		}
-		r.fuseW = math.Min(r.fuseW, (limitA-r.worstA)*s.SiteFuseVoltage*phases)
+		r.fuseW = math.Min(r.fuseW, (limitA-s.fuseHeat.levelA(amps))*s.SiteFuseVoltage*phases)
 		// The phases measure the fuse itself; total import stands in only without them.
 		r.fuseCutW = -s.fuseHeat.overA(amps, limitA, fuseInstantFactor*s.SiteFuseAmps) * s.SiteFuseVoltage * phases
 	}

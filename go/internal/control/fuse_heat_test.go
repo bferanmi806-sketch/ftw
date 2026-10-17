@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/srcfl/ftw/go/internal/loadpoint"
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
@@ -266,5 +267,136 @@ func TestEVHardLimitRestartStartsHeatAtFirstReading(t *testing.T) {
 	took, offer := s.firstCut(5 * time.Second)
 	if took != time.Second || offer != 8970 {
 		t.Fatalf("restart at 26 A cut after %v to %.0f W, want the first reading to 8,970 W", took, offer)
+	}
+}
+
+// peaks runs the model on 17 A for 10 s and 14 A for gap, 30 times from
+// 14 A, at 1 s readings, and returns the highest filtered current and the
+// first second it was over limitA.
+func peaks(gap int, limitA float64) (maxA float64, firstOver int) {
+	var h fuseHeat
+	t := time.Unix(0, 0)
+	h.step(t, []float64{14})
+	for s := 1; s <= 30*(10+gap); s++ {
+		a := 14.0
+		if (s-1)%(10+gap) < 10 {
+			a = 17
+		}
+		h.step(t.Add(time.Duration(s)*time.Second), []float64{a})
+		maxA = math.Max(maxA, h.worstA())
+		if firstOver == 0 && h.sq[0] > limitA*limitA {
+			firstOver = s
+		}
+	}
+	return maxA, firstOver
+}
+
+// Fredrik, 17 Oct 2026: on a 16 A fuse a steady 17 A must come down, but
+// 10 s peaks to 17 A with 14 A between them may be fine in total, since a
+// fuse trips on heat. The working limit is 15 A. A phase cuts when its
+// filtered current is strictly over the limit; exactly on it is inside, as
+// for a reading. The 30 s pattern goes 0.011 A over in its seventh peak, so
+// either rule would cut it.
+func TestFuseHeatSixteenAmpPeaks(t *testing.T) {
+	for _, tc := range []struct {
+		gap       int
+		maxA      float64
+		firstOver int // 0: never
+	}{
+		{50, 14.78, 0},
+		{30, 15.01, 250},
+		{20, 15.24, 98},
+		{10, 15.70, 48},
+	} {
+		maxA, firstOver := peaks(tc.gap, 15)
+		if math.Abs(maxA-tc.maxA) > .005 || firstOver != tc.firstOver {
+			t.Errorf("17 A 10 s / 14 A %d s: max %.3f A, over at %d s; want %.2f A, %d s", tc.gap, maxA, firstOver, tc.maxA, tc.firstOver)
+		}
+	}
+	if got := secondsToSpend(14, 17, 15); got != 23 {
+		t.Errorf("a steady 17 A spent the budget after %d s, want 23 s", got)
+	}
+}
+
+// fuse16Site is Fredrik's case end to end: a 16 A fuse, 4 A of house load
+// and the car at 10 A on each phase, 14 A in all, settled.
+func fuse16Site(t *testing.T) *evMeterSite {
+	t.Helper()
+	s := newEVMeterSite(t, 0, 2760)
+	s.state.SiteFuseAmps = 16
+	s.ctrl.SetSiteFuse(loadpoint.SiteFuse{MaxAmps: 16, Voltage: 230, PhaseCnt: 3})
+	s.ctrl.SetFuseEVMax(func() (float64, bool) {
+		return EVFuseBudget(s.store, s.state, s.mgr.States(), s.mgr.Configs(), 16*690)
+	})
+	s.run(10 * time.Minute)
+	if s.offer() != 6900 || s.phaseA()[0] != 14 || math.Abs(s.state.fuseHeat.worstA()-14) > .01 {
+		t.Fatalf("setup: offer %.0f W L1 %.2f A heat %.2f A", s.offer(), s.phaseA()[0], s.state.fuseHeat.worstA())
+	}
+	return s
+}
+
+// The same peaks on L1 with the car charging: patterns whose heat stays
+// under 15 A never move the offer; the others cut once when the budget is
+// spent and settle where the peaks fit. A rise reads the heat as well as
+// the reading, so the car does not climb back between peaks and cut again.
+func TestEVHardLimitSixteenAmpPeaksCutOnceAndSettle(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		gap      time.Duration // 0: the 17 A stays
+		cutAfter time.Duration // 0: never
+		settleW  float64
+	}{
+		{"14A_50s", 50 * time.Second, 0, 6900},
+		{"14A_30s", 30 * time.Second, 250 * time.Second, 6210},
+		{"14A_20s", 20 * time.Second, 98 * time.Second, 6210},
+		{"14A_10s", 10 * time.Second, 48 * time.Second, 5520},
+		{"steady_17A", 0, 23 * time.Second, 5520},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fuse16Site(t)
+			from, maxHeat := s.now, 0.0
+			run := func(d time.Duration) {
+				for end := s.now.Add(d); s.now.Before(end); {
+					s.step()
+					maxHeat = math.Max(maxHeat, s.state.fuseHeat.worstA())
+				}
+			}
+			if tc.gap == 0 {
+				s.addHouseA(3, 0, 0)
+				run(10 * time.Minute)
+			} else {
+				for range 30 {
+					s.addHouseA(3, 0, 0)
+					run(10 * time.Second)
+					s.addHouseA(-3, 0, 0)
+					run(tc.gap)
+				}
+			}
+			var cuts []evTimed
+			offers := s.offersSince(from)
+			for i := 1; i < len(offers); i++ {
+				if offers[i].w < offers[i-1].w {
+					cuts = append(cuts, offers[i])
+				}
+			}
+			want := 0
+			if tc.cutAfter > 0 {
+				want = 1
+			}
+			if len(cuts) != want {
+				t.Fatalf("cuts %v, want %d", offerWatts(cuts), want)
+			}
+			if tc.cutAfter > 0 {
+				if took := cuts[0].at.Sub(from); took < tc.cutAfter-3*time.Second || took > tc.cutAfter+3*time.Second {
+					t.Errorf("cut after %v, want ~%v", took, tc.cutAfter)
+				}
+			}
+			if s.offer() != tc.settleW {
+				t.Errorf("settled at %.0f W, want %.0f W", s.offer(), tc.settleW)
+			}
+			if maxHeat > 15.2 {
+				t.Errorf("heat reached %.3f A on a 15 A working limit", maxHeat)
+			}
+		})
 	}
 }
