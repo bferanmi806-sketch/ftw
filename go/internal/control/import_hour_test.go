@@ -210,6 +210,7 @@ func feedMeter(st *State, store *telemetry.Store, now *time.Time, at time.Time, 
 	*now = at
 	store.Update("meter", telemetry.DerMeter, w, nil, nil)
 	store.Get("meter", telemetry.DerMeter).UpdatedAt = at
+	store.RecordDriverSuccess("meter")
 	st.ObserveSiteImport(store)
 }
 

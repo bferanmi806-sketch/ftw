@@ -78,15 +78,12 @@ func (s *State) ObserveSiteImport(store *telemetry.Store) {
 	if s == nil || store == nil {
 		return
 	}
-	meter := store.Get(s.SiteMeterDriver, telemetry.DerMeter)
-	if meter == nil || !finiteFuseValue(meter.RawW) {
+	gridW, at, ok := store.OnlineMeterW(s.SiteMeterDriver)
+	h := &s.importHour
+	if !ok || at.IsZero() || !at.After(h.lastAt) || at.After(s.now()) {
 		return
 	}
-	h, at := &s.importHour, meter.UpdatedAt
-	if at.IsZero() || !at.After(h.lastAt) || at.After(s.now()) {
-		return
-	}
-	w := math.Max(0, meter.RawW)
+	w := math.Max(0, gridW)
 	gap := false
 	if h.lastAt.IsZero() {
 		// No record: the hour so far is unknown.
