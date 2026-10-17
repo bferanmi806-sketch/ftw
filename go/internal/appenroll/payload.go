@@ -33,8 +33,8 @@ const (
 
 	// PayloadVersionHome is v2 with a sixth segment: the home id at FTW
 	// Cloud, base64url of its 26 ASCII characters, so a new phone knows
-	// where to dial before any session with the box. No shipped app reads
-	// it; each parser takes exactly five segments of v2.
+	// where to dial before any session with the box. Both the web client
+	// and iPhone read this form.
 	PayloadVersionHome = "v3"
 
 	// PayloadOrigin is where the app is served. It is also the passkey RP
@@ -63,7 +63,7 @@ func (i *Identity) SetHome(fn func() string) {
 //
 // lanHint is where the box believes it can be reached on the local network,
 // and is allowed to be empty: a box that does not know its own address should
-// say nothing rather than guess, and the app falls back to the relay.
+// say nothing rather than guess. The Cloud home id does not depend on it.
 func (i *Identity) EnrollmentURL(code []byte, lanHint string) (string, error) {
 	return i.enrollmentURL(code, lanHint, QRNamesHome)
 }
