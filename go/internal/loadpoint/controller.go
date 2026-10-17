@@ -56,8 +56,8 @@ type Controller struct {
 	tickDirectiveActive bool
 	tickDirectiveOK     bool
 	tickDirective       Directive
-	// offerPhase is each loadpoint's last offered phase mode (serial tick).
-	offerPhase map[string]string
+	// offerPeaks is each loadpoint's highest recent offer (serial tick).
+	offerPeaks map[string]offerPeak
 	// fuseResumeTicks is owned by the serial tick. A paused charger needs
 	// two consecutive dispatch ticks with room for a legal step.
 	fuseResumeTicks map[string]int
@@ -205,6 +205,11 @@ const nearTermLogCooldown = 10 * time.Minute
 const phaseSwitchMinHold = 30 * time.Minute
 
 const fuseResumeSafeTicks = 2
+
+// CommandSettle is how long a new current may take to reach the site meter.
+// Easee Cloud needs about 5-15 s (#1674). Until then the meter may still show
+// an earlier, higher offer.
+const CommandSettle = 20 * time.Second
 
 // defaultPhaseSplitW mirrors loadpoint.Config.PhaseSplitW's default —
 // 3680 W is a 16 A 1Φ ceiling at 230 V. Kept in sync with the comment
@@ -1562,14 +1567,7 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 	if w, ok := cmd["power_w"].(float64); ok {
 		offerW, haveOffer = w, true
 		c.manager.setCommandedForManual(lpCfg.ID, w, cmdReason, manualCommandUpdatedAt)
-		phase, _ := cmd["phase_mode"].(string)
-		if phase == "" {
-			phase = "3p" // The driver's locked default, as in phaseModeForFuse.
-		}
-		if c.offerPhase == nil {
-			c.offerPhase = map[string]string{}
-		}
-		c.offerPhase[lpCfg.ID] = phase
+		c.recordOfferPeak(now, lpCfg.ID, w, cmd)
 	}
 	payload, err := json.Marshal(cmd)
 	if err != nil {

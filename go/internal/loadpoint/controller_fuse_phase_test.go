@@ -159,11 +159,13 @@ func TestLoneZeroReadingKeepsOfferThroughPhaseGate(t *testing.T) {
 	sender := &fakeSender{}
 	c := newTestController(t, []Config{cfg}, nil, samples, sender)
 	c.SetSiteFuse(SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
-	c.SetPerPhaseMeterAmps(func() (float64, float64, float64, bool) { return 20.45, 17.05, 15.87, true })
+	l1 := 5.0 // The car starts while L1 has room for it.
+	c.SetPerPhaseMeterAmps(func() (float64, float64, float64, bool) { return l1, 2.2, 1.0, true })
 	c.SetFuseEVMax(func() (float64, bool) { return 16905, true })
 	c.SetManualHold(cfg.ID, ManualHold{PowerW: 10350, PhaseMode: "3p", Persistent: true})
 	c.TickWithDispatch(context.Background(), now, true)
-	for i, w := range []float64{0, 10242} {
+	l1 = 20.45
+	for i, w := range []float64{10242, 0, 10242} {
 		samples[cfg.DriverName] = EVSample{Connected: true, RequestActive: true, PowerW: w}
 		c.TickWithDispatch(context.Background(), now.Add(time.Duration(5*(i+1))*time.Second), true)
 		if command, known := lastSetCurrent(sender.calls); !known || command.power != 10350 {

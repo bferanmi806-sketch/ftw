@@ -16,11 +16,21 @@ type evTimed struct {
 	w  float64
 }
 
+// evReadings is how the charger's own power readings behave. The hard
+// limit must not care.
+type evReadings int
+
+const (
+	evReadingsNormal  evReadings = iota // a poll every 5 s, telemetryDelay old
+	evReadingsMissing                   // no reading at all
+	evReadingsHigh                      // 2 kW above the true draw
+)
+
 // evMeterSite runs one Easee-like 3p charger with Charge now against a
 // simulated 25 A site. A new current takes chargerDelay to reach the car.
 // Like Easee Cloud, the driver polls every 5 s and receives the draw as it
-// was telemetryDelay ago. The meter reads the physical import on every
-// one-second tick, and the loadpoint ticks right after it, as in main.go.
+// was telemetryDelay ago. The meter reads the physical import every second
+// unless silenced; dispatch stops when it is a minute old, as in main.go.
 type evMeterSite struct {
 	t                            *testing.T
 	now                          time.Time
@@ -29,19 +39,21 @@ type evMeterSite struct {
 	mgr                          *loadpoint.Manager
 	ctrl                         *loadpoint.Controller
 	chargerDelay, telemetryDelay time.Duration
+	readings                     evReadings
 	houseW                       float64
 	housePhaseA                  [3]float64
 	carMaxW                      float64 // the car takes at most this
 	carPaused, chargerIgnores    bool
+	meterSilent                  bool
+	loneZeroAt                   time.Time // one 0 W reading at this time
 	appliedW, evW                float64
 	reportedW                    float64
 	reportedAt, nextPoll         time.Time
+	meterAt                      time.Time
 	commands, draws              []evTimed
 	offers                       []evTimed // every ev_set_current
 	maxGridW                     float64
 }
-
-const evMeterSteps = "0,4140,4830,5520,6210,6900,7590,8280,8970,9660,10350"
 
 func newEVMeterSite(t *testing.T, ceilingW, houseW float64) *evMeterSite {
 	t.Helper()
@@ -103,8 +115,8 @@ func (s *evMeterSite) phaseA() [3]float64 {
 	return a
 }
 
-func (s *evMeterSite) emit(driver string, kind telemetry.DerType, w float64, extra map[string]any, at time.Time) {
-	d := map[string]any{"control_power_available": true, "control_power_observed_at": at.Format(time.RFC3339Nano)}
+func (s *evMeterSite) emit(driver string, kind telemetry.DerType, w float64, extra map[string]any) {
+	d := map[string]any{"control_power_available": true, "control_power_observed_at": s.now.Format(time.RFC3339Nano)}
 	for k, v := range extra {
 		d[k] = v
 	}
@@ -117,7 +129,7 @@ func (s *evMeterSite) emit(driver string, kind telemetry.DerType, w float64, ext
 // report delivers one poll. The receipt time is all the driver knows.
 func (s *evMeterSite) report(w float64) {
 	s.reportedW, s.reportedAt = w, s.now
-	s.emit("easee", telemetry.DerEV, w, nil, s.now)
+	s.emit("easee", telemetry.DerEV, w, nil)
 }
 
 func (s *evMeterSite) cloudW() float64 {
@@ -146,15 +158,25 @@ func (s *evMeterSite) step() {
 		s.evW = draw
 		s.draws = append(s.draws, evTimed{s.now, draw})
 	}
-	if !s.now.Before(s.nextPoll) {
-		s.report(s.cloudW())
+	if !s.now.Before(s.nextPoll) && s.readings != evReadingsMissing {
+		w := s.cloudW()
+		if s.readings == evReadingsHigh {
+			w += 2000
+		}
+		s.report(w)
 		s.nextPoll = s.now.Add(5 * time.Second)
 	}
-	a := s.phaseA()
+	if s.now.Equal(s.loneZeroAt) {
+		s.report(0)
+	}
 	grid := s.houseW + s.evW
 	s.maxGridW = math.Max(s.maxGridW, grid)
-	s.emit("meter", telemetry.DerMeter, grid, map[string]any{"l1_a": a[0], "l2_a": a[1], "l3_a": a[2]}, s.now)
-	s.ctrl.TickWithDispatch(context.Background(), s.now, true)
+	if !s.meterSilent {
+		a := s.phaseA()
+		s.emit("meter", telemetry.DerMeter, grid, map[string]any{"l1_a": a[0], "l2_a": a[1], "l3_a": a[2]})
+		s.meterAt = s.now
+	}
+	s.ctrl.TickWithDispatch(context.Background(), s.now, s.now.Sub(s.meterAt) <= time.Minute)
 	s.state.SetEVFuseDemands(s.ctrl.FuseDemands())
 }
 
@@ -171,22 +193,30 @@ func (s *evMeterSite) offer() float64 {
 	return s.offers[len(s.offers)-1].w
 }
 
-func (s *evMeterSite) offersSince(at time.Time) []float64 {
-	var out []float64
+func (s *evMeterSite) offersSince(at time.Time) []evTimed {
+	var out []evTimed
 	for _, o := range s.offers {
 		if !o.at.Before(at) {
-			out = append(out, o.w)
+			out = append(out, o)
 		}
 	}
 	return out
 }
 
-// steady brings the car to a constant draw with the telemetry caught up.
+func offerWatts(offers []evTimed) []float64 {
+	out := make([]float64, len(offers))
+	for i, o := range offers {
+		out[i] = o.w
+	}
+	return out
+}
+
+// steady brings the car to a constant draw.
 func (s *evMeterSite) steady(wantOffer float64) {
 	s.t.Helper()
 	s.run(3 * time.Minute)
-	if s.offer() != wantOffer || s.evW != wantOffer || s.reportedW != wantOffer {
-		s.t.Fatalf("setup: offer %.0f draw %.0f reported %.0f, want %.0f W", s.offer(), s.evW, s.reportedW, wantOffer)
+	if s.offer() != wantOffer || s.evW != wantOffer {
+		s.t.Fatalf("setup: offer %.0f draw %.0f, want %.0f W", s.offer(), s.evW, wantOffer)
 	}
 }
 
@@ -215,16 +245,17 @@ func TestEVHardLimitHoldsOfferThroughLoneZeroSample(t *testing.T) {
 	if capW < 10350 {
 		t.Fatalf("lone 0 W sample cut the hard cap to %.1f W", capW)
 	}
-	for _, w := range s.offersSince(zeroAt) {
+	for _, w := range offerWatts(s.offersSince(zeroAt)) {
 		if w != 10350 {
-			t.Fatalf("offer left 10,350 W after a lone 0 W sample: %v", s.offersSince(zeroAt))
+			t.Fatalf("offer left 10,350 W after a lone 0 W sample: %v", offerWatts(s.offersSince(zeroAt)))
 		}
 	}
 }
 
 // #1674, 23:45: a 7.5 kW import ceiling, the car at 9 A beside 0.9 kW of
 // house load, and Easee telemetry 5-15 s late. The charge started and
-// stopped every 30 s. It must start once and stay inside the ceiling.
+// stopped every 30 s. It must start once, keep a step of margin and stay
+// inside the ceiling.
 func TestEVHardLimitStartsOnceUnderImportCeilingWithLateTelemetry(t *testing.T) {
 	for _, delay := range []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second} {
 		t.Run(delay.String(), func(t *testing.T) {
@@ -236,11 +267,12 @@ func TestEVHardLimitStartsOnceUnderImportCeilingWithLateTelemetry(t *testing.T) 
 				if o.w > 0 {
 					started = true
 				} else if started {
-					t.Fatalf("start/stop cycle: offers %v", s.offersSince(time.Time{}))
+					t.Fatalf("start/stop cycle: offers %v", offerWatts(s.offers))
 				}
 			}
-			if !started || s.offer() != 6210 {
-				t.Fatalf("offer %.0f W, want a steady 6,210 W", s.offer())
+			// 7,500 - 900 W leaves 6,600 W; one 690 W step stays free.
+			if !started || s.offer() != 5520 {
+				t.Fatalf("offer %.0f W, want a steady 5,520 W", s.offer())
 			}
 			if s.maxGridW > 7500 {
 				t.Fatalf("grid reached %.0f W above the 7,500 W ceiling", s.maxGridW)
@@ -253,17 +285,17 @@ func TestEVHardLimitStartsOnceUnderImportCeilingWithLateTelemetry(t *testing.T) 
 // The offer steps down by the measured overage, once, and never stops.
 func TestEVHardLimitHouseStepStepsDownOnce(t *testing.T) {
 	s := newEVMeterSite(t, 7500, 900)
-	s.steady(6210)
+	s.steady(5520)
 	stepAt := s.now
-	s.setHouse(1940) // 1,940 + 6,210 = 8,150 W
+	s.setHouse(2630) // 2,630 + 5,520 = 8,150 W
 	s.run(evSettle + 10*time.Second)
-	got := s.offersSince(stepAt)
+	got := offerWatts(s.offersSince(stepAt))
 	for _, w := range got {
-		if w != 6210 && w != 5520 {
-			t.Fatalf("house step gave offers %v, want one step to 5,520 W", got)
+		if w != 5520 && w != 4830 {
+			t.Fatalf("house step gave offers %v, want one step to 4,830 W", got)
 		}
 	}
-	if s.offer() != 5520 || s.houseW+s.evW > 7500 {
+	if s.offer() != 4830 || s.houseW+s.evW > 7500 {
 		t.Fatalf("offer %.0f W grid %.0f W after the step", s.offer(), s.houseW+s.evW)
 	}
 }
@@ -272,13 +304,13 @@ func TestEVHardLimitHouseStepStepsDownOnce(t *testing.T) {
 // car resumes. Nothing stopped it while paused; the next meter reading cuts.
 func TestEVHardLimitCutsOnNextReadingWhenCarResumesIntoHouseLoad(t *testing.T) {
 	s := newEVMeterSite(t, 7500, 900)
-	s.steady(6210)
+	s.steady(5520)
 	s.carPaused = true
 	s.run(30 * time.Second)
 	s.setHouse(5000)
 	s.run(30 * time.Second)
 	offered := s.offer()
-	if offered < 6210 {
+	if offered < 5520 {
 		t.Fatalf("paused car lost its offer: %.0f W", offered)
 	}
 	s.carPaused = false
@@ -288,53 +320,174 @@ func TestEVHardLimitCutsOnNextReadingWhenCarResumesIntoHouseLoad(t *testing.T) {
 	}
 }
 
-// After a cut the cap rises one step per settle time, and only while the
-// car takes what it was offered. A paused car does not wind it up.
-func TestEVHardLimitRisesOneSeenStepAtATime(t *testing.T) {
-	s := newEVMeterSite(t, 7500, 900)
-	s.steady(6210)
-	s.carPaused = true
-	s.run(s.telemetryDelay + 5*time.Second) // The cloud now reports 0 W.
-	pausedOffer := s.offer()
-	s.setHouse(2600) // Room for the paused car only: no cut.
-	s.run(2 * time.Minute)
-	if s.offer() != pausedOffer {
-		t.Fatalf("cap moved %.0f -> %.0f W while the car reported 0 W", pausedOffer, s.offer())
-	}
-	s.carPaused = false
-	s.run(time.Minute) // 2,600 + 6,210 = 8,810 W: cut to 4,830 W
-	if s.offer() != 4830 {
-		t.Fatalf("offer %.0f W after a 1,310 W overage", s.offer())
-	}
-	s.setHouse(900)
-	recoveredAt := s.now
-	s.run(3 * time.Minute)
-	got := s.offersSince(recoveredAt)
-	for i := 1; i < len(got); i++ {
-		if got[i]-got[i-1] > 690 {
-			t.Fatalf("cap rose more than one step at once: %v", got)
+// After a cut the cap rises one step at a time. The next rise follows as
+// soon as the meter shows import rising with the last one; a car that does
+// not follow gets one step per settle time at most.
+func TestEVHardLimitRiseWaitsForMeterOrDwell(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		s := newEVMeterSite(t, 7500, 900)
+		s.steady(5520)
+		s.setHouse(2900) // 920 W over: cut to 4,140 W
+		s.run(10 * time.Second)
+		if s.offer() != 4140 {
+			t.Fatalf("offer %.0f W after a 920 W overage", s.offer())
 		}
-	}
-	if s.offer() != 6210 || s.houseW+s.evW > 7500 {
-		t.Fatalf("recovered to %.0f W at %.0f W grid", s.offer(), s.houseW+s.evW)
+		s.setHouse(900)
+		s.carPaused = paused
+		recoveredAt := s.now
+		s.run(2 * time.Minute)
+		var rises []evTimed
+		got := s.offersSince(recoveredAt)
+		for i := 1; i < len(got); i++ {
+			if got[i].w-got[i-1].w > 690 {
+				t.Fatalf("paused=%v: rose more than one step at once: %v", paused, offerWatts(got))
+			}
+			if got[i].w > got[i-1].w {
+				rises = append(rises, got[i])
+			}
+		}
+		if len(rises) < 2 {
+			t.Fatalf("paused=%v: rises %v, want at least two", paused, offerWatts(got))
+		}
+		gap := rises[1].at.Sub(rises[0].at)
+		if !paused && gap >= evSettle {
+			t.Fatalf("a rise the meter confirmed still waited %v", gap)
+		}
+		if paused && gap < evSettle {
+			t.Fatalf("an unconfirmed rise followed after %v", gap)
+		}
+		if !paused && (s.offer() != 5520 || s.houseW+s.evW > 7500-690) {
+			t.Fatalf("recovered to %.0f W at %.0f W grid, want 5,520 W with a step of margin", s.offer(), s.houseW+s.evW)
+		}
 	}
 }
 
-// A charger that ignores a cut still gets the next one once its old
-// current should have reached the meter.
+// A charger that ignores a cut gets the next one once its old current
+// should have reached the meter.
 func TestEVHardLimitCutsAgainAfterSettleWhenChargerIgnores(t *testing.T) {
 	s := newEVMeterSite(t, 7500, 900)
-	s.steady(6210)
+	s.steady(5520)
 	s.chargerIgnores = true
 	stepAt := s.now
-	s.setHouse(1940)
+	s.setHouse(2630)
 	s.run(evSettle - 2*time.Second)
-	if s.offer() != 5520 {
-		t.Fatalf("offers %v, want one cut within the settle time", s.offersSince(stepAt))
+	if s.offer() != 4830 {
+		t.Fatalf("offers %v, want one cut within the settle time", offerWatts(s.offersSince(stepAt)))
 	}
 	s.run(4 * time.Second)
-	if s.offer() >= 5520 {
-		t.Fatalf("ignored cut was not repeated: %v", s.offersSince(stepAt))
+	if s.offer() >= 4830 {
+		t.Fatalf("ignored cut was not repeated: %v", offerWatts(s.offersSince(stepAt)))
+	}
+}
+
+// The charger's readings never move the offer: missing for the whole run,
+// late by 15 s during a start, above what we offered, or a lone 0 W.
+func TestEVHardLimitOffersIgnoreChargerReadings(t *testing.T) {
+	scenario := func(configure func(*evMeterSite)) []float64 {
+		s := newEVMeterSite(t, 7500, 900)
+		configure(s)
+		s.run(90 * time.Second) // start
+		s.setHouse(2630)        // cut
+		s.run(time.Minute)
+		s.setHouse(900) // recover
+		s.run(2 * time.Minute)
+		return offerWatts(s.offers)
+	}
+	want := scenario(func(*evMeterSite) {})
+	for name, configure := range map[string]func(*evMeterSite){
+		"missing":     func(s *evMeterSite) { s.readings = evReadingsMissing },
+		"late_15s":    func(s *evMeterSite) { s.telemetryDelay = 15 * time.Second },
+		"above_offer": func(s *evMeterSite) { s.readings = evReadingsHigh },
+		"lone_zero":   func(s *evMeterSite) { s.loneZeroAt = s.now.Add(70 * time.Second) },
+	} {
+		got := scenario(configure)
+		if len(got) != len(want) {
+			t.Fatalf("%s: offers %v, want %v", name, got, want)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Fatalf("%s: offers %v, want %v", name, got, want)
+			}
+		}
+	}
+}
+
+// Easee power missing for 60 s mid-charge leaves the offer alone.
+func TestEVHardLimitHoldsThroughMissingChargerPower(t *testing.T) {
+	s := newEVMeterSite(t, 7500, 900)
+	s.steady(5520)
+	from := s.now
+	s.readings = evReadingsMissing
+	s.run(time.Minute)
+	s.readings = evReadingsNormal
+	s.run(30 * time.Second)
+	for _, w := range offerWatts(s.offersSince(from)) {
+		if w != 5520 {
+			t.Fatalf("missing charger power moved the offer: %v", offerWatts(s.offersSince(from)))
+		}
+	}
+}
+
+// A silent meter repeats its last reading. Nothing may rise on it, even
+// when that reading showed room and the settle time has long passed.
+func TestEVHardLimitNeverRisesOnSilentMeter(t *testing.T) {
+	s := newEVMeterSite(t, 7500, 900)
+	s.steady(5520)
+	s.meterSilent = true
+	s.setHouse(0) // 1,980 W of room the meter never shows
+	from := s.now
+	s.run(50 * time.Second) // under the one-minute dispatch gate
+	for _, w := range offerWatts(s.offersSince(from)) {
+		if w != 5520 {
+			t.Fatalf("offer moved on a silent meter: %v", offerWatts(s.offersSince(from)))
+		}
+	}
+}
+
+// A meter gap past the dispatch gate stops the charge. When the meter
+// returns, the car restarts only after the meter has kept showing room for
+// the restart dwell.
+func TestEVHardLimitRestartsAfterMeterGapOnlyOnSustainedRoom(t *testing.T) {
+	s := newEVMeterSite(t, 7500, 900)
+	s.steady(5520)
+	s.meterSilent = true
+	s.run(70 * time.Second)
+	if s.offer() != 0 {
+		t.Fatalf("stale meter left offer %.0f W", s.offer())
+	}
+	s.meterSilent = false
+	backAt := s.now
+	s.run(2 * time.Minute)
+	var restartAt time.Time
+	for _, o := range s.offersSince(backAt) {
+		if o.w > 0 {
+			restartAt = o.at
+			break
+		}
+	}
+	if restartAt.IsZero() || restartAt.Sub(backAt) < evRestartDwell {
+		t.Fatalf("restart %v after the meter returned, want at least %v", restartAt.Sub(backAt), evRestartDwell)
+	}
+	if s.maxGridW > 7500 {
+		t.Fatalf("grid reached %.0f W", s.maxGridW)
+	}
+}
+
+// Our own battery order the meter may not show yet blocks a rise, but
+// never cuts the car.
+func TestEVHardLimitBatteryOrderBlocksRiseNeverCuts(t *testing.T) {
+	s := newEVMeterSite(t, 7500, 900)
+	s.steady(5520)
+	s.setHouse(0) // room for a rise
+	from := s.now
+	for range 60 {
+		s.state.batteryCommands = map[string]commandLog{"pixii": commandLog{}.add(s.now.Add(-time.Second), 0).add(s.now, 3000)}
+		s.step()
+	}
+	for _, w := range offerWatts(s.offersSince(from)) {
+		if w != 5520 {
+			t.Fatalf("pending battery order moved the offer: %v", offerWatts(s.offersSince(from)))
+		}
 	}
 }
 
@@ -355,7 +508,7 @@ func evMeterBudgetFixture(t *testing.T, gridW float64, phaseA []float64, offerW 
 	return store, state, points, configs
 }
 
-// A known 3p car at 15 A beside 11 A of house load on L1: 26 A on a 24 A
+// A 3p car offered 15 A beside 11 A of house load on L1: 26 A on a 24 A
 // working limit. Two amps on three phases come off the offer at once.
 func TestEVHardLimitTrimsPhaseOverageFromOffer(t *testing.T) {
 	store, state, points, configs := evMeterBudgetFixture(t, 8280, []float64{26, 20, 20}, 10350, "3p")
@@ -378,18 +531,18 @@ func TestEVHardLimitStopsOnlyWhenOverageExceedsOfferLessMinimum(t *testing.T) {
 	}
 }
 
-// An idle car starts only with room for its minimum and a margin step, and
-// a single-phase or auto car may land its whole offer on the worst phase.
+// An idle car starts with a step of margin under the measured room, and a
+// single-phase or auto car may land its whole offer on the worst phase.
 func TestEVHardLimitIdleStartNeedsRoomOnDeclaredPhases(t *testing.T) {
 	for _, tc := range []struct {
 		name, phase string
 		worstA      float64
 		want        float64
 	}{
-		{"3p_room", "3p", 5, (24 - 5) * 690},
-		{"legacy_default", "", 5, (24 - 5) * 690},
-		{"1p_room", "1p", 5, (24 - 5) * 230},
-		{"auto_room", "auto", 5, (24 - 5) * 230},
+		{"3p_room", "3p", 5, (24 - 5 - 1) * 690},
+		{"legacy_default", "", 5, (24 - 5 - 1) * 690},
+		{"1p_room", "1p", 5, (24 - 5 - 1) * 230},
+		{"auto_room", "auto", 5, (24 - 5 - 1) * 230},
 		{"3p_below_minimum", "3p", 21.5, 0}, // 1,725 W < 1,380 + 690 W
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -402,9 +555,10 @@ func TestEVHardLimitIdleStartNeedsRoomOnDeclaredPhases(t *testing.T) {
 	}
 }
 
-// Missing or unreadable EV telemetry is not a reason to cut, and before the
-// first command a fresh reading bounds what the meter contains.
-func TestEVHardLimitIgnoresEVTelemetryForCuts(t *testing.T) {
+// A lone 0 W or unavailable charger reading is not a reason to cut, and
+// before our first command a charging car's reading earns no credit: the
+// meter alone decides.
+func TestEVHardLimitIgnoresChargerReadings(t *testing.T) {
 	for name, samples := range map[string][]string{
 		"lone_zero":   {`{"control_power_available":true}`, `{"control_power_available":true}`},
 		"unavailable": {`{"control_power_available":false}`},
@@ -426,7 +580,7 @@ func TestEVHardLimitIgnoresEVTelemetryForCuts(t *testing.T) {
 	points[0].CommandedKnown = false
 	store.Update("charger", telemetry.DerEV, 10242, nil, nil)
 	store.RecordDriverSuccess("charger")
-	if got, _ := EVFuseBudget(store, state, points, configs, 17250); got < 10242 {
-		t.Fatalf("restart with the car charging cut it to %.1f W", got)
+	if got, _ := EVFuseBudget(store, state, points, configs, 17250); got > (24-20.45-1)*690+.01 {
+		t.Fatalf("a car reading earned %.1f W before our first command", got)
 	}
 }
