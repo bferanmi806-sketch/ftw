@@ -15,6 +15,12 @@ type StatisticsSite interface {
 }
 
 func (w *writer) statistics(snap grantSnapshot, st *cadence, now time.Time) error {
+	w.link.mu.Lock()
+	ready := w.link.connected && w.link.serviceStatsPolicy == cloudwire.StatsPolicy
+	w.link.mu.Unlock()
+	if !ready {
+		return nil
+	}
 	source, ok := w.link.opts.Site.(StatisticsSite)
 	g := snap.g
 	if !ok || g == nil || g.Revoked || g.Controller != cloudwire.ControllerSourceful ||

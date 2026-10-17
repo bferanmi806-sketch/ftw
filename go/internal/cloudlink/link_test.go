@@ -215,7 +215,8 @@ type fakeService struct {
 	transports map[string]int
 	// kick drops this many connections right after hello_ok, so the box
 	// dials again.
-	kick int
+	kick        int
+	statsPolicy string
 	// usedEarly says, per QUIC connection, whether it took early data.
 	usedEarly []bool
 }
@@ -326,7 +327,7 @@ func (s *fakeService) serve(conn uplinkConn, ekm []byte) {
 		signer, _ = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	}
 	s.write(conn, signer, home, cloudwire.MsgHelloOK, cloudwire.HelloOK{
-		BoxNonce: hello.BoxNonce, EKM: okEKM, Have: map[string]string{}, RosterSeq: s.rosterSeqOK})
+		BoxNonce: hello.BoxNonce, EKM: okEKM, Have: map[string]string{}, RosterSeq: s.rosterSeqOK, StatsPolicy: s.statsPolicy})
 	if s.afterHello != nil {
 		go s.afterHello(conn, home)
 	}

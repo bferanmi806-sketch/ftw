@@ -241,15 +241,16 @@ type Link struct {
 	// sender acts within one tick.
 	wake chan struct{}
 
-	mu        sync.Mutex
-	seq       uint64
-	key       *ecdsa.PrivateKey
-	pk        []byte
-	home      string
-	link      *linkRecord
-	grant     *grantRecord
-	notice    string
-	connected bool
+	mu                 sync.Mutex
+	seq                uint64
+	key                *ecdsa.PrivateKey
+	pk                 []byte
+	home               string
+	link               *linkRecord
+	grant              *grantRecord
+	notice             string
+	connected          bool
+	serviceStatsPolicy string
 	// transport is how the uplink travels, or last travelled: quic or
 	// websocket. winners is the race's memory, the transport that opened
 	// first on each network.
@@ -823,6 +824,7 @@ type Status struct {
 	State            string `json:"state"`
 	StatisticsPolicy string `json:"statisticsPolicy"`
 	StatisticsActive bool   `json:"statisticsActive"`
+	StatisticsReady  bool   `json:"statisticsReady"`
 	// Link is off, on or ending: whether the box is linked, which the
 	// phones' tunnels need and the readable copy rides on.
 	Link string `json:"link"`
@@ -876,6 +878,7 @@ func (l *Link) Status() Status {
 		TunDropped: l.tunDropped,
 	}
 	s.StatisticsPolicy = cloudwire.StatsPolicy
+	s.StatisticsReady = l.connected && l.serviceStatsPolicy == cloudwire.StatsPolicy
 	if g := l.grant; g != nil {
 		s.StatisticsActive = !g.Revoked && g.StatsAtMs > 0 && g.StatsPolicy == cloudwire.StatsPolicy && len(g.StatsID) == 16 && slices.Contains(g.Purposes, protocol.CloudPurposeStats)
 	}

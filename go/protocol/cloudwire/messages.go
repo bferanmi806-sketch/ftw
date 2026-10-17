@@ -106,7 +106,8 @@ type Challenge struct {
 // HelloOK answers hello. The service signs it, and the box sends nothing but
 // hello before it has checked it.
 type HelloOK struct {
-	BoxNonce []byte `cbor:"boxNonce"`
+	StatsPolicy string `cbor:"statsPolicy,omitempty"`
+	BoxNonce    []byte `cbor:"boxNonce"`
 	// EKM is the service's TLS exporter value for this session. A proxy that
 	// ends TLS holds two sessions with two values, so the check fails there.
 	EKM []byte `cbor:"ekm"`

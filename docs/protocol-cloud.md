@@ -362,6 +362,7 @@ with two different values, so neither side's check passes through it.
    | `ekm` | bstr, 32 B | The service's exporter value for this TLS session |
    | `have` | map text→text | Tile id to etag, for the tiles the service holds |
    | `rosterSeq` | uint | The roster number the service holds |
+   | `statsPolicy` | text, optional | The statistics policy this service is approved to ingest. Missing means no statistics; the box sends none |
 
    `caps` and `grantId` describe the connection as it starts. The readable
    copy can turn on or off while the link stays up, so the service takes

@@ -124,7 +124,9 @@ func (s *Server) handleCloudStatsPolicy(w http.ResponseWriter, r *http.Request) 
 	if !s.cloudGate(w, r, false) {
 		return
 	}
+	available := s.deps != nil && s.deps.Cloud != nil && s.deps.Cloud.Status().StatisticsReady
 	writeJSON(w, http.StatusOK, map[string]any{
+		"available":                  available,
 		"policy":                     cloudwire.StatsPolicy,
 		"purpose":                    "Publish group totals for FTW use and energy; improve planning. No ads or household decisions.",
 		"fields":                     cloudwire.StatsMetricKeys,
