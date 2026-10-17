@@ -754,7 +754,7 @@ the service find it offline; it pairs over the relay or the home network.
 
 Signed box to service only. Never forwarded to phones or agents. The box
 sends at most one report per closed UTC hour, after fresh consent to
-`ftw-project-stats-2026-10-v1`. Older policies send nothing.
+`ftw-project-stats-2026-10-v3`. Older policies send nothing.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -1630,7 +1630,7 @@ constants, so `srcfl/ftw-cloud` need not spell them by hand.
 | Rule U drift margin, lifetime | 0.01 % of the time since learned; 24 hours |
 
 
-### Cloud terms and local statistics, policy version 2
+### Cloud terms and local statistics, policy version 3
 
 `ftw-cloud-2026-10-v3` includes `ftw-project-stats-2026-10-v3` for every Cloud
 home. `Grant.termsPolicy` carries the owner-accepted terms. Once the operator
