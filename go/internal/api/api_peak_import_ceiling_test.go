@@ -106,3 +106,28 @@ func TestPeakImportCeilingOffKeepsACeilingSetBeforeTheRecord(t *testing.T) {
 		t.Fatalf("off: ceiling %v, last %v; want 0 and 6,000", now, last)
 	}
 }
+
+// A ceiling the box cannot save is not applied: a restart would bring the
+// old one back, and the caller has to learn that the change did not hold.
+func TestPeakImportCeilingNotAppliedWhenTheSaveFails(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctrl := &control.State{PeakImportCeilingW: 6000}
+	srv := newCeilingServer(t, st, ctrl)
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/peak_import_ceiling", strings.NewReader(`{"peak_import_ceiling_w":0}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body=%s)", rr.Code, rr.Body.String())
+	}
+	if ctrl.PeakImportCeilingW != 6000 {
+		t.Fatalf("ceiling = %.0f W after a failed save, want 6,000", ctrl.PeakImportCeilingW)
+	}
+}

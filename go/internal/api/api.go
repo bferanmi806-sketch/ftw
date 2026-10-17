@@ -1840,7 +1840,6 @@ func (s *Server) handleSetPeakImportCeiling(w http.ResponseWriter, r *http.Reque
 	}
 	s.deps.CtrlMu.Lock()
 	prevW := s.deps.Ctrl.PeakImportCeilingW
-	s.deps.Ctrl.PeakImportCeilingW = req.PeakImportCeilingW
 	s.deps.CtrlMu.Unlock()
 	if s.deps.State != nil {
 		values := map[string]string{"peak_import_ceiling_w": strconv.FormatFloat(req.PeakImportCeilingW, 'f', 1, 64)}
@@ -1853,8 +1852,17 @@ func (s *Server) handleSetPeakImportCeiling(w http.ResponseWriter, r *http.Reque
 		if lastW > 0 {
 			values[peakImportCeilingLastKey] = strconv.FormatFloat(lastW, 'f', 1, 64)
 		}
-		_ = s.deps.State.SaveConfigValues(values)
+		// Save before applying, so the box never runs a ceiling that a
+		// restart would undo.
+		if err := s.deps.State.SaveConfigValues(values); err != nil {
+			slog.Warn("failed to persist peak_import_ceiling_w", "err", err)
+			writeJSON(w, 500, map[string]string{"error": "save failed: " + err.Error()})
+			return
+		}
 	}
+	s.deps.CtrlMu.Lock()
+	s.deps.Ctrl.PeakImportCeilingW = req.PeakImportCeilingW
+	s.deps.CtrlMu.Unlock()
 	writeJSON(w, 200, map[string]any{"status": "ok", "peak_import_ceiling_w": req.PeakImportCeilingW})
 }
 
