@@ -372,8 +372,8 @@ type AgentList struct {
 	Requests []Request         `cbor:"requests" json:"requests"`
 	Keys     []ApprovalKeyInfo `cbor:"keys" json:"keys"`
 	// LongestMs is the longest grant the box takes for each role, so a
-	// client offers no length the box would refuse.
-	LongestMs map[string]int64 `cbor:"longestMs" json:"longestMs"`
+	// client offers no length the box would refuse. Owners only.
+	LongestMs map[string]int64 `cbor:"longestMs,omitempty" json:"longestMs,omitempty"`
 }
 
 // LongestMs is the longest grant for each agent role, as agent.list tells

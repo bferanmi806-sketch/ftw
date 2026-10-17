@@ -202,10 +202,12 @@
   }
 
   // The longest grant the box takes for a role, in seconds, as its facts
-  // say. A box that says nothing is taken to allow 30 days.
+  // say. A box that says nothing took 30 days for an assistant, 14 for
+  // Sourceful and 90 for the release check.
+  var UNSTATED_S = { agent: 30 * DAY_S, support: 14 * DAY_S, release: 90 * DAY_S };
   function longestS(box, role) {
     var ms = Number(((box && box.longestMs) || {})[role]);
-    return ms > 0 ? Math.floor(ms / 1000) : 30 * DAY_S;
+    return ms > 0 ? Math.floor(ms / 1000) : UNSTATED_S[role] || 30 * DAY_S;
   }
 
   function lengthText(s) {

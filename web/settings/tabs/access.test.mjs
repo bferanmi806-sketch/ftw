@@ -193,6 +193,8 @@ describe("what the owner grants", () => {
     assert.equal(P.longestS(box, "support"), 14 * day);
     assert.equal(P.longestS({}, "agent"), 30 * day);
     assert.equal(P.longestS(null, "agent"), 30 * day);
+    assert.equal(P.longestS({}, "support"), 14 * day);
+    assert.equal(P.longestS({}, "release"), 90 * day);
     assert.deepEqual(P.lengthOptions(Math.min(365 * day, P.longestS(box, "agent"))),
       [day, 7 * day, 30 * day, 90 * day, 365 * day]);
     assert.deepEqual(P.lengthOptions(Math.min(365 * day, P.longestS({}, "agent"))), [day, 7 * day, 30 * day]);

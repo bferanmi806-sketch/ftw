@@ -609,7 +609,9 @@ above and its approval key, and an agent can never reach them.
   the owner types the consent page's code, and the page, in the owner's
   browser, fetches the signed offer from FTW Cloud's code lookup and posts
   it here. The owner may grant less: `scopes`, `ops`, `caps` and `ttlS`
-  replace the offer's when given.
+  replace the offer's when given. Without `ttlS` the grant lasts 30 days, or
+  the offer's length if shorter. A `ttlS` past the role's longest grant is
+  `E_CAP_EXCEEDED {cap: "expiresAtMs", max}`.
 - **Every route that widens access needs another device on the home
   network, signed in with the house password.** The box never reads the
   sign-in from loopback, so a browser on the box, or one through an SSH
