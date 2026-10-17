@@ -52,10 +52,10 @@ in the repository, not in the agent.
 
 ## The data
 
-`tools/agent-pitfalls/findings.py` is the lever. It extracts the findings,
+`docs/agent-pitfalls/findings.py` is the lever. It extracts the findings,
 classifies them, backtests them and prints the report. Classification and
 backtest are LLM judgements, made in batches of 40.
-`tools/agent-pitfalls/findings.csv` holds every label, so a reviewer can
+`docs/agent-pitfalls/findings.csv` holds every label, so a reviewer can
 spot-check any row.
 
 Codex labelled all 1,150 findings, and Grok labelled 920 of them
@@ -248,7 +248,7 @@ They are good first follow-ups once steps 1 and 2 land.
 
 - Whether the CI cost of the race job is worth it on every Core PR, or only
   on PRs that touch the listed packages.
-- Whether `tools/agent-pitfalls/` stays in the repo, or the plan merges
+- Whether `docs/agent-pitfalls/` stays in the repo, or the plan merges
   without it.
 - The order of steps 5–7. The backtest ranks S5 and S1 above S4 by count,
   and S1 and S4 above S5 by P1/High findings.

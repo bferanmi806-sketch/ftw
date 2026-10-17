@@ -1,6 +1,6 @@
 # Agent pitfalls
 
-The lever behind [docs/agent-friendly-plan.md](../../docs/agent-friendly-plan.md).
+The lever behind [docs/agent-friendly-plan.md](../agent-friendly-plan.md).
 
 ```bash
 gh api --paginate 'repos/srcfl/ftw/pulls/comments?per_page=100' | jq -s add > review_comments.json
