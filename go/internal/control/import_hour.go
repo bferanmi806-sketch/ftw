@@ -37,6 +37,9 @@ type hourImport struct {
 	ceilingW         float64 // ceiling the limits were set for; 0 = not set
 	limitW, riseW    float64
 	changedAt, cutAt time.Time
+
+	seen        bool    // a reading this hour has seen the ceiling setting
+	seenCeiling float64 // the setting it saw, 0 when off
 }
 
 // ImportHourStart is the local clock hour that holds t.
@@ -149,6 +152,15 @@ func (s *State) hourRateW(at time.Time) float64 {
 func (s *State) stepHourImportLimits(at time.Time, gap bool) {
 	h, ceiling := &s.importHour, s.PeakImportCeilingW
 	if !(ceiling > 0) {
+		ceiling = 0
+	}
+	if h.seen && ceiling != h.seenCeiling && ceiling > 0 {
+		// A ceiling set during the hour counts from now: the rest of the
+		// hour may average it, whatever the hour imported before.
+		h.importedWh, h.unknown = 0, at.Sub(h.start)
+	}
+	h.seen, h.seenCeiling = true, ceiling
+	if ceiling == 0 {
 		h.ceilingW = 0
 		return
 	}
@@ -186,30 +198,25 @@ func (s *State) importHourLimitsW() (limitW, riseW float64, ok bool) {
 	if s == nil || !(s.PeakImportCeilingW > 0) {
 		return 0, 0, false
 	}
-	h := &s.importHour
-	if h.ceilingW != s.PeakImportCeilingW || !s.importHourStart(s.now()).Equal(h.start) {
+	if !s.importHourMeasured() {
 		return s.PeakImportCeilingW, s.PeakImportCeilingW, true
 	}
-	return h.limitW, h.riseW, true
+	return s.importHour.limitW, s.importHour.riseW, true
 }
 
-// importRiseCeilingW is the import an increase may reach: the EV's rise or
-// start, and battery charge beside an EV that still wants power (EV first).
-// Never above effectiveImportCeilingW.
+// importHourMeasured reports whether this clock hour's import is measured
+// against the ceiling in force.
+func (s *State) importHourMeasured() bool {
+	h := &s.importHour
+	return s.PeakImportCeilingW > 0 && h.ceilingW == s.PeakImportCeilingW && s.importHourStart(s.now()).Equal(h.start)
+}
+
+// importRiseCeilingW is the import battery charge may reach beside an EV
+// that still wants power (EV first). Never above effectiveImportCeilingW.
 func (s *State) importRiseCeilingW(fuseMaxW float64) float64 {
 	eff := s.effectiveImportCeilingW(fuseMaxW)
 	if _, riseW, ok := s.importHourLimitsW(); ok && riseW < eff {
 		eff = riseW
-	}
-	return eff
-}
-
-// importStartCeilingW is the import an idle EV may start under: the rise
-// level, never above the ceiling itself.
-func (s *State) importStartCeilingW(fuseMaxW float64) float64 {
-	eff := s.importRiseCeilingW(fuseMaxW)
-	if s != nil && s.PeakImportCeilingW > 0 && s.PeakImportCeilingW < eff {
-		eff = s.PeakImportCeilingW
 	}
 	return eff
 }

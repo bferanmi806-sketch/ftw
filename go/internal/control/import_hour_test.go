@@ -300,6 +300,96 @@ func TestImportCeilingCountsPerLocalClockHour(t *testing.T) {
 	}
 }
 
+// #1674, Göran, 17 October 14:26–14:28 UTC (16:26 here): the 7.5 kW ceiling
+// went on with the car at 10,350 W beside 3.3 kW of house load. The car came
+// down to its 4,140 W minimum; one reading of 7,524 W, 24 W over the ceiling,
+// then stopped it, and it never restarted. On the hour's mean, 3.3 + 4.14 kW
+// = 7.44 kW holds the ceiling: the lone reading changes nothing.
+func TestImportCeilingLoneReadingOverCeilingKeepsMinimum(t *testing.T) {
+	h := newHourSite(t, 0, 3300, clock(17, 16, 0))
+	h.run(26*time.Minute + 8*time.Second)
+	h.ceilingW, h.state.PeakImportCeilingW = 7500, 7500
+	onAt, onWh := h.now, h.hourWh[clock(17, 16, 0)]
+	h.run(time.Minute + 50*time.Second) // to 16:27:58
+	h.setHouse(3384)
+	h.step() // 16:27:59
+	if grid := h.houseW + h.evW; grid != 7524 {
+		t.Fatalf("setup: grid %.0f W at 16:27:59, want 7,524 W", grid)
+	}
+	h.setHouse(3300)
+	h.run(32*time.Minute + time.Second) // to 17:00
+	h.logChanges()
+	got := h.offersSince(onAt)
+	for _, o := range got {
+		if o.w < 4140 {
+			t.Fatalf("offer %.0f W at %s under the ceiling", o.w, o.at.In(hourTestZone).Format("15:04:05"))
+		}
+	}
+	if len(got) == 0 || got[len(got)-1].w != 4140 {
+		t.Fatalf("offers %v, want the car held at 4,140 W", offerWatts(got))
+	}
+	mean := (h.hourWh[clock(17, 16, 0)] - onWh) / h.now.Sub(onAt).Hours()
+	if mean > 7500 {
+		t.Fatalf("import averaged %.0f W since the ceiling went on", mean)
+	}
+}
+
+// A stop under the ceiling restarts on the hour's budget: the dwell's mean
+// house load leaves room for the 4,140 W minimum, without the step of margin
+// the fuse keeps. With 3.3 kW of house load that room is 4.2 kW; a step of
+// margin on the latest reading (4,830 W) never restarted the car.
+func TestImportCeilingRestartsOnHoursBudget(t *testing.T) {
+	h := newHourSite(t, 7500, 3300, clock(17, 16, 0))
+	h.run(20 * time.Minute)
+	if h.offer() != 4140 {
+		t.Fatalf("setup: offer %.0f W, want the 4,140 W minimum", h.offer())
+	}
+	h.setHouse(3700) // 7.84 kW: a real overage, not one reading
+	h.run(2 * time.Minute)
+	if h.offer() != 0 {
+		t.Fatalf("offer %.0f W after two minutes over the hour's budget, want a stop", h.offer())
+	}
+	backAt := h.now
+	h.setHouse(3300)
+	h.run(5 * time.Minute)
+	h.logChanges()
+	got := h.offersSince(backAt)
+	if len(got) == 0 || got[len(got)-1].w != 4140 {
+		t.Fatalf("offers after the house came back %v, want a restart at 4,140 W", offerWatts(got))
+	}
+	restartedAt := got[len(got)-1].at
+	h.run(32*time.Minute + time.Second) // to 17:00
+	h.logChanges()
+	for _, o := range h.offersSince(restartedAt) {
+		if o.w == 0 {
+			t.Fatalf("the car stopped again at %s", o.at.In(hourTestZone).Format("15:04:05"))
+		}
+	}
+	if mean := h.meanW(clock(17, 16, 0)); mean > 7500 {
+		t.Fatalf("hour mean import %.0f W over the 7,500 W ceiling", mean)
+	}
+}
+
+// A ceiling set during the hour counts from then: the rest of the hour may
+// average it, whatever the hour imported before.
+func TestImportCeilingSetMidHourCountsFromThen(t *testing.T) {
+	var now time.Time
+	st, store := newImportHourState(&now)
+	st.PeakImportCeilingW = 0
+	at := clock(17, 16, 0)
+	for ; !at.After(clock(17, 16, 26)); at = at.Add(2 * time.Second) {
+		feedMeter(st, store, &now, at, 13650)
+	}
+	st.PeakImportCeilingW = 7500
+	feedMeter(st, store, &now, at, 13650)
+	if l, r, _ := st.importHourLimitsW(); math.Abs(l-7500) > 1e-6 || math.Abs(r-7500) > 1e-6 {
+		t.Fatalf("limits %.0f/%.0f W, want the ceiling from now on", l, r)
+	}
+	if left, _, _ := st.ImportHourStatus(17250); math.Abs(left-7500*now.Sub(clock(17, 16, 0)).Hours()*-1-7500) > 1 {
+		t.Fatalf("budget left %.0f Wh, want the ceiling for the time left", left)
+	}
+}
+
 // A car that could run only on the hour's slack does not start: with 5 kW
 // of house load under a 7.5 kW ceiling, its 4.14 kW minimum fits only late
 // in each hour and would stop when the next one starts.
