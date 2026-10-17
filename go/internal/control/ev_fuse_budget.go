@@ -56,6 +56,8 @@ func (l commandLog) add(now time.Time, w float64) commandLog {
 }
 
 // span returns the lowest, highest and latest command the meter may show.
+// When the log is younger than evSettle, the meter may still show the time
+// before our first command, which counts as 0.
 func (l commandLog) span(now time.Time) (low, high, latest float64, ok bool) {
 	for j, c := range l {
 		if j+1 < len(l) && now.Sub(l[j+1].at) >= evSettle {
@@ -68,6 +70,9 @@ func (l commandLog) span(now time.Time) (low, high, latest float64, ok bool) {
 			high = c.w
 		}
 		latest, ok = c.w, true
+	}
+	if ok && now.Sub(l[0].at) < evSettle {
+		low, high = math.Min(low, 0), math.Max(high, 0)
 	}
 	return low, high, latest, ok
 }
@@ -103,7 +108,11 @@ func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State
 		return 0, true
 	}
 	meter := store.Get(state.SiteMeterDriver, telemetry.DerMeter)
-	if meter == nil || !finiteFuseValue(meter.RawW) {
+	if meter == nil {
+		return 0, true
+	}
+	gridW := meter.RawW
+	if !finiteFuseValue(gridW) {
 		return 0, true
 	}
 	lim := &state.evLimit
@@ -116,12 +125,12 @@ func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State
 		state.evOffers = state.evOffers.add(state.now(), pool.offerW)
 	}
 	if !lim.set || meter.UpdatedAt.After(lim.readingAt) {
-		state.stepEVMeterLimit(meter, pool, fuseMaxW)
+		state.stepEVMeterLimit(meter, gridW, pool, fuseMaxW)
 	}
 	return lim.capW, true
 }
 
-func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, pool evPool, fuseMaxW float64) {
+func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, pool evPool, fuseMaxW float64) {
 	lim, now, at := &s.evLimit, s.now(), meter.UpdatedAt
 	first := !lim.set
 	gap := first || at.Sub(lim.readingAt) > evSettle
@@ -135,14 +144,14 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, pool evPool, fuseM
 	if _, high, _, ok := s.evOffers.span(now); ok {
 		peakW = math.Max(peakW, high)
 	}
-	roomW, measured, worstA := s.evMeterRoomW(meter, pool.phases, fuseMaxW)
+	roomW, measured, worstA := s.evMeterRoomW(meter, gridW, pool.phases, fuseMaxW)
 	if roomW < 0 {
 		// The meter may still show any offer of the last evSettle. Taking
 		// the overage from the highest cuts each measured watt once.
 		lim.capW, lim.roomSince = math.Min(prev, math.Max(0, peakW+roomW)), time.Time{}
 		if lim.capW < prev {
 			lim.changedAt, lim.raised = now, false
-			slog.Info("EV hard limit: site meter over limit", "grid_w", meter.RawW, "worst_phase_a", worstA,
+			slog.Info("EV hard limit: site meter over limit", "grid_w", gridW, "worst_phase_a", worstA,
 				"overage_w", -roomW, "offer_w", peakW, "cap_w", lim.capW)
 		}
 		return
@@ -181,18 +190,18 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, pool evPool, fuseM
 	// The meter shows the last change once import rose with the step, or
 	// in any reading taken evSettle after it.
 	seen := at.Sub(lim.changedAt) >= evSettle ||
-		(lim.raised && at.After(lim.changedAt) && meter.RawW >= lim.raisedGridW+step/2)
+		(lim.raised && at.After(lim.changedAt) && gridW >= lim.raisedGridW+step/2)
 	if lim.capW < pool.wantW && room >= 2*step && seen {
 		lim.capW += step
-		lim.changedAt, lim.raised, lim.raisedGridW = now, true, meter.RawW
+		lim.changedAt, lim.raised, lim.raisedGridW = now, true, gridW
 	}
 }
 
 // evMeterRoomW is the measured room below the nearer limit, total import or
 // worst phase, in EV watts. Negative is an overage. measured is false when
 // the meter reports phase currents that cannot be read.
-func (s *State) evMeterRoomW(meter *telemetry.DerReading, phases, fuseMaxW float64) (roomW float64, measured bool, worstA float64) {
-	roomW = s.effectiveImportCeilingW(fuseMaxW) - meter.RawW
+func (s *State) evMeterRoomW(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64) (roomW float64, measured bool, worstA float64) {
+	roomW = s.effectiveImportCeilingW(fuseMaxW) - gridW
 	worstA, present, valid := worstPhaseA(meter, s)
 	if !present {
 		return roomW, true, 0

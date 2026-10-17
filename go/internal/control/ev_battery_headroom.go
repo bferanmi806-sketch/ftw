@@ -7,10 +7,9 @@ import (
 )
 
 // clampEVBatteryHeadroom keeps optional battery charge out of room an EV
-// still needs. It reads only the site meter and our own commands: within
-// evSettle the meter may show any command sent, so a device's lowest recent
-// command is its baseline and the rest of its range is still pending. No
-// charger or battery reading takes part.
+// still needs. It reads only the site meter and our own commands; no charger
+// or battery reading takes part. The EV still needs its demand less the
+// lowest offer of the last evSettle, which the meter surely shows.
 func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, state *State, fuseMaxW float64) []DispatchTarget {
 	if store == nil || state == nil || len(targets) == 0 || fuseMaxW <= 0 {
 		return targets
@@ -37,28 +36,18 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 	if meter == nil || !finiteFuseValue(meter.RawW) || !finiteFuseValue(fuseMaxW) {
 		return floorPositiveEVBatteryTargets(targets)
 	}
-	drivers := make(map[string]bool, len(targets))
-	for driver := range state.DriverLimits {
-		drivers[driver] = true
-	}
-	for driver := range state.batteryCommands {
-		drivers[driver] = true
-	}
+	latest := make(map[string]float64, len(targets))
 	targeted := make(map[string]bool, len(targets))
 	for _, target := range targets {
 		if targeted[target.Driver] {
 			return floorPositiveEVBatteryTargets(targets)
 		}
-		targeted[target.Driver], drivers[target.Driver] = true, true
-	}
-	baselines := make(map[string]float64, len(drivers))
-	uppers := make(map[string]float64, len(drivers))
-	for driver := range drivers {
-		if low, high, _, sent := state.batteryCommands[driver].span(now); sent {
-			baselines[driver], uppers[driver] = low, high
+		targeted[target.Driver] = true
+		if _, _, last, sent := state.batteryCommands[target.Driver].span(now); sent {
+			latest[target.Driver] = last
 		} else {
-			// Without a recent command it may be discharging and stop.
-			baselines[driver] = -state.DriverLimits[driver].dischargeCap()
+			// Without a recent order it may be discharging and stop.
+			latest[target.Driver] = -state.DriverLimits[target.Driver].dischargeCap()
 		}
 	}
 	spare := state.effectiveImportCeilingW(fuseMaxW) - meter.RawW - needW
@@ -70,7 +59,7 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 			spare = math.Min(spare, phaseSpare)
 		}
 	}
-	out := capBatteryOffersToHeadroom(targets, baselines, uppers, spare)
+	out := capBatteryCharge(targets, latest, state.pendingBatteryCommandsW(now), spare)
 	// Charge needed to bring measured export inside its hard ceiling is
 	// not optional. Preserve that part of the already validated offer;
 	// this stage never invents or increases an original battery command.
@@ -91,91 +80,41 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 	return out
 }
 
-// A reduction at one battery never funds an increase at another, and a lost
-// discharge also needs room.
-func capBatteryOffersToHeadroom(targets []DispatchTarget, baselines, uppers map[string]float64, spare float64) []DispatchTarget {
-	if !finiteFuseValue(spare) {
+// capBatteryCharge keeps each battery's latest order: holding it is never an
+// increase. A shortfall of measured room takes positive charge back; new
+// charge needs room left after our increases the meter may not show yet. A
+// reduction this tick funds nothing, as the meter does not show it, and only
+// positive targets change.
+func capBatteryCharge(targets []DispatchTarget, latest map[string]float64, pendingW, spare float64) []DispatchTarget {
+	if !finiteFuseValue(spare) || !finiteFuseValue(pendingW) {
 		return floorPositiveEVBatteryTargets(targets)
 	}
-	byDriver := make(map[string]DispatchTarget, len(targets))
-	allocationBases := make(map[string]float64, len(targets))
-	var positiveBase, dischargeLoss, pendingExtra, pendingOutsidePositive float64
-	for _, target := range targets {
-		byDriver[target.Driver] = target
-		baseline := baselines[target.Driver]
-		if !finiteFuseValue(baseline) {
-			return floorPositiveEVBatteryTargets(targets)
-		}
-		allocationBases[target.Driver] = math.Max(0, baseline)
-		if upper, known := uppers[target.Driver]; known {
-			allocationBases[target.Driver] = math.Max(allocationBases[target.Driver], upper)
-		}
-		if target.TargetW > 0 {
-			positiveBase += math.Max(0, baseline)
-		}
-		dischargeLoss += math.Max(0, math.Min(0, target.TargetW)-math.Min(0, baseline))
-	}
-	for driver, upper := range uppers {
-		floor := baselines[driver]
-		target, targeted := byDriver[driver]
-		if targeted {
-			floor = math.Max(floor, math.Min(0, target.TargetW))
-		}
-		pending := math.Max(0, upper-floor)
-		pendingExtra += pending
-		if !targeted || target.TargetW <= 0 {
-			pendingOutsidePositive += pending
-		}
-	}
-	spare -= dischargeLoss
 	out := append([]DispatchTarget(nil), targets...)
-	var wantedIncrease float64
-	for _, target := range out {
-		if target.TargetW > 0 {
-			wantedIncrease += math.Max(0, target.TargetW-allocationBases[target.Driver])
-		}
-	}
-	increaseScale := 1.0
-	if wantedIncrease > 0 {
-		increaseScale = math.Min(1, math.Max(0, spare-pendingExtra)/wantedIncrease)
-	}
-	var positiveTotal float64
-	for i := range out {
-		if out[i].TargetW > 0 {
-			baseline := allocationBases[out[i].Driver]
-			capped := math.Min(out[i].TargetW, baseline) + math.Max(0, out[i].TargetW-baseline)*increaseScale
-			if capped < out[i].TargetW {
-				out[i].TargetW, out[i].Clamped = capped, true
-			}
-			positiveTotal += capped
-		}
-	}
-	capW := math.Max(0, positiveBase+spare-pendingOutsidePositive)
-	if positiveTotal > capW && positiveTotal > 0 {
-		for i := range out {
-			if out[i].TargetW > 0 {
-				out[i].TargetW *= capW / positiveTotal
-				out[i].Clamped = true
-			}
-		}
-	}
-	// A partial positive reduction also leaves its old higher order pending.
-	// Bound every offer against the same snapshot of its siblings; one
-	// commanded reduction must not fund another offer in this pass.
-	covered := make([]float64, len(out))
-	var coveredTotal float64
+	holds := make([]float64, len(out))
+	var holdW, increaseW float64
 	for i, target := range out {
+		last := latest[target.Driver]
+		spare -= math.Max(0, math.Min(0, target.TargetW)-math.Min(0, last)) // Lost discharge.
 		if target.TargetW > 0 {
-			covered[i] = math.Max(target.TargetW, math.Max(0, uppers[target.Driver]))
-			coveredTotal += covered[i]
+			holds[i] = math.Min(target.TargetW, math.Max(0, last))
+			holdW += holds[i]
+			increaseW += target.TargetW - holds[i]
 		}
 	}
+	holdScale, increaseScale := 1.0, 0.0
+	if spare < 0 && holdW > 0 {
+		holdScale = math.Max(0, 1+spare/holdW)
+	}
+	if room := spare - pendingW; room > 0 && increaseW > 0 {
+		increaseScale = math.Min(1, room/increaseW)
+	}
 	for i := range out {
-		if out[i].TargetW > 0 {
-			room := math.Max(0, capW-(coveredTotal-covered[i]))
-			if out[i].TargetW > room {
-				out[i].TargetW, out[i].Clamped = room, true
-			}
+		if out[i].TargetW <= 0 {
+			continue
+		}
+		capped := holds[i]*holdScale + (out[i].TargetW-holds[i])*increaseScale
+		if capped < out[i].TargetW {
+			out[i].TargetW, out[i].Clamped = capped, true
 		}
 	}
 	return out

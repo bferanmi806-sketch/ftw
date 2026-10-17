@@ -106,7 +106,7 @@ type offerPeak struct {
 
 // recordOfferPeak keeps the highest offer the meter may still show. A new
 // phase mode starts over: the same watts on other phases are other currents.
-func (c *Controller) recordOfferPeak(now time.Time, id string, w float64, cmd map[string]any) {
+func (c *Controller) recordOfferPeak(now time.Time, id string, w float64, cmd map[string]any) string {
 	phase, _ := cmd["phase_mode"].(string)
 	if phase == "" {
 		phase = "3p" // The driver's locked default, as in phaseModeForFuse.
@@ -117,6 +117,7 @@ func (c *Controller) recordOfferPeak(now time.Time, id string, w float64, cmd ma
 	if peak := c.offerPeaks[id]; peak.phase != phase || w >= peak.w || now.Sub(peak.at) >= CommandSettle {
 		c.offerPeaks[id] = offerPeak{w: w, phase: phase, at: now}
 	}
+	return phase
 }
 
 func (c *Controller) fuseConfig(now time.Time, cfg Config) Config {

@@ -53,25 +53,46 @@ type evMeterSite struct {
 	commands, draws              []evTimed
 	offers                       []evTimed // every ev_set_current
 	maxGridW                     float64
+	config                       memConfigStore // survives a restart
+	sessionWh                    float64
+	ceilingW                     float64
 }
+
+// memConfigStore stands in for state.db across a simulated Core restart.
+type memConfigStore map[string]string
+
+func (m memConfigStore) LoadConfig(key string) (string, bool) { v, ok := m[key]; return v, ok }
+func (m memConfigStore) SaveConfig(key, value string) error   { m[key] = value; return nil }
 
 func newEVMeterSite(t *testing.T, ceilingW, houseW float64) *evMeterSite {
 	t.Helper()
 	s := &evMeterSite{t: t, now: time.Now().Truncate(time.Second), store: telemetry.NewStore(),
-		chargerDelay: 5 * time.Second, telemetryDelay: 10 * time.Second, carMaxW: math.Inf(1)}
+		chargerDelay: 5 * time.Second, telemetryDelay: 10 * time.Second, carMaxW: math.Inf(1),
+		config: memConfigStore{}, ceilingW: ceilingW}
 	s.setHouse(houseW)
+	s.boot()
+	s.draws = []evTimed{{s.now.Add(-time.Hour), 0}}
+	s.report(0)
+	return s
+}
+
+// boot starts Core: new control state, loadpoint manager and controller.
+// The charger, car, meter and state.db keep running across it.
+func (s *evMeterSite) boot() {
 	s.state = NewState(0, 0, "meter")
 	s.state.SiteFuseAmps, s.state.SiteFuseVoltage, s.state.SiteFusePhases, s.state.SiteFuseSafetyA = 25, 230, 3, 0.5
-	s.state.PeakImportCeilingW = ceilingW
+	s.state.PeakImportCeilingW = s.ceilingW
 	s.state.clock = func() time.Time { return s.now }
 	cfg := loadpoint.Config{ID: "garage", DriverName: "easee", MinChargeW: 4140, MaxChargeW: 10350, PhaseMode: "3p",
 		AllowedStepsW: []float64{0, 4140, 4830, 5520, 6210, 6900, 7590, 8280, 8970, 9660, 10350}}
 	s.mgr = loadpoint.NewManager()
 	s.mgr.Load([]loadpoint.Config{cfg})
+	s.mgr.SetSessionStore(s.config)
 	s.ctrl = loadpoint.NewController(s.mgr,
 		func(time.Time) (loadpoint.Directive, bool) { return loadpoint.Directive{}, false },
 		func(string) (loadpoint.EVSample, bool) {
-			return loadpoint.EVSample{Connected: true, RequestActive: true, PowerW: s.reportedW, PowerAt: s.reportedAt, SessionWhUnavailable: true}, true
+			return loadpoint.EVSample{Connected: true, RequestActive: true, PowerW: s.reportedW, PowerAt: s.reportedAt,
+				DeviceID: "easee:EH000001", SessionWh: s.sessionWh, EnergyAt: s.reportedAt}, true
 		},
 		func(_ context.Context, _ string, payload []byte) error {
 			var cmd struct {
@@ -96,9 +117,6 @@ func newEVMeterSite(t *testing.T, ceilingW, houseW float64) *evMeterSite {
 		return EVFuseBudget(s.store, s.state, s.mgr.States(), s.mgr.Configs(), 17250)
 	})
 	s.ctrl.SetManualHold(cfg.ID, loadpoint.ManualHold{PowerW: 10350, PhaseMode: "3p", Persistent: true})
-	s.draws = []evTimed{{s.now.Add(-time.Hour), 0}}
-	s.report(0)
-	return s
 }
 
 func (s *evMeterSite) setHouse(w float64) {
@@ -158,6 +176,7 @@ func (s *evMeterSite) step() {
 		s.evW = draw
 		s.draws = append(s.draws, evTimed{s.now, draw})
 	}
+	s.sessionWh += s.evW / 3600
 	if !s.now.Before(s.nextPoll) && s.readings != evReadingsMissing {
 		w := s.cloudW()
 		if s.readings == evReadingsHigh {
@@ -249,6 +268,47 @@ func TestEVHardLimitHoldsOfferThroughLoneZeroSample(t *testing.T) {
 		if w != 10350 {
 			t.Fatalf("offer left 10,350 W after a lone 0 W sample: %v", offerWatts(s.offersSince(zeroAt)))
 		}
+	}
+}
+
+// Every update restarts Core. At the 05:49 currents the meter alone shows
+// 2,449.5 W of room, below a start. Our own last order, kept for the same
+// plug-in session, holds the charge through the restart.
+func TestEVHardLimitRestartKeepsChargingCarAtFieldCurrents(t *testing.T) {
+	s := newEVMeterSite(t, 0, 2081)
+	s.carMaxW = 10242
+	s.housePhaseA = [3]float64{20.45 - 10242.0/690, 17.05 - 10242.0/690, 15.87 - 10242.0/690}
+	s.run(3 * time.Minute)
+	if s.offer() != 10350 {
+		t.Fatalf("setup: offer %.0f W", s.offer())
+	}
+	restartAt := s.now.Add(time.Second)
+	s.boot()
+	s.run(time.Minute)
+	got := offerWatts(s.offersSince(restartAt))
+	if len(got) == 0 {
+		t.Fatal("no command after the restart")
+	}
+	for _, w := range got {
+		if w != 10350 {
+			t.Fatalf("restart moved the offer: %v", got)
+		}
+	}
+}
+
+// A new plug-in session while Core was down is not ours to hold: its energy
+// counter went back, so the pool starts idle on measured room.
+func TestEVHardLimitRestartAfterReplugStartsIdle(t *testing.T) {
+	s := newEVMeterSite(t, 0, 2081)
+	s.carMaxW = 10242
+	s.housePhaseA = [3]float64{20.45 - 10242.0/690, 17.05 - 10242.0/690, 15.87 - 10242.0/690}
+	s.run(3 * time.Minute)
+	s.sessionWh = 1 // replugged during the restart
+	restartAt := s.now.Add(time.Second)
+	s.boot()
+	s.step()
+	if got := offerWatts(s.offersSince(restartAt)); len(got) == 0 || got[0] != 0 {
+		t.Fatalf("a new session inherited the old order: %v", got)
 	}
 }
 
@@ -377,6 +437,32 @@ func TestEVHardLimitCutsAgainAfterSettleWhenChargerIgnores(t *testing.T) {
 	s.run(4 * time.Second)
 	if s.offer() >= 4830 {
 		t.Fatalf("ignored cut was not repeated: %v", offerWatts(s.offersSince(stepAt)))
+	}
+}
+
+// A car that draws well below its offer hides a cut: the cut comes off the
+// offer, not the draw. With the car 4 kW under its offer and a 2 kW
+// overage, the first two cuts change nothing and the third, one settle time
+// later each, takes effect after the charger's delay.
+func TestEVHardLimitCarUnderItsOfferDelaysCut(t *testing.T) {
+	s := newEVMeterSite(t, 14000, 1000)
+	s.carMaxW = 6350
+	s.run(2 * time.Minute)
+	if s.offer() != 10350 || s.evW != 6350 {
+		t.Fatalf("setup: offer %.0f draw %.0f", s.offer(), s.evW)
+	}
+	stepAt := s.now
+	s.setHouse(14000 + 2000 - 6350)
+	for s.houseW+s.evW > 14000 {
+		if s.now.Sub(stepAt) > 2*time.Minute {
+			t.Fatalf("overage never cleared: offer %.0f draw %.0f", s.offer(), s.evW)
+		}
+		s.step()
+	}
+	took := s.now.Sub(stepAt)
+	t.Logf("2 kW overage with the car 4 kW under its offer cleared after %v; offers %v", took, offerWatts(s.offersSince(stepAt))[:1])
+	if took > 2*evSettle+s.chargerDelay+3*time.Second {
+		t.Fatalf("overage lasted %v", took)
 	}
 }
 

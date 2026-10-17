@@ -34,12 +34,17 @@ func evSplitFixture(t *testing.T, gridW float64, phaseA []float64, demandW float
 	return store, state
 }
 
-// sent logs our commands for a device, oldest first, ending now.
+// sent logs our commands for a device, oldest first, ending now. The first
+// has been in force for longer than the settle time.
 func sent(state *State, driver string, watts ...float64) {
 	now := state.now()
 	var log commandLog
 	for i, w := range watts {
-		log = log.add(now.Add(time.Duration(i-len(watts)+1)*2*time.Second), w)
+		at := now.Add(time.Duration(i-len(watts)+1) * 2 * time.Second)
+		if i == 0 {
+			at = now.Add(-evSettle - time.Second)
+		}
+		log = log.add(at, w)
 	}
 	if driver == "ev" {
 		state.evOffers, state.EVCommandedW = log, watts[len(watts)-1]

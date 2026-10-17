@@ -156,3 +156,152 @@ func TestEVBatteryPendingAndNewOrdersShareOnePhysicalBudget(t *testing.T) {
 		}
 	}
 }
+
+// evBatterySite runs the EV guard and battery dispatch together, as main.go
+// does: charger tick first, then battery dispatch, then the next reading.
+type evBatterySite struct {
+	t                *testing.T
+	now              time.Time
+	store            *telemetry.Store
+	state            *State
+	mgr              *loadpoint.Manager
+	ctrl             *loadpoint.Controller
+	houseW, batteryW float64
+	evW              float64
+	commands, offers []evTimed
+	maxGridW         float64
+}
+
+func newEVBatterySite(t *testing.T, houseW float64) *evBatterySite {
+	t.Helper()
+	s := &evBatterySite{t: t, now: time.Now().Truncate(time.Second), store: telemetry.NewStore(), houseW: houseW}
+	config := loadpoint.Config{ID: "garage", DriverName: "charger", MinChargeW: 4140, MaxChargeW: 10350,
+		PhaseMode: "3p", AllowedStepsW: []float64{0, 4140, 4830, 5520, 6210, 6900, 7590, 8280, 8970, 9660, 10350}}
+	s.mgr = loadpoint.NewManager()
+	s.mgr.Load([]loadpoint.Config{config})
+	dir := SlotDirective{SlotStart: s.now, SlotEnd: s.now.Add(time.Hour), BatteryEnergyWh: 10000, Strategy: "arbitrage"}
+	s.state = newStateWithEnergyDispatch(dir, "meter")
+	s.state.clock = func() time.Time { return s.now }
+	s.state.SiteFuseAmps, s.state.SiteFuseVoltage, s.state.SiteFusePhases, s.state.SiteFuseSafetyA = 25, 230, 3, 1
+	s.state.SlewEnabled = false
+	s.state.DriverLimits = map[string]PowerLimits{"pixii": {MaxChargeW: 10000, MaxDischargeW: 10000}}
+	s.ctrl = loadpoint.NewController(s.mgr,
+		func(time.Time) (loadpoint.Directive, bool) { return loadpoint.Directive{}, false },
+		func(string) (loadpoint.EVSample, bool) {
+			return loadpoint.EVSample{Connected: true, RequestActive: true, PowerW: s.evW, PowerAt: s.now, SessionWhUnavailable: true}, true
+		},
+		func(_ context.Context, _ string, payload []byte) error {
+			var cmd struct {
+				Action string  `json:"action"`
+				PowerW float64 `json:"power_w"`
+			}
+			if err := json.Unmarshal(payload, &cmd); err != nil {
+				return err
+			}
+			if cmd.Action == "ev_set_current" {
+				s.offers = append(s.offers, evTimed{s.now, cmd.PowerW})
+				s.commands = append(s.commands, evTimed{s.now.Add(5 * time.Second), cmd.PowerW})
+			}
+			return nil
+		})
+	s.ctrl.SetSiteFuse(loadpoint.SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
+	s.ctrl.SetManualHold(config.ID, loadpoint.ManualHold{PowerW: 10350, PhaseMode: "3p", Persistent: true})
+	s.ctrl.SetPerPhaseMeterAmps(func() (float64, float64, float64, bool) {
+		a := s.gridW() / 690
+		return a, a, a, true
+	})
+	s.ctrl.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(s.store, s.state, s.mgr.States(), s.mgr.Configs(), 17250) })
+	return s
+}
+
+func (s *evBatterySite) gridW() float64 { return s.houseW + s.batteryW + s.evW }
+
+func (s *evBatterySite) emit(driver string, kind telemetry.DerType, watts float64) {
+	d := map[string]any{"control_power_available": true, "control_power_observed_at": s.now.Format(time.RFC3339Nano)}
+	if kind == telemetry.DerMeter {
+		a := watts / 690
+		d["l1_a"], d["l2_a"], d["l3_a"] = a, a, a
+	}
+	data, _ := json.Marshal(d)
+	soc := .5
+	s.store.Update(driver, kind, watts, &soc, data)
+	s.store.Get(driver, kind).UpdatedAt = s.now
+	s.store.RecordDriverSuccess(driver)
+}
+
+func (s *evBatterySite) step() {
+	s.now = s.now.Add(time.Second)
+	for len(s.commands) > 0 && !s.commands[0].at.After(s.now) {
+		s.evW, s.commands = s.commands[0].w, s.commands[1:]
+	}
+	s.maxGridW = math.Max(s.maxGridW, s.gridW())
+	s.emit("pixii", telemetry.DerBattery, s.batteryW)
+	s.emit("charger", telemetry.DerEV, s.evW)
+	s.emit("meter", telemetry.DerMeter, s.gridW())
+	s.ctrl.TickWithDispatch(context.Background(), s.now, true)
+	s.state.EVCommandedW = loadpoint.CommandedEVPowerW(s.mgr.States())
+	s.state.SetEVFuseDemands(s.ctrl.FuseDemands())
+	targets := ComputeDispatch(s.store, s.state, caps(map[string]float64{"pixii": 15000}), 17250)
+	if len(targets) != 1 {
+		s.t.Fatalf("targets %+v", targets)
+	}
+	s.batteryW = targets[0].TargetW // A local battery follows within a tick.
+}
+
+func (s *evBatterySite) run(d time.Duration) {
+	for end := s.now.Add(d); s.now.Before(end); {
+		s.step()
+	}
+}
+
+func (s *evBatterySite) offer() float64 {
+	if len(s.offers) == 0 {
+		return 0
+	}
+	return s.offers[len(s.offers)-1].w
+}
+
+// A 2 kW house step lands while the battery and the car both charge. The
+// battery dispatch and the EV guard answer the same overage, so the car is
+// cut too. EV first: the car must not stop, the battery must yield, and the
+// car must get back to its offer within a minute.
+func TestEVFirstHouseStepWhileBatteryAndEVCharge(t *testing.T) {
+	s := newEVBatterySite(t, 3000)
+	s.run(3*time.Minute + 30*time.Second)
+	low, high := math.Inf(1), math.Inf(-1)
+	for range 30 {
+		s.step()
+		low, high = math.Min(low, s.batteryW), math.Max(high, s.batteryW)
+	}
+	if high-low > 1 {
+		t.Fatalf("battery hunts under a steady load: %.0f..%.0f W", low, high)
+	}
+	evBefore, batteryBefore := s.offer(), s.batteryW
+	if evBefore != 10350 || batteryBefore <= 0 {
+		t.Fatalf("setup: EV %.0f W battery %.0f W", evBefore, batteryBefore)
+	}
+	stepAt := s.now
+	s.houseW += 2000
+	var lowest float64 = evBefore
+	var backAt time.Time
+	for s.now.Sub(stepAt) < 3*time.Minute {
+		s.step()
+		lowest = math.Min(lowest, s.offer())
+		if backAt.IsZero() && lowest < evBefore && s.offer() == evBefore {
+			backAt = s.now
+		}
+	}
+	t.Logf("EV %.0f -> lowest %.0f W, back after %v; battery %.0f -> %.0f W", evBefore, lowest, backAt.Sub(stepAt), batteryBefore, s.batteryW)
+	if lowest <= 0 {
+		t.Fatal("the house step stopped the car")
+	}
+	if s.batteryW > batteryBefore-2000+.01 {
+		t.Fatalf("battery %.0f -> %.0f W did not yield the step", batteryBefore, s.batteryW)
+	}
+	if backAt.IsZero() || backAt.Sub(stepAt) > time.Minute {
+		t.Fatalf("EV not back at %.0f W within a minute (now %.0f W)", evBefore, s.offer())
+	}
+	if s.gridW() > 16560.01 {
+		t.Fatalf("grid %.0f W above 24 A after the step", s.gridW())
+	}
+}

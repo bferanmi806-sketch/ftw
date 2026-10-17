@@ -58,6 +58,8 @@ type Controller struct {
 	tickDirective       Directive
 	// offerPeaks is each loadpoint's highest recent offer (serial tick).
 	offerPeaks map[string]offerPeak
+	// savedOffers mirrors each loadpoint's last order kept across restarts.
+	savedOffers map[string]savedOffer
 	// fuseResumeTicks is owned by the serial tick. A paused charger needs
 	// two consecutive dispatch ticks with room for a legal step.
 	fuseResumeTicks map[string]int
@@ -1205,6 +1207,7 @@ func (c *Controller) TickWithDispatch(ctx context.Context, now time.Time, dispat
 	if dispatchAllowed {
 		c.tickDirective, c.tickDirectiveOK = c.currentDirective(now)
 		c.tickDirectiveActive = true
+		c.restoreOffers(now, samples)
 		c.freezeFuseBudget(now, samples)
 		defer func() { c.tickFuseCaps = nil; c.tickFusePhases = 0; c.tickDirectiveActive = false }()
 	}
@@ -1567,7 +1570,8 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 	if w, ok := cmd["power_w"].(float64); ok {
 		offerW, haveOffer = w, true
 		c.manager.setCommandedForManual(lpCfg.ID, w, cmdReason, manualCommandUpdatedAt)
-		c.recordOfferPeak(now, lpCfg.ID, w, cmd)
+		phase := c.recordOfferPeak(now, lpCfg.ID, w, cmd)
+		c.saveOffer(now, lpCfg, sample, w, phase, cmdReason)
 	}
 	payload, err := json.Marshal(cmd)
 	if err != nil {
