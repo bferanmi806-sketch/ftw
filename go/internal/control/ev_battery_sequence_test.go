@@ -553,3 +553,53 @@ func TestFuseReliefLeavesOnlyCeilingWattsToCommandedEVCut(t *testing.T) {
 		}
 	}
 }
+
+// Two managed cars charge under the hour's ceiling, and one is unplugged
+// during an overage. Its offer leaves the pool, but no cut of ours removed
+// it, and the meter may already show it. The battery must not wait for it,
+// though it still waits for a cut sent to the car that stays.
+func TestUnpluggedCarIsNoCutTheBatteryWaitsFor(t *testing.T) {
+	now := time.Date(2026, 10, 17, 16, 30, 0, 0, time.Local)
+	st := NewState(0, 0, "meter")
+	st.clock = func() time.Time { return now }
+	st.SiteFuseAmps, st.SiteFuseVoltage, st.SiteFusePhases, st.SiteFuseSafetyA = 25, 230, 3, 1
+	st.PeakImportCeilingW = 7500
+	store := telemetry.NewStore()
+	configs := []loadpoint.Config{
+		{ID: "a", DriverName: "easee-a", PhaseMode: "3p", MinChargeW: 4140},
+		{ID: "b", DriverName: "easee-b", PhaseMode: "3p", MinChargeW: 4140},
+	}
+	// One control tick: the meter reads gridW, the guard steps on the cars'
+	// offers, the controller leaves car a at aAfterW, then the battery asks
+	// for relief.
+	tick := func(gridW float64, bPlugged bool, aAfterW float64) float64 {
+		now = now.Add(time.Second)
+		a := gridW / 690
+		data, _ := json.Marshal(map[string]any{"l1_a": a, "l2_a": a, "l3_a": a})
+		store.Update("meter", telemetry.DerMeter, gridW, nil, data)
+		store.Get("meter", telemetry.DerMeter).UpdatedAt = now
+		store.RecordDriverSuccess("meter")
+		points := []loadpoint.State{
+			{ID: "a", DriverName: "easee-a", PluggedIn: true, CommandedKnown: true, CommandedW: 5520},
+			{ID: "b", DriverName: "easee-b", PluggedIn: bPlugged, CommandedKnown: true, CommandedW: 5520},
+		}
+		EVFuseBudget(store, st, points, configs, 17250)
+		points[0].CommandedW = aAfterW
+		st.EVCommandedW = loadpoint.CommandedEVPowerW(points)
+		targets := []DispatchTarget{{Driver: "pixii"}}
+		batteries := map[string]*telemetry.DerReading{"pixii": {}}
+		return math.Max(0, fuseReliefFromSnapshot(targets, batteries, &telemetry.DerReading{SmoothedW: gridW}, st, 17250, false))
+	}
+	// 400 W over the ceiling, less than a step: the guard waits.
+	if got := tick(7900, true, 5520); math.Abs(got-400) > 1e-6 {
+		t.Fatalf("first overage: relief %.0f W, want 400 W", got)
+	}
+	// Car b is unplugged and the house adds 6 kW: 880 W over, no cut sent.
+	if got := tick(7900-5520+6000, false, 5520); math.Abs(got-880) > 1e-6 {
+		t.Fatalf("after car b left: relief %.0f W, want 880 W; pending cut %.0f W", got, st.pendingEVCutW())
+	}
+	// 2,000 W over, and car a is stopped: that cut may still wait.
+	if got := tick(9500, false, 0); got != 0 {
+		t.Fatalf("after car a's stop: relief %.0f W, want 0 W", got)
+	}
+}

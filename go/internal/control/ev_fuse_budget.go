@@ -3,6 +3,8 @@ package control
 import (
 	"log/slog"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/loadpoint"
@@ -89,12 +91,14 @@ type evMeterLimit struct {
 	raisedGridW float64   // site import when the last rise was sent
 	overSince   time.Time // first reading of a run over the hour's import limit
 	overOfferW  float64   // the pool's offer when that run began
+	members     string    // the plugged loadpoints overOfferW counts
 	idleWh      float64   // import since roomSince, for the ceiling's start test
 }
 
 type evPool struct {
 	offerW, wantW, minW, phases float64
 	offerKnown                  bool
+	members                     string // plugged loadpoint IDs, sorted
 }
 
 // EVFuseBudget returns the managed EVs' common hard cap, which the loadpoint
@@ -127,6 +131,11 @@ func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State
 	}
 	if pool.offerKnown {
 		state.evOffers = state.evOffers.add(state.now(), pool.offerW)
+	}
+	if pool.members != lim.members {
+		// A car that leaves or joins moves the pool's offer without a cut of
+		// ours, and the meter may already show it. Count from here.
+		lim.members, lim.overOfferW = pool.members, pool.offerW
 	}
 	if !lim.set || meter.UpdatedAt.After(lim.readingAt) {
 		state.stepEVMeterLimit(meter, gridW, pool, fuseMaxW)
@@ -337,11 +346,13 @@ func evPoolFor(state *State, points []loadpoint.State, configs []loadpoint.Confi
 	}
 	pool := evPool{phases: 3, wantW: math.Inf(1), offerKnown: true}
 	plugged := false
+	var members []string
 	for _, point := range points {
 		if !point.PluggedIn {
 			continue
 		}
 		plugged = true
+		members = append(members, point.ID)
 		cfg := byID[point.ID]
 		// Empty is the declared three-phase default. The controller's own
 		// gate covers runtime auto/manual phase changes.
@@ -356,6 +367,8 @@ func evPoolFor(state *State, points []loadpoint.State, configs []loadpoint.Confi
 	if !plugged {
 		return pool, false
 	}
+	slices.Sort(members)
+	pool.members = strings.Join(members, "\x00")
 	if pool.offerKnown {
 		pool.offerW = loadpoint.CommandedEVPowerW(points)
 	}
