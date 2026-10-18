@@ -348,6 +348,8 @@ var RegistryAgentArgs = map[string][]AgentArg{
 	},
 }
 
+const MsgAPIRead = "api.read"
+
 // RegistryReads maps each read an agent may send to the scope it needs.
 var RegistryReads = map[string]string{
 	// live.get — Readings and freshness now.
@@ -374,6 +376,8 @@ var RegistryReads = map[string]string{
 	"config.get": "ftw.config.read",
 	// diag.run — A check that changes nothing.
 	"diag.run": "ftw.diag.run",
+	// api.read — Read a diagnostic API route within its data scope.
+	"api.read": "ftw.diag.run",
 }
 
 // Error codes. The box sends the code and machine-readable args; the app
