@@ -2400,10 +2400,13 @@ func main() {
 	// below once it exists, as FTW Cloud's grant notices are.
 	cloudNotify := &cloudNotices{}
 	agents := &agentPorts{logs: logRing, cfg: cfg, cfgMu: cfgMu, st: st, notices: cloudNotify, cars: carsRT}
+	liveMeasurementOptions := func() telemetry.ForecastOptions {
+		return forecastSettings.Snapshot().HistoryOptions
+	}
 	appEnroll, appUplink, appLinkEnabled, appLinkErr := startAppLink(
 		ctx, cfg, identityKeyPath, boxID, Version,
 		st, tel, mpcSvc, lpMgr, lpController, carsRT, priceSvc, ctrl, ctrlMu, plannerPrefs,
-		controlRev, appLinkWatchdog, appAPI, appCloud, agents,
+		controlRev, appLinkWatchdog, liveMeasurementOptions, appAPI, appCloud, agents,
 	)
 	switch {
 	case appLinkErr != nil:
@@ -2424,7 +2427,7 @@ func main() {
 		appTunnel = appUplink.Tunnel()
 	}
 	cloudLink := startCloudLink(ctx, statePath, Version, st, appEnroll,
-		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, priceSvc, appAPI, cloudNotify, appTunnel, carsRT, webPush)
+		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, liveMeasurementOptions, priceSvc, appAPI, cloudNotify, appTunnel, carsRT, webPush)
 	appCloud.bind(cloudLink)
 	if cloudLink != nil {
 		agents.home = cloudLink.Home
@@ -2501,7 +2504,7 @@ func main() {
 		SiteDispatchBlocked: func() string {
 			return siteDispatchNow(tel, cfg, cfgMu, ctrl, ctrlMu, time.Now()).Reason
 		},
-		HistoryMeasurementSources: func() telemetry.ForecastOptions { return forecastSettings.Snapshot().HistoryOptions },
+		HistoryMeasurementSources: liveMeasurementOptions,
 		SiteMeasurementSources: func() telemetry.ForecastOptions {
 			return forecastSettings.Snapshot().Options
 		},
