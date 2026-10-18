@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"net/url"
 	"path"
 	"strings"
 	"unicode"
@@ -10,7 +11,8 @@ import (
 // Offset and MaxBytes select a byte page. IfSHA256 prevents joining pages
 // from different answers. The answer uses api.head/chunk/end, carrying JSON.
 type APIRead struct {
-	Path          string            `cbor:"path"`
+	Path string `cbor:"path"
+ "net/url"`
 	Query         map[string]string `cbor:"query,omitempty"`
 	MaxBytes      int64             `cbor:"maxBytes,omitempty"`
 	Offset        int64             `cbor:"offset,omitempty"`
@@ -33,7 +35,8 @@ const (
 // AgentAPIRoute describes a route registered by the connected Core version.
 // Query is guidance; the existing HTTP handler owns parameter validation.
 type AgentAPIRoute struct {
-	Path        string            `json:"path"`
+	Path string `json:"path"
+ "net/url"`
 	Scope       string            `json:"scope"`
 	Description string            `json:"description"`
 	Query       map[string]string `json:"query,omitempty"`
@@ -42,6 +45,17 @@ type AgentAPIRoute struct {
 // ValidAgentAPIPath validates syntax only. Core's router decides whether the
 // path is a read; Cloud does not keep a second list of the box's API.
 func ValidAgentAPIPath(value string) bool {
-	return strings.HasPrefix(value, "/api/") && path.Clean(value) == value &&
-		!strings.ContainsAny(value, "?%#\\") && strings.IndexFunc(value, unicode.IsControl) < 0
+	target, err := url.ParseRequestURI(value)
+	if err != nil || !strings.HasPrefix(value, "/api/") || path.Clean(value) != value ||
+		target.RawQuery != "" || target.ForceQuery || strings.ContainsAny(value, "?#\\") ||
+		strings.IndexFunc(target.Path, unicode.IsControl) >= 0 {
+		return false
+	}
+	for _, part := range strings.Split(value, "/") {
+		decoded, _ := url.PathUnescape(part)
+		if decoded == "." || decoded == ".." {
+			return false
+		}
+	}
+	return true
 }
