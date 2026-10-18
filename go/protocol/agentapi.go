@@ -11,8 +11,7 @@ import (
 // Offset and MaxBytes select a byte page. IfSHA256 prevents joining pages
 // from different answers. The answer uses api.head/chunk/end, carrying JSON.
 type APIRead struct {
-	Path string `cbor:"path"
- "net/url"`
+	Path          string            `cbor:"path"`
 	Query         map[string]string `cbor:"query,omitempty"`
 	MaxBytes      int64             `cbor:"maxBytes,omitempty"`
 	Offset        int64             `cbor:"offset,omitempty"`
@@ -35,8 +34,7 @@ const (
 // AgentAPIRoute describes a route registered by the connected Core version.
 // Query is guidance; the existing HTTP handler owns parameter validation.
 type AgentAPIRoute struct {
-	Path string `json:"path"
- "net/url"`
+	Path        string            `json:"path"`
 	Scope       string            `json:"scope"`
 	Description string            `json:"description"`
 	Query       map[string]string `json:"query,omitempty"`
