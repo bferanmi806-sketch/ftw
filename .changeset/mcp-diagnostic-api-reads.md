@@ -2,4 +2,4 @@
 "ftw": minor
 ---
 
-Let authorized assistants read the energy ledger, measured series, forecasts, models and planner snapshots through MCP. The box checks each data scope, redacts identifying fields and stops reads when access ends.
+Give authorized MCP sessions the full diagnostic read API, including the energy ledger, raw series, logs, configuration, driver source and support exports. Keep technical names and addresses, list the connected box's routes, and page large answers without a total size limit. Stop reads when access ends.

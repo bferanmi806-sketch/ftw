@@ -5,13 +5,11 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/srcfl/ftw/go/internal/apiauth"
-	"github.com/srcfl/ftw/go/internal/redact"
 	"github.com/srcfl/ftw/go/protocol"
 )
 
 type agentReadGateway interface {
-	ServeAgentRead(http.ResponseWriter, *http.Request, *redact.Redactor)
+	ServeAgentRead(http.ResponseWriter, *http.Request, protocol.APIRead)
 }
 
 func (h *Handler) onAPIRead(env Envelope) error {
@@ -22,13 +20,13 @@ func (h *Handler) onAPIRead(env Envelope) error {
 	if err != nil {
 		return h.refuse(env.ID, ErrUnknownOp, map[string]any{"t": env.T})
 	}
-	route, known := protocol.AgentAPIPath(read.Path)
+	known := protocol.ValidAgentAPIPath(read.Path)
 	request := APIReq{Method: APIGet, Path: read.Path, Query: read.Query, MaxBytes: read.MaxBytes}
-	if !known || badAPIRequest(request) != "" || read.MaxBytes < 0 || read.MaxBytes > protocol.AgentAPIMaxBytes {
+	if !known || badAPIRequest(request) != "" || read.MaxBytes < 0 || read.MaxBytes > protocol.AgentAPIPageBytes || read.Offset < 0 {
 		return h.refuse(env.ID, ErrUnknownOp, map[string]any{"t": env.T})
 	}
 	gateway, available := h.cfg.API.(agentReadGateway)
-	if !available || h.cfg.Redactor == nil {
+	if !available {
 		return h.refuse(env.ID, ErrUnavailable, map[string]any{"subsystem": "api"})
 	}
 	if !h.apiBusy.CompareAndSwap(false, true) {
@@ -52,21 +50,12 @@ func (h *Handler) onAPIRead(env Envelope) error {
 			}
 		}
 		caller, enrolled := h.liveCaller()
-		if !enrolled || !caller.Scopes.Has(protocol.ScopeDiagRun) || !caller.Scopes.Has(route.Scope) {
-			_ = h.refuse(&id, ErrScopeDenied, map[string]any{"needScope": route.Scope})
+		if !enrolled || !caller.Scopes.Has(protocol.ScopeDiagRun) {
+			_ = h.refuse(&id, ErrScopeDenied, map[string]any{"needScope": protocol.ScopeDiagRun})
 			return
 		}
 		req := buildAPIRequest(ctx, caller, request)
-		facts := h.cfg.API.Route(req)
-		if facts.Static || facts.Tier != apiauth.TierRead {
-			_ = h.refuse(&id, ErrScopeDenied, map[string]any{"t": env.T})
-			return
-		}
-		max := int64(protocol.AgentAPIMaxBytes)
-		if read.MaxBytes > 0 {
-			max = read.MaxBytes
-		}
-		writer := &apiWriter{h: h, id: id, ctx: ctx, max: max, free: free, header: http.Header{}, buf: make([]byte, 0, APIChunkBytes)}
+		writer := &apiWriter{h: h, id: id, ctx: ctx, max: protocol.AgentAPIMaxBytes, free: free, header: http.Header{}, buf: make([]byte, 0, APIChunkBytes)}
 		writer.recheck = func() *ErrorBody {
 			if h.isAgent() {
 				if _, refusal, _ := h.agentGate(); refusal != nil {
@@ -74,8 +63,8 @@ func (h *Handler) onAPIRead(env Envelope) error {
 				}
 			}
 			current, ok := h.liveCaller()
-			if !ok || !current.Scopes.Has(protocol.ScopeDiagRun) || !current.Scopes.Has(route.Scope) {
-				return &ErrorBody{Code: ErrScopeDenied, Args: map[string]any{"needScope": route.Scope}}
+			if !ok || !current.Scopes.Has(protocol.ScopeDiagRun) {
+				return &ErrorBody{Code: ErrScopeDenied, Args: map[string]any{"needScope": protocol.ScopeDiagRun}}
 			}
 			return nil
 		}
@@ -86,7 +75,7 @@ func (h *Handler) onAPIRead(env Envelope) error {
 					_, _ = writer.Write([]byte(`{"error":"diagnostic read failed"}`))
 				}
 			}()
-			gateway.ServeAgentRead(writer, req, h.cfg.Redactor())
+			gateway.ServeAgentRead(writer, req, read)
 		}()
 		if err := writer.finish(); err != nil {
 			h.log.Warn("diagnostic API read failed", "err", err)

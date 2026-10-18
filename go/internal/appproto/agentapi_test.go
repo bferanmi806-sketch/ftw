@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/apiauth"
-	"github.com/srcfl/ftw/go/internal/redact"
 	"github.com/srcfl/ftw/go/protocol"
 )
 
@@ -15,17 +14,17 @@ type diagnosticGateway struct {
 	read func(http.ResponseWriter, *http.Request)
 }
 
-func (g *diagnosticGateway) ServeAgentRead(w http.ResponseWriter, r *http.Request, _ *redact.Redactor) {
+func (g *diagnosticGateway) ServeAgentRead(w http.ResponseWriter, r *http.Request, _ protocol.APIRead) {
 	g.read(w, r)
 }
 
-func TestAnAgentDiagnosticReadRequiresItsDataScope(t *testing.T) {
-	for _, hasHistory := range []bool{false, true} {
-		t.Run(map[bool]string{false: "missing history", true: "granted"}[hasHistory], func(t *testing.T) {
+func TestAnAgentDiagnosticReadNeedsOnlyItsDiagnosticGrant(t *testing.T) {
+	for _, hasDiagnostic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing diagnostic grant", true: "granted"}[hasDiagnostic], func(t *testing.T) {
 			r := newAgentRig(t)
-			scopes := []string{protocol.ScopeDiagRun}
-			if hasHistory {
-				scopes = append(scopes, protocol.ScopeHistoryRead)
+			scopes := []string{protocol.ScopeHistoryRead}
+			if hasDiagnostic {
+				scopes = []string{protocol.ScopeDiagRun}
 			}
 			row, _ := r.grant(apiauth.RoleAgent, scopes, nil, protocol.Caps{}, time.Hour, protocol.Principal{Client: "ChatGPT"})
 			h, rec := r.agentSession(row)
@@ -39,7 +38,7 @@ func TestAnAgentDiagnosticReadRequiresItsDataScope(t *testing.T) {
 				_, _ = w.Write([]byte(`{"energy_wh":12}`))
 			}}
 			deliver(t, h, protocol.MsgAPIRead, ptrU32(1), protocol.APIRead{Path: "/api/energy/history"})
-			if !hasHistory {
+			if !hasDiagnostic {
 				if got := body[ErrorBody](t, waitFor(t, rec, MsgError)); got.Code != ErrScopeDenied {
 					t.Fatalf("missing scope: %+v", got)
 				}

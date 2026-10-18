@@ -2,110 +2,153 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"hash"
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/srcfl/ftw/go/internal/apiauth"
-	"github.com/srcfl/ftw/go/internal/redact"
 	"github.com/srcfl/ftw/go/protocol"
 )
 
-// ServeAgentRead runs only a catalogued JSON read through the usual HTTP
-// handler. It buffers and redacts the whole answer on the box before any
-// byte leaves for FTW Cloud. The caller comes from the Noise session.
-func (s *Server) ServeAgentRead(w http.ResponseWriter, request *http.Request, redactor *redact.Redactor) {
+// ServeAgentRead gives a granted diagnostic session all technical reads.
+// It keeps names, addresses, source code and measured data as the handlers
+// return them. Existing handlers still mask saved credentials where they do
+// so on the box page. api.req and all write handlers remain separate.
+func (s *Server) ServeAgentRead(w http.ResponseWriter, request *http.Request, read protocol.APIRead) {
 	caller, named := apiauth.FromRequest(request)
-	route, known := protocol.AgentAPIPath(request.URL.Path)
-	facts := s.Route(request)
-	if !named || redactor == nil || !known || request.Method != http.MethodGet || facts.Static || facts.Tier != apiauth.TierRead ||
-		!caller.Scopes.Has(protocol.ScopeDiagRun) || !caller.Scopes.Has(route.Scope) {
+	if !named || !apiauth.AgentRole(caller.Role) || !caller.Scopes.Has(protocol.ScopeDiagRun) || request.Method != http.MethodGet {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this diagnostic read is not granted"})
 		return
 	}
-	query := request.URL.Query()
-	for name, values := range query {
-		if _, ok := route.Query[name]; !ok || len(values) != 1 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown or repeated query parameter"})
-			return
-		}
-	}
-	// Resolve only ids issued by this box's redactor. A real hardware id or
-	// driver name is never accepted in an agent query.
-	for _, field := range []string{"asset_id", "driver"} {
-		id := query.Get(field)
-		if id == "" {
-			continue
-		}
-		name, ok := s.agentReadID(field, id, redactor)
-		if !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown opaque id; read the asset or series catalogue"})
-			return
-		}
-		query.Set(field, name)
-	}
-	request = request.Clone(request.Context())
-	request.URL.RawQuery = query.Encode()
-	if request.URL.Path == "/api/series" && query.Get("points") == "" {
-		query.Set("points", "500")
-		request.URL.RawQuery = query.Encode()
-	}
-	if raw := query.Get("points"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 5000 {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "points must be between 1 and 5000"})
-			return
-		}
-	}
-	answer := &agentReadBuffer{header: make(http.Header), status: http.StatusOK}
-	s.ServeHTTP(answer, request)
-	if answer.large {
-		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "answer is too large; narrow the time range, points or limit"})
+	if request.URL.Path == protocol.AgentAPICatalogPath {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"routes": s.agentReadCatalog(), "requiredScope": protocol.ScopeDiagRun,
+			"maxPageBytes":    protocol.AgentAPIPageBytes,
+			"troubleshooting": s.agentDebugContext(),
+			"queryPolicy":     "Use the existing API's parameters. Query hints are not a restriction.",
+			"timeUnit":        "Time query parameters since, until, since_ms, until_ms and ts use Unix milliseconds",
+			"pagination":      "Large answers use byte pages. Pass next_offset as offset and sha256 as if_sha256 to detect a changed answer.",
+		})
 		return
 	}
-	var body any
-	dec := json.NewDecoder(bytes.NewReader(answer.body.Bytes()))
-	dec.UseNumber()
-	if !json.Valid(answer.body.Bytes()) || dec.Decode(&body) != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "the diagnostic route did not return JSON"})
+	if !s.agentReadAllowed(request) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "this route is not a diagnostic read; settings and control use their command tools"})
 		return
 	}
-	writeJSON(w, answer.status, redactor.Data(body))
-}
+	if read.Offset < 0 || read.MaxBytes < 0 || read.MaxBytes > protocol.AgentAPIPageBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid diagnostic page"})
+		return
+	}
+	pageBytes := read.MaxBytes
+	if pageBytes == 0 {
+		pageBytes = 64 << 10
+	}
+	answer := &agentReadBuffer{ctx: request.Context(), header: make(http.Header), status: http.StatusOK,
+		offset: read.Offset, limit: pageBytes, digest: sha256.New()}
 
-func (s *Server) agentReadID(field, id string, redactor *redact.Redactor) (string, bool) {
-	if s.deps.State == nil {
-		return "", false
-	}
-	if field == "asset_id" {
-		assets, err := s.deps.State.EnergyAssets()
-		if err == nil {
-			for _, asset := range assets {
-				if redactor.ID(asset.AssetID) == id {
-					return asset.AssetID, true
-				}
-			}
-		}
+	// DiagRun covers all diagnostic reads, including pairing and vehicle
+	// status. Add only these read scopes to the handler context; this does
+	// not change the stored grant, role, caller or any command authority.
+	scopes := append(caller.Scopes.Names(), protocol.ScopeMembersRead, protocol.ScopeCarsRead)
+	caller.Scopes = apiauth.NewScopeSet(scopes...)
+	request = request.WithContext(apiauth.WithCaller(request.Context(), caller))
+	if read.ArchiveMember != "" {
+		s.serveAgentArchive(answer, request, read.ArchiveMember)
 	} else {
-		names, err := s.deps.State.DriverNames()
-		if err == nil {
-			for _, name := range names {
-				if redactor.ID(name) == id {
-					return name, true
-				}
-			}
-		}
+		s.serveAgentHTTP(answer, request)
 	}
-	return "", false
+	if answer.failed != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not read the archive member completely"})
+		return
+	}
+	if request.Context().Err() != nil {
+		return
+	}
+	digest := hex.EncodeToString(answer.digest.Sum(nil))
+	if read.IfSHA256 != "" && read.IfSHA256 != digest {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "the answer changed between pages; start again or narrow the query"})
+		return
+	}
+	if read.Offset > answer.total {
+		writeJSON(w, http.StatusRequestedRangeNotSatisfiable, map[string]string{"error": "offset exceeds the answer length"})
+		return
+	}
+	body := answer.body.Bytes()
+	more := read.Offset+int64(len(body)) < answer.total
+	complete := read.Offset == 0 && !more
+	encoding := "base64"
+	var data any = base64.StdEncoding.EncodeToString(body)
+	if complete && json.Valid(body) {
+		encoding, data = "json", json.RawMessage(body)
+	} else if utf8.Valid(body) && !agentBinaryMedia(answer.header.Get("Content-Type")) {
+		encoding, data = "utf-8", string(body)
+	}
+	result := map[string]any{"content_type": answer.header.Get("Content-Type"), "encoding": encoding, "body": data,
+		"offset": read.Offset, "total_bytes": answer.total, "sha256": digest, "complete": complete, "more": more}
+	if more {
+		result["next_offset"] = read.Offset + int64(len(body))
+	}
+	writeJSON(w, answer.status, result)
 }
 
+// The LAN administration handlers have presence checks as well as data
+// reads. Project their existing read results here without claiming that this
+// remote caller is on the LAN or is an owner, and without admitting mutations.
+func (s *Server) serveAgentHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/agents", "/api/agents/audit":
+		if s.deps.Agents == nil {
+			writeJSON(w, 503, map[string]string{"error": "agents are not available on this box"})
+			return
+		}
+		a := s.deps.Agents
+		if r.URL.Path == "/api/agents/audit" {
+			before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
+			n, _ := strconv.Atoi(r.URL.Query().Get("n"))
+			rows, more, err := a.Audit(before, n)
+			if err != nil {
+				agentError(w, err)
+				return
+			}
+			writeJSON(w, 200, protocol.AuditPage{Rows: nonNil(rows), More: more})
+			return
+		}
+		facts := a.Facts()
+		facts.Widen = false
+		writeJSON(w, 200, agentsPage{AgentList: protocol.AgentList{Agents: nonNil(a.Agents()), Requests: nonNil(a.Requests()), Keys: nonNil(a.ApprovalKeys())}, Box: facts, Registry: registryForPage()})
+	case "/api/cloud", "/api/cloud/preview":
+		link, ok := s.cloudLink(w)
+		if !ok {
+			return
+		}
+		if r.URL.Path == "/api/cloud" {
+			writeJSON(w, 200, link.Status())
+		} else {
+			writeJSON(w, 200, link.Preview())
+		}
+	default:
+		s.ServeHTTP(w, r)
+	}
+}
+
+// Retain one byte page while hashing and counting the whole answer. A large
+// history export or backup has no total-byte cutoff. Context cancellation
+// stops a handler that keeps writing after the session ends.
 type agentReadBuffer struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-	large  bool
-	wrote  bool
+	ctx                  context.Context
+	header               http.Header
+	status               int
+	body                 bytes.Buffer
+	wrote                bool
+	offset, limit, total int64
+	digest               hash.Hash
+	failed               error
 }
 
 func (b *agentReadBuffer) Header() http.Header { return b.header }
@@ -115,10 +158,24 @@ func (b *agentReadBuffer) WriteHeader(status int) {
 	}
 }
 func (b *agentReadBuffer) Write(body []byte) (int, error) {
-	b.WriteHeader(http.StatusOK)
-	if b.large || b.body.Len()+len(body) > protocol.AgentAPIMaxBytes {
-		b.large = true
-		return 0, errors.New("diagnostic answer too large")
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
 	}
-	return b.body.Write(body)
+	b.WriteHeader(http.StatusOK)
+	_, _ = b.digest.Write(body)
+	start := min(int64(len(body)), max(int64(0), b.offset-b.total))
+	count := min(int64(len(body))-start, b.limit-int64(b.body.Len()))
+	if count > 0 {
+		_, _ = b.body.Write(body[start : start+count])
+	}
+	b.total += int64(len(body))
+	return len(body), nil
+}
+
+func agentBinaryMedia(media string) bool {
+	switch media {
+	case "application/zip", "application/gzip", "application/x-gzip", "application/octet-stream":
+		return true
+	}
+	return false
 }

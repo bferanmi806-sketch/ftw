@@ -183,7 +183,7 @@ const (
 	ScopeLogsRead = "ftw.logs.read"
 	// ScopeConfigRead — Configuration the box redacts.
 	ScopeConfigRead = "ftw.config.read"
-	// ScopeDiagRun — Checks that change nothing.
+	// ScopeDiagRun — Full technical diagnostics and read API.
 	ScopeDiagRun = "ftw.diag.run"
 	// ScopeDispatchHold — Hold energy assets for a capped time.
 	ScopeDispatchHold = "ftw.dispatch.hold"
@@ -376,7 +376,7 @@ var RegistryReads = map[string]string{
 	"config.get": "ftw.config.read",
 	// diag.run — A check that changes nothing.
 	"diag.run": "ftw.diag.run",
-	// api.read — Read a diagnostic API route within its data scope.
+	// api.read — Read the full technical diagnostic API.
 	"api.read": "ftw.diag.run",
 }
 
