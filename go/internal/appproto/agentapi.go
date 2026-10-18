@@ -38,7 +38,7 @@ func (h *Handler) onAPIRead(env Envelope) error {
 		var once sync.Once
 		free := func() { once.Do(func() { h.apiBusy.Store(false) }) }
 		defer free()
-		ctx, cancel := context.WithTimeout(h.ctx, apiHandlerTimeout)
+		ctx, cancel := context.WithTimeout(h.ctx, protocol.AgentAPIReadTimeout)
 		defer cancel()
 		if h.isAgent() {
 			_, refusal, end := h.agentGate()

@@ -2,4 +2,4 @@
 "ftw": patch
 ---
 
-Allow MCP diagnostic reads for URL-encoded driver names, including spaces, slashes and percent signs.
+Keep URL-encoded driver names intact in MCP diagnostic reads and allow large exports five minutes to finish.

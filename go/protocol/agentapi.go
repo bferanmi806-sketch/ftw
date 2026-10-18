@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -26,8 +27,9 @@ func DecodeAPIRead(body []byte) (APIRead, error) {
 }
 
 const (
-	AgentAPIMaxBytes    = 1 << 20   // Complete JSON wire answer, including escaped text.
-	AgentAPIPageBytes   = 128 << 10 // Source bytes per page; not a total data limit.
+	AgentAPIReadTimeout = 5 * time.Minute // Large exports may need more time than a status read.
+	AgentAPIMaxBytes    = 1 << 20         // Complete JSON wire answer, including escaped text.
+	AgentAPIPageBytes   = 128 << 10       // Source bytes per page; not a total data limit.
 	AgentAPICatalogPath = "/api/diagnostics/catalog"
 )
 

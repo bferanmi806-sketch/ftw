@@ -34,6 +34,10 @@ func TestAnAgentDiagnosticReadNeedsOnlyItsDiagnosticGrant(t *testing.T) {
 			called := make(chan struct{}, 1)
 			h.cfg.API = &diagnosticGateway{stubAPI: stubAPI{facts: apiauth.RouteFacts{Tier: apiauth.TierRead}}, read: func(w http.ResponseWriter, request *http.Request) {
 				called <- struct{}{}
+				deadline, ok := request.Context().Deadline()
+				if !ok || time.Until(deadline) < time.Minute {
+					t.Error("diagnostic export inherited the short status-read deadline")
+				}
 				if request.Method != http.MethodGet || request.URL.Path != "/api/energy/history" {
 					t.Error("wrong diagnostic request")
 				}
