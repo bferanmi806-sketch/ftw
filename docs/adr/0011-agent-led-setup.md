@@ -141,6 +141,10 @@ model's sample count. Measured days progressively replace the prior through
 the model's existing learning weights. Changing a prior must preserve learned
 history and must not change an equipment safety limit.
 
+If no separate heating estimate exists, an annual whole-house estimate stays
+a coarse prior. Its unlearned share already includes average heating; only
+the measured share adds the learned weather-sensitive heat term.
+
 Missing solar capacity stays unknown until the owner supplies an estimate or
 measurement supports one. An observed production peak is not a verified
 inverter limit. More detailed solar priors can follow measured comparison;

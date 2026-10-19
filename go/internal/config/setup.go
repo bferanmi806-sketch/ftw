@@ -93,6 +93,15 @@ func (c *Config) AnnualBaseKWh() (float64, string) {
 	return base, ""
 }
 
+// AnnualPriorIncludesHeating distinguishes a coarse whole-house prior from
+// a baseline to which a separate weather-sensitive heating term is added.
+func (c *Config) AnnualPriorIncludesHeating() bool {
+	if c.ForecastPriors == nil || c.Weather != nil && c.Weather.HeatingWPerDegC > 0 {
+		return false
+	}
+	return c.ForecastPriors.IncludesHeating == nil || *c.ForecastPriors.IncludesHeating
+}
+
 func (c *Config) MeasurementOnly() bool {
 	return c.Setup != nil && c.Setup.MeasurementOnly
 }

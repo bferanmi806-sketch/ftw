@@ -302,9 +302,10 @@ func (s *Service) Predict(t time.Time) float64 {
 
 // SetAnnualBase changes only the unlearned part of the household estimate.
 // It neither trains buckets nor changes their sample counts or learning ID.
-// Zero restores the generic prior. EV and separately modelled heating must
-// already have been removed by the caller.
-func (s *Service) SetAnnualBase(kWh float64) {
+// Zero restores the generic prior. EV must already be removed. A baseline
+// excludes separately modelled heat; a whole-house prior includes average
+// heat and blends it only with the learned share of the temperature model.
+func (s *Service) SetAnnualBase(kWh float64, includesHeating bool) {
 	if s == nil || math.IsNaN(kWh) || math.IsInf(kWh, 0) || kWh < 0 {
 		return
 	}
@@ -321,6 +322,7 @@ func (s *Service) SetAnnualBase(kWh float64) {
 	for _, p := range Profiles() {
 		if m := s.models[p]; m != nil {
 			m.PriorScale = scale
+			m.PriorIncludesHeating = kWh > 0 && includesHeating
 			if p == ProfileAway {
 				m.PriorScale *= awayPriorScale
 			}
@@ -616,6 +618,8 @@ func (s *Service) Reset() {
 	heating := old.HeatingW_per_degC
 	s.models[profile] = newProfileModel(peak, profile)
 	s.models[profile].HeatingW_per_degC = heating
+	s.models[profile].PriorScale = old.PriorScale
+	s.models[profile].PriorIncludesHeating = old.PriorIncludesHeating
 	s.models[profile].Timezone = s.timezone
 	s.models[profile].ConfigRevision = old.ConfigRevision
 	s.models[profile].LearningStartedMS = old.LearningStartedMS
@@ -683,6 +687,9 @@ func freshProfile(old *Model, profile Profile, zone string, startedMS int64, hea
 		maxPlausibleW = old.MaxPlausibleW
 	}
 	m := newProfileModel(peak, profile)
+	if old != nil {
+		m.PriorScale, m.PriorIncludesHeating = old.PriorScale, old.PriorIncludesHeating
+	}
 	m.Timezone = zone
 	m.ConfigRevision = revision
 	m.MaxPlausibleW = maxPlausibleW

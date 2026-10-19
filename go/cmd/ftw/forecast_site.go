@@ -37,6 +37,7 @@ type forecastSiteConfig struct {
 	configuredAt          time.Time
 	heatingPrior, ratedPV float64
 	annualBase            float64
+	annualIncludesHeating bool
 	priorRevision         string
 }
 
@@ -181,10 +182,12 @@ func (s *forecastSiteConfig) Configure(cfg *config.Config, catalog []drivers.Cat
 	}
 	s.ratedPV = forecastRatedPVW(cfg.Weather)
 	s.annualBase, _ = cfg.AnnualBaseKWh()
+	s.annualIncludesHeating = s.annualBase > 0 && cfg.AnnualPriorIncludesHeating()
 	priorData, _ := json.Marshal(struct {
-		Weather    *config.Weather
-		AnnualBase float64
-	}{weather, s.annualBase})
+		Weather         *config.Weather
+		AnnualBase      float64
+		IncludesHeating bool
+	}{weather, s.annualBase, s.annualIncludesHeating})
 	s.priorRevision = fmt.Sprintf("%x", sha256.Sum256(priorData))
 	s.mu.Unlock()
 	s.RefreshIdentity(time.Now())
@@ -384,6 +387,12 @@ func (s *forecastSiteConfig) AnnualBase() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.annualBase
+}
+
+func (s *forecastSiteConfig) AnnualPrior() (float64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.annualBase, s.annualIncludesHeating
 }
 
 func forecastLearningWeather(w *config.Weather) *config.Weather {

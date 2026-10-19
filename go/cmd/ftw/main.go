@@ -1042,7 +1042,8 @@ func main() {
 					slog.Warn("loadmodel configuration not saved", "err", err)
 				}
 				loadSvc.SeedHeatingCoef(heating)
-				loadSvc.SetAnnualBase(forecastSettings.AnnualBase())
+				annual, includesHeating := forecastSettings.AnnualPrior()
+				loadSvc.SetAnnualBase(annual, includesHeating)
 			}
 		}
 		if pvSvc != nil {
@@ -1399,7 +1400,7 @@ func main() {
 		}
 	}
 	annualBase, _ := cfg.AnnualBaseKWh()
-	loadSvc.SetAnnualBase(annualBase)
+	loadSvc.SetAnnualBase(annualBase, cfg.AnnualPriorIncludesHeating())
 	// SeedHeatingCoef — operator config is a cold-start prior. Once the
 	// load model has accumulated samples in production, its
 	// telemetry-fit HeatingW_per_degC survives restart and the config
