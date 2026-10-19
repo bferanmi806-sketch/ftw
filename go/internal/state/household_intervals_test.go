@@ -123,3 +123,27 @@ func TestHouseholdIntervalsWaitForCommittedProgress(t *testing.T) {
 		t.Fatal("unaligned start accepted")
 	}
 }
+
+// History may show Home use across an estimated minute; training may not.
+func TestHouseholdIntervalsLeaveOutEstimatedMinutes(t *testing.T) {
+	s := sourceStore(t)
+	base := time.Now().UTC().Truncate(24*time.Hour).UnixMilli() - 6*quarterMS
+	end := base + 3*quarterMS
+	for at := base; at <= end; at += 5000 {
+		sourceTick(t, s, at, HistorySources{GridW: 1000})
+	}
+	// A bridged or otherwise estimated minute, as a display rule records it.
+	if _, err := s.history.Exec(`INSERT INTO history_quality VALUES('source_energy',?,?,?) ON CONFLICT(kind,start_ms,resolution_ms) DO UPDATE SET missing=missing|excluded.missing`,
+		base+quarterMS+5*60000, ArchiveResolutionMS, EstimatedLoad); err != nil {
+		t.Fatal(err)
+	}
+	got := householdQuarters(t, s, base, end)
+	if _, ok := got[base+quarterMS]; ok || len(got) != 2 {
+		t.Fatalf("estimated minute became a training label: %v", got)
+	}
+	d, err := s.DailyEnergy(base, end)
+	if err != nil || d.Missing&MissingLoad != 0 {
+		t.Fatal("History lost Home use over an estimated minute", err, d.Missing)
+	}
+	near(t, "History Wh", d.LoadWh, 3*250)
+}
