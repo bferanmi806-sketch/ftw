@@ -40,6 +40,17 @@ func TestSourceLoadDayForgivesShortGaps(t *testing.T) {
 		}, loadWh: 2000 + 2000*15.0/3600, importWh: 1000 + 1000*5.0/3600 + 3000*3595.0/3600},
 		{name: "PV unknown 145 s", receipt: unknownFor(MissingPV, 145000), loadWh: 2000, importWh: 2000},
 		{name: "EV unknown 30 min", receipt: unknownFor(MissingEV, 30*minute), loadWh: 2000, importWh: 2000},
+		// A 2 kW charge ends 25 minutes into a 30-minute gap. The held 2 kW
+		// would make the house negative, so it is not held from then; Home
+		// use loses the six minutes this touches instead of 2 kW for five.
+		{name: "EV finishes while unknown", receipt: func(off int64, v *HistorySources) {
+			if off < 25*minute {
+				v.GridW, v.EVW = 3000, 2000
+			}
+			if off > 0 && off <= 30*minute {
+				v.Missing, v.EVW = MissingEV, 0
+			}
+		}, loadWh: 2000 - 1000*6.0/60, importWh: 1000 + 3000*25.0/60 + 1000*35.0/60},
 		{name: "meter replaced", receipt: func(off int64, v *HistorySources) {
 			if off > 0 {
 				v.Topology = "new meter+charger"

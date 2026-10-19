@@ -155,14 +155,25 @@ func (s *Store) recordSourceEnergyTx(ctx context.Context, tx *sql.Tx, p *History
 // every other interval carries EstimatedLoad, which readers never clear.
 func holdSourceIntervalTx(ctx context.Context, tx *sql.Tx, last sourceCursor, cur sourceReceipt) error {
 	v := last.Sources
-	var missing HistoryMissing
-	for flag, w := range sourceFlows(&v) {
+	var missing, held HistoryMissing
+	flows := sourceFlows(&v)
+	for flag, w := range flows {
 		switch {
 		case v.Missing&flag == 0:
 		case last.Held == nil || last.Held.Missing&flag != 0 || flag == MissingGrid && cur.AtMS-last.GridAt > maxSourceBridgeMS:
 			missing, *w = missing|flag, 0
 		default:
 			*w = *sourceFlows(last.Held)[flag]
+			held |= flag
+		}
+	}
+	// A household never feeds the site. If a held value says it does, the
+	// source changed while unknown, such as a charger that finished.
+	if held != 0 && v.GridW-v.PVW-v.BatteryW-v.EVW-v.V2XW < 0 {
+		for flag, w := range flows {
+			if held&flag != 0 {
+				missing, *w = missing|flag, 0
+			}
 		}
 	}
 	// A snapshot with an invalid configuration has no household balance.
