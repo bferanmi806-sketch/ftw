@@ -300,6 +300,34 @@ func (s *Service) Predict(t time.Time) float64 {
 	return s.activeModelLocked().Predict(t, temp)
 }
 
+// SetAnnualBase changes only the unlearned part of the household estimate.
+// It neither trains buckets nor changes their sample counts or learning ID.
+// Zero restores the generic prior. EV and separately modelled heating must
+// already have been removed by the caller.
+func (s *Service) SetAnnualBase(kWh float64) {
+	if s == nil || math.IsNaN(kWh) || math.IsInf(kWh, 0) || kWh < 0 {
+		return
+	}
+	mean := 0.0
+	for i := 0; i < Buckets; i++ {
+		mean += typicalPrior(i) / Buckets
+	}
+	scale := 1.0
+	if kWh > 0 {
+		scale = kWh * 1000 / (365 * 24 * mean)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range Profiles() {
+		if m := s.models[p]; m != nil {
+			m.PriorScale = scale
+			if p == ProfileAway {
+				m.PriorScale *= awayPriorScale
+			}
+		}
+	}
+}
+
 // PredictWith is like Predict but forces a specific profile's model,
 // regardless of which profile is currently active. The calendar service
 // (issue #498) uses it to predict reduced "away"-profile load for the slots
