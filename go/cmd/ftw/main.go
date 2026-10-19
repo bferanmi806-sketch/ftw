@@ -2951,7 +2951,7 @@ func main() {
 				// charger standdowns, self-tuning or normal physical dispatch.
 				lpMgr.RollSchedules(tickNow.UTC())
 				carsRT.Tick()
-				if _, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot().HistoryOptions); err != nil {
+				if _, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot()); err != nil {
 					slog.Warn("setup measurement persistence failed", "err", err)
 				}
 				continue
@@ -3051,7 +3051,7 @@ func main() {
 				// ctrl, so the stored tick has to show the hold already
 				// released rather than one the blocked tick never executed.
 				clearBatteryManualHoldForDispatchBlock(ctrl, ctrlMu)
-				sampleCount, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot().HistoryOptions)
+				sampleCount, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot())
 				if err != nil {
 					slog.Warn("tick persistence failed", "samples", sampleCount, "err", err)
 				}
@@ -3308,7 +3308,7 @@ func main() {
 			// ---- Persist the tick: history snapshot + flushed metrics ----
 			// One transaction for both — separate commits doubled the WAL
 			// commit rate for no isolation benefit (SD-card wear).
-			sampleCount, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot().HistoryOptions)
+			sampleCount, err := persistTelemetryTick(st, tel, snapshotTickPersistControl(ctrl, ctrlMu), nowMs, watchdogTimeout, energyIdentity, forecastSettings.Snapshot())
 			if err != nil {
 				slog.Warn("tick persistence failed", "samples", sampleCount, "err", err)
 			}
@@ -4000,8 +4000,14 @@ func snapshotTickPersistControl(ctrl *control.State, ctrlMu *sync.Mutex) tickPer
 	}
 }
 
-func persistTelemetryTick(st *state.Store, tel *telemetry.Store, ctrl tickPersistControl, nowMs int64, historyMaxAge time.Duration, identity energyIdentityLookup, options ...telemetry.ForecastOptions) (int, error) {
-	hp, historyAvailable := buildHistoryPoint(tel, ctrl, nowMs, historyMaxAge, options...)
+func persistTelemetryTick(st *state.Store, tel *telemetry.Store, ctrl tickPersistControl, nowMs int64, historyMaxAge time.Duration, identity energyIdentityLookup, site ...forecastSite) (int, error) {
+	var options telemetry.ForecastOptions
+	var sun historySun
+	if len(site) > 0 {
+		options, sun = site[0].HistoryOptions, site[0].HistorySun
+	}
+	hp, historyAvailable := buildHistoryPoint(tel, ctrl, nowMs, historyMaxAge, options)
+	dark := darkPV(hp.Sources, options, sun)
 	if hp.Sources != nil {
 		// Live Load is not an energy observation. The source interval writer
 		// owns historical Load; the chart placeholder stays explicitly unknown.
@@ -4031,6 +4037,9 @@ func persistTelemetryTick(st *state.Store, tel *telemetry.Store, ctrl tickPersis
 			if o.DeviceID != "" {
 				devices = append(devices, string(o.AssetKind)+":"+o.DeviceID)
 			}
+		}
+		if dark {
+			devices = append(devices, sleepingPVDevices(st, tel, identity)...)
 		}
 		sort.Strings(devices)
 		hp.Sources.Topology += "\ndevices:" + strings.Join(devices, "\n")
