@@ -149,6 +149,11 @@
       confirmation.addEventListener("change", function () {
         if (!confirmation.checked) return;
         ctx.captureCurrentTab();
+        if (!(ctx.config.fuse.max_amps > 0)) {
+          confirmation.checked = false;
+          note.textContent = "Enter the main fuse rating from your network contract below before confirming. Keep measurement mode on if it is unknown.";
+          return;
+        }
         var snapshot = JSON.stringify(ctx.config.fuse);
         confirmation.disabled = true;
         note.textContent = "Checking this connection and the live meter…";
