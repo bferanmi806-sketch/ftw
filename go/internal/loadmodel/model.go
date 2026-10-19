@@ -31,9 +31,9 @@ const heatingBoundStep = 0.5
 // heating off must not pull a correct coefficient down.
 const heatingBoundDays = 3
 
-// heatingBoundMinSamples is six hours of cold samples at the service's rate.
+// heatingBoundMinSamples is six hours of cold training intervals.
 // A day with less cold data does not bound the coefficient.
-const heatingBoundMinSamples = int64(6 * time.Hour / defaultSampleInterval)
+const heatingBoundMinSamples = int64(6 * time.Hour / TrainingInterval)
 
 const PlausibleLoadHeadroom = 1.25
 
