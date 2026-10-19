@@ -273,12 +273,16 @@ func (s *Store) walkSiteEnergy(ctx context.Context, from, to int64, visit func(s
 	return rows.Err()
 }
 
+// maxUnknownHomeUsePercent is the share of a period's time that may be
+// unknown while its Home use stays known as an estimate.
+const maxUnknownHomeUsePercent = 1
+
 func (s *Store) aggregateDayEnergy(ctx context.Context, from, to int64) (DayEnergy, error) {
 	var out DayEnergy
 	var originalLoad float64
 	var originalMissing HistoryMissing
 	var estimatedMS, coveredMS int64
-	var sourceMS int64
+	var sourceMS, knownMS int64
 	var first, last int64
 	err := s.walkSiteEnergy(ctx, from, to, func(r siteEnergyRow) error {
 		if first == 0 || r.first < first {
@@ -295,6 +299,9 @@ func (s *Store) aggregateDayEnergy(ctx context.Context, from, to int64) (DayEner
 		coveredMS += r.covered
 		if r.source {
 			sourceMS += r.covered
+			if r.missing&MissingPower == 0 {
+				knownMS += r.covered
+			}
 		}
 		if r.missing&^MissingSoC == MissingLoad|BalanceMismatch || r.missing&^MissingSoC == MissingLoad|MissingEV {
 			if r.estimateCovered > 0 && r.estimateCovered == r.covered {
@@ -314,7 +321,8 @@ func (s *Store) aggregateDayEnergy(ctx context.Context, from, to int64) (DayEner
 		out.LoadWh = originalLoad
 		out.Missing = originalMissing
 	}
-	if out.LoadWh < 0 {
+	negative := out.LoadWh < 0
+	if negative {
 		out.LoadWh = 0
 		out.Missing |= MissingLoad
 	}
@@ -333,6 +341,45 @@ func (s *Store) aggregateDayEnergy(ctx context.Context, from, to int64) (DayEner
 		if coveredMS < last-first {
 			out.Missing |= MissingLoad
 		}
+		// A short unknown share keeps Home use as an estimate: the sum of the
+		// fully known intervals, with unknown time counted as nothing, as
+		// before source history. Other flows keep their own unknowns.
+		span := max(last-first, expected)
+		if !negative && sourceMS == coveredMS && knownMS > 0 && (span-knownMS)*100 <= span*maxUnknownHomeUsePercent {
+			out.Missing = out.Missing&^MissingLoad | EstimatedLoad
+		}
 	}
 	return out, err
+}
+
+// homeUseShareRecount names the one-time recount of cached source days, so
+// days closed under the stricter rule show their Home use too.
+const homeUseShareRecount = "home-use-unknown-share-v1"
+
+func (s *Store) recountSourceDays(ctx context.Context) error {
+	tx, err := s.history.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var done bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM history_migrations WHERE name=?)`, homeUseShareRecount).Scan(&done); err != nil || done {
+		return err
+	}
+	var low string
+	err = tx.QueryRowContext(ctx, `SELECT date(CAST(value AS INTEGER)/1000,'unixepoch','-1 day') FROM history_source_cursor WHERE key='from'`).Scan(&low)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if low != "" {
+		for _, table := range []string{"energy_daily", "energy_daily_partial", "history_daily_quality"} {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE day>=?`, low); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO history_migrations(name) VALUES(?)`, homeUseShareRecount); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

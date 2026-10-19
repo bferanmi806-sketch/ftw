@@ -62,6 +62,10 @@ marked estimate: measured sources keep their snapshots, and an unknown source
 or a stopped Core holds the last known values. Longer gaps stay unknown. This
 is an estimate from received measurements, not a correction of device clocks.
 
+A day or other period keeps its Home use when at most 1 % of its time is
+unknown. The total is then the sum of the known intervals, marked as an
+estimate; unknown time counts as nothing. Other flows keep their own unknowns.
+
 In self-consumption mode, the controller drives the site meter toward the
 grid target (normally 0 W): it charges from live surplus and may discharge
 to cover local load. It must not intentionally export via the battery; export

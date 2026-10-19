@@ -153,6 +153,9 @@ func (s *Store) openHistory() error {
 			return err
 		}
 	}
+	if err := s.recountSourceDays(context.Background()); err != nil {
+		return err
+	}
 	// A process stop has no continuous sampling proof, even when it was brief.
 	// Keep completed energy and quality. Source history may bridge a brief
 	// stop only as a marked estimate; the older paths never bridge it.

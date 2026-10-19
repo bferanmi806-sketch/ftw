@@ -42,11 +42,13 @@ func TestSourceLoadDaySurvivesShortGap(t *testing.T) {
 		{name: "PV unknown 145 s", receipt: unknownFor(MissingPV, 145000), importWh: 2000},
 		{name: "EV unknown 5 min", receipt: unknownFor(MissingEV, 300000), importWh: 2000},
 		{name: "3 min restart", stopMS: 180000},
+		// Each meter measured its own time. Only the 5 s between them is
+		// unknown, under 1 % of the period, and counts as nothing.
 		{name: "meter replaced", receipt: func(off int64, v *HistorySources) {
 			if off > 0 {
 				v.Topology = "new meter+charger"
 			}
-		}},
+		}, known: true, loadWh: 2000 - 1000*5.0/3600, importWh: 2000 - 1000*5.0/3600},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := sourceStore(t)
