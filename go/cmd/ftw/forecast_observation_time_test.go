@@ -145,9 +145,11 @@ func TestForecastPVWaitsForTheHouseholdDecision(t *testing.T) {
 	st := householdHistoryStore(t)
 	f := &forecastTracker{store: st}
 	site := trackerSite()
-	start := time.Now().UTC().Truncate(15*time.Minute).Add(-2 * time.Hour)
+	start := time.Now().UTC().Truncate(15 * time.Minute).Add(-2 * time.Hour)
 	end := start.Add(15 * time.Minute)
-	feed := func(at time.Time) []forecasting.Observation { return f.observationIntervals(ctx, pvReading(at), site, at) }
+	feed := func(at time.Time) []forecasting.Observation {
+		return f.observationIntervals(ctx, pvReading(at), site, at)
+	}
 	for at := start; at.Before(end); at = at.Add(time.Minute) {
 		if out := feed(at); len(out) != 0 {
 			t.Fatalf("partial quarter emitted: %+v", out)
