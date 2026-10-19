@@ -129,7 +129,7 @@ func TestSourceLoadKeepsUnknownDistinctFromZero(t *testing.T) {
 			}
 			// A brief unknown between known receipts is bridged, but only as a
 			// marked estimate. Other missing evidence stays unknown.
-			bridged := kind == "missing EV" || kind == "write gap"
+			bridged := kind == "missing EV" || kind == "write gap" || kind == "topology"
 			known := b[0].missing&MissingLoad == 0
 			if known != (kind == "zero" || kind == "duplicate" || bridged) {
 				t.Fatal("missing evidence classified as measured zero", kind)

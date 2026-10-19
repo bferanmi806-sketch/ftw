@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -8,28 +9,27 @@ import (
 // Two hours of a 1000 W house, sampled every 5 s, with one disturbance one
 // hour in. Observed on v0.154.0-beta.1 (19 October 2026): each short
 // disturbance made the whole day's Home use unknown.
-func TestSourceLoadDaySurvivesShortGap(t *testing.T) {
-	const tick, hour = int64(5000), int64(3600000)
+func TestSourceLoadDayForgivesShortGaps(t *testing.T) {
+	const tick, hour, minute = int64(5000), int64(3600000), int64(60000)
 	for _, c := range []struct {
 		name string
 		// stopMS is a process stop starting one hour in.
 		stopMS int64
 		// receipt alters the snapshot off ms after the first hour.
 		receipt func(off int64, v *HistorySources)
-		known   bool
-		// importWh is checked when set; the recorded grid must survive.
+		// Zero Wh means the total must be unknown.
 		loadWh, importWh float64
 	}{
-		{name: "no disturbance", known: true, loadWh: 2000, importWh: 2000},
-		{name: "20 s restart", stopMS: 20000, known: true, loadWh: 2000, importWh: 2000},
+		{name: "no disturbance", loadWh: 2000, importWh: 2000},
+		{name: "20 s restart", stopMS: 20000, loadWh: 2000, importWh: 2000},
 		{name: "20 s restart, EV and its device back after 30 s", stopMS: 20000, receipt: func(off int64, v *HistorySources) {
 			if off <= 50000 {
 				v.Missing, v.Topology = MissingEV, "grid"
 			}
-		}, known: true, loadWh: 2000, importWh: 2000},
-		{name: "EV unknown 15 s", receipt: unknownFor(MissingEV, 15000), known: true, loadWh: 2000, importWh: 2000},
+		}, loadWh: 2000, importWh: 2000},
+		{name: "EV unknown 15 s", receipt: unknownFor(MissingEV, 15000), loadWh: 2000, importWh: 2000},
 		// The unknown charger holds its last value; the meter keeps its own
-		// receipts. The household carries the 2 kW for 15 s, nothing else.
+		// readings. The household carries the 2 kW for 15 s, nothing else.
 		{name: "EV starts while unknown", receipt: func(off int64, v *HistorySources) {
 			if off > 0 {
 				v.GridW, v.EVW = 3000, 2000
@@ -37,16 +37,24 @@ func TestSourceLoadDaySurvivesShortGap(t *testing.T) {
 			if off > 0 && off <= 15000 {
 				v.Missing, v.EVW = MissingEV, 0
 			}
-		}, known: true, loadWh: 2000 + 2000*15.0/3600, importWh: 1000 + 1000*5.0/3600 + 3000*3595.0/3600},
-		{name: "PV unknown 60 s", receipt: unknownFor(MissingPV, 60000), known: true, loadWh: 2000, importWh: 2000},
-		{name: "PV unknown 145 s", receipt: unknownFor(MissingPV, 145000), importWh: 2000},
-		{name: "EV unknown 5 min", receipt: unknownFor(MissingEV, 300000), importWh: 2000},
-		{name: "3 min restart", stopMS: 180000},
+		}, loadWh: 2000 + 2000*15.0/3600, importWh: 1000 + 1000*5.0/3600 + 3000*3595.0/3600},
+		{name: "PV unknown 145 s", receipt: unknownFor(MissingPV, 145000), loadWh: 2000, importWh: 2000},
+		{name: "EV unknown 30 min", receipt: unknownFor(MissingEV, 30*minute), loadWh: 2000, importWh: 2000},
 		{name: "meter replaced", receipt: func(off int64, v *HistorySources) {
 			if off > 0 {
 				v.Topology = "new meter+charger"
 			}
-		}},
+		}, loadWh: 2000, importWh: 2000},
+		// The meter holds for two minutes. The other 185 s count as nothing,
+		// well inside a tenth of the range; Home use loses the four whole
+		// minutes they touch.
+		{name: "meter unknown 5 min", receipt: unknownFor(MissingGrid, 5*minute), loadWh: 2000 - 1000*240.0/3600, importWh: 2000 - 1000*185.0/3600},
+		{name: "3 min restart", stopMS: 3 * minute, loadWh: 1950, importWh: 1950},
+		// Over a tenth of the range unrecorded: Home use is unknown, and
+		// the recorded import stays known, as before.
+		{name: "15 min restart", stopMS: 15 * minute, importWh: 1750},
+		{name: "meter unknown 20 min", receipt: unknownFor(MissingGrid, 20*minute)},
+		{name: "invalid configuration 30 min", receipt: unknownFor(MissingLoad, 30*minute), importWh: 2000},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := sourceStore(t)
@@ -69,56 +77,100 @@ func TestSourceLoadDaySurvivesShortGap(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if c.importWh != 0 {
-				near(t, "import Wh", d.ImportWh, c.importWh)
+			check := func(name string, flag HistoryMissing, got, want float64) {
+				t.Helper()
+				if known := d.Missing&flag == 0; known != (want != 0) {
+					t.Fatalf("%s known=%v, want %v", name, known, want != 0)
+				}
+				if want != 0 && (got-want > 1e-6 || want-got > 1e-6) {
+					t.Fatalf("%s %v Wh, want %v", name, got, want)
+				}
 			}
-			if got := d.Missing&MissingLoad == 0; got != c.known {
-				t.Fatalf("Home use known=%v, want %v (quality %s)", got, c.known, d.Missing.Quality())
-			}
-			if !c.known {
-				return
-			}
-			if q := d.Missing.Quality(); q != "estimated" {
+			check("Home use", MissingLoad, d.LoadWh, c.loadWh)
+			check("import", MissingGrid, d.ImportWh, c.importWh)
+			if q := d.Missing.Quality(); c.loadWh != 0 && q != "estimated" {
 				t.Fatalf("quality %s, want estimated", q)
 			}
 			if d.Missing&MissingPV != 0 {
 				t.Fatal("PV total became unknown")
 			}
-			if diff := d.LoadWh - c.loadWh; diff > 1e-6 || diff < -1e-6 {
-				t.Fatalf("Home use %v Wh, want %v", d.LoadWh, c.loadWh)
-			}
 		})
 	}
 }
 
-// A bridge that closes after midnight must still land in the closed day, so
-// the day waits for it before it becomes final.
-func TestSourceBridgeHoldsDayOpenUntilItCloses(t *testing.T) {
+// Training reads only measured minutes, so every minute the display holds
+// or bridges keeps its marker, also after retention merges minutes.
+func TestSourceLoadMarksEveryEstimatedMinute(t *testing.T) {
 	s := sourceStore(t)
-	midnight := time.Now().UTC().Truncate(24 * time.Hour).UnixMilli()
-	for at := midnight - 60000; at <= midnight+10000; at += 5000 {
+	base := time.Now().UTC().Truncate(24*time.Hour).UnixMilli() - 24*3600000
+	for at := base; at <= base+30*60000; at += 5000 {
 		v := HistorySources{GridW: 1000}
-		if at > midnight-10000 && at < midnight+10000 {
+		if at > base+10*60000 && at <= base+10*60000+15000 {
 			v.Missing = MissingEV
 		}
 		sourceTick(t, s, at, v)
-		through, _, err := s.HistorySourceProgress(t.Context())
+	}
+	marked := func(width int64) []int64 {
+		t.Helper()
+		rows, err := s.history.Query(`SELECT start_ms FROM history_quality WHERE kind='source_energy' AND resolution_ms=? AND missing&?<>0 ORDER BY start_ms`, width, EstimatedLoad)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if at < midnight+10000 && through > midnight-10000 {
-			t.Fatal("day closed before its bridge")
+		defer rows.Close()
+		var out []int64
+		for rows.Next() {
+			var start int64
+			if err := rows.Scan(&start); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, start-base)
+		}
+		return out
+	}
+	if got := marked(ArchiveResolutionMS); len(got) != 1 || got[0] != 10*60000 {
+		t.Fatal("estimated minutes", got)
+	}
+	if err := s.rollSiteEnergy(context.Background(), base+30*60000); err != nil {
+		t.Fatal(err)
+	}
+	if got := marked(15 * 60000); len(got) != 1 || got[0] != 0 {
+		t.Fatal("marker lost when minutes merged", got)
+	}
+}
+
+// Closed days cached under the whole-day rule are recomputed once.
+func TestSourceDayCacheRecomputedOnce(t *testing.T) {
+	s := sourceStore(t)
+	day := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
+	sourceTick(t, s, day.UnixMilli(), HistorySources{GridW: 1000})
+	if _, err := s.history.Exec(`DELETE FROM history_migrations WHERE name=?`, sourceDayCoverageMigration); err != nil {
+		t.Fatal(err)
+	}
+	key := day.Format("2006-01-02")
+	save := func() {
+		t.Helper()
+		if err := s.SaveDailyEnergyForSourceMode(key, DayEnergy{Missing: MissingLoad, Intervals: 1}, true); err != nil {
+			t.Fatal(err)
 		}
 	}
-	through, _, err := s.HistorySourceProgress(t.Context())
-	if err != nil || through != midnight+10000 {
-		t.Fatal("bridge not committed", through, err)
+	cached := func() bool {
+		t.Helper()
+		_, ok, err := s.LoadDailyEnergy(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
 	}
-	d, err := s.DailyEnergy(midnight-60000, midnight)
-	if err != nil || d.Missing&MissingLoad != 0 {
-		t.Fatal("closed day lost its Home use", err)
+	save()
+	s = reopenSourceStore(t, s)
+	if cached() {
+		t.Fatal("day cached under the old rule survived")
 	}
-	near(t, "closed day Wh", d.LoadWh, 1000.0/60)
+	save()
+	s = reopenSourceStore(t, s)
+	if !cached() {
+		t.Fatal("recomputed day dropped again")
+	}
 }
 
 func unknownFor(flag HistoryMissing, ms int64) func(int64, *HistorySources) {

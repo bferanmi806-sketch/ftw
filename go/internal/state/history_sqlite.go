@@ -162,6 +162,9 @@ func (s *Store) openHistory() error {
  UPDATE history_site_cursor SET value=0 WHERE key='last'`); err != nil {
 		return err
 	}
+	if err := s.refreshSourceDayCache(context.Background()); err != nil {
+		return err
+	}
 	ok = true
 	return nil
 }
