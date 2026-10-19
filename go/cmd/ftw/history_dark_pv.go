@@ -8,9 +8,13 @@ import (
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
-// sunDownZenithDeg is standard sunset: the sun's upper limb below the
-// horizon, refraction included. No panel then gets direct sunlight.
-const sunDownZenithDeg = 90.833
+// Sun positions as zenith angles. After sunset (upper limb below the horizon,
+// refraction included) no panel gets direct sunlight, but diffuse light
+// remains until civil dusk, when the sun is 6° down.
+const (
+	sunsetZenithDeg    = 90.833
+	civilDuskZenithDeg = 96
+)
 
 // historySun places the site for history. The zero value has no position,
 // and then nothing is inferred.
@@ -23,20 +27,33 @@ func historySunOf(lat, lon float64, ok bool) historySun {
 	return historySun{Lat: lat, Lon: lon, Placed: ok}
 }
 
-func (s historySun) down(atMS int64) bool {
-	return s.Placed && sunpos.At(time.UnixMilli(atMS), s.Lat, s.Lon).ZenithDeg > sunDownZenithDeg
+func (s historySun) zenith(atMS int64) (float64, bool) {
+	if !s.Placed {
+		return 0, false
+	}
+	return sunpos.At(time.UnixMilli(atMS), s.Lat, s.Lon).ZenithDeg, true
 }
 
 // darkPV records an unknown PV source as 0 W while the sun is down at the
-// site. That is physics, not interpolation, and the snapshot carries
-// EstimatedLoad so it never reads as measured. Grid, battery and EV keep
-// their own evidence; Load stays unknown for any cause but PV.
+// site: physics, not interpolation. Past civil dusk the 0 W is as good as a
+// reading and carries no marker, so a night with a sleeping inverter also
+// trains the load models; no separate bit records it. In twilight the
+// snapshot carries EstimatedLoad: Home use counts it, training does not.
+// Grid, battery and EV keep their own evidence; Load stays unknown for any
+// cause but PV.
 func darkPV(p *state.HistorySources, opts telemetry.ForecastOptions, sun historySun) bool {
-	if p == nil || p.Missing&state.MissingPV == 0 || !sun.down(p.AtMS) {
+	if p == nil || p.Missing&state.MissingPV == 0 {
+		return false
+	}
+	z, placed := sun.zenith(p.AtMS)
+	if !placed || z <= sunsetZenithDeg {
 		return false
 	}
 	p.PVW = 0
-	p.Missing = p.Missing&^state.MissingPV | state.EstimatedLoad
+	p.Missing &^= state.MissingPV
+	if z <= civilDuskZenithDeg {
+		p.Missing |= state.EstimatedLoad
+	}
 	// historySources sets MissingLoad for the first failing source or for
 	// site configuration. With every other source known and the
 	// configuration valid, PV was that source.

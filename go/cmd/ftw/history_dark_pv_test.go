@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"path/filepath"
 	"slices"
@@ -14,24 +15,37 @@ import (
 )
 
 // Göran's box, 19 October 2026: SMA was silent for 145 s at 02:22 local time,
-// 0 W on both sides, and the day's Home use became unknown.
-func TestHistorySunIsDownAtNightOnly(t *testing.T) {
+// 0 W on both sides, and the day's Home use became unknown. In Västerås that
+// day the sun sets at 17:38 and civil dusk is at about 18:20.
+func TestDarkPVByTimeOfDay(t *testing.T) {
 	stockholm := time.FixedZone("CEST", 2*3600)
 	sun := historySun{Lat: 59.6, Lon: 16.5, Placed: true}
+	const unchanged, estimate, known = "unchanged", "estimate", "known"
 	for _, c := range []struct {
 		at   time.Time
 		sun  historySun
-		down bool
+		want string
 	}{
-		{time.Date(2026, 10, 19, 2, 22, 0, 0, stockholm), sun, true},
-		{time.Date(2026, 10, 19, 12, 0, 0, 0, stockholm), sun, false},
-		// Sunset in Västerås on 19 October is at 17:38.
-		{time.Date(2026, 10, 19, 17, 30, 0, 0, stockholm), sun, false},
-		{time.Date(2026, 10, 19, 17, 45, 0, 0, stockholm), sun, true},
-		{time.Date(2026, 10, 19, 2, 22, 0, 0, stockholm), historySun{}, false},
+		{time.Date(2026, 10, 19, 2, 22, 0, 0, stockholm), sun, known},
+		{time.Date(2026, 10, 19, 12, 0, 0, 0, stockholm), sun, unchanged},
+		{time.Date(2026, 10, 19, 17, 30, 0, 0, stockholm), sun, unchanged},
+		{time.Date(2026, 10, 19, 17, 45, 0, 0, stockholm), sun, estimate},
+		{time.Date(2026, 10, 19, 18, 45, 0, 0, stockholm), sun, known},
+		{time.Date(2026, 10, 19, 2, 22, 0, 0, stockholm), historySun{}, unchanged},
 	} {
-		if got := c.sun.down(c.at.UnixMilli()); got != c.down {
-			t.Errorf("%v placed=%v: down=%v, want %v", c.at, c.sun.Placed, got, c.down)
+		p := &state.HistorySources{AtMS: c.at.UnixMilli(), PVW: 0, Missing: state.MissingPV | state.MissingLoad}
+		applied := darkPV(p, telemetry.ForecastOptions{}, c.sun)
+		got := unchanged
+		switch {
+		case applied && p.Missing == state.EstimatedLoad:
+			got = estimate
+		case applied && p.Missing == 0:
+			got = known
+		case applied || p.Missing != state.MissingPV|state.MissingLoad:
+			got = fmt.Sprintf("missing %b", p.Missing)
+		}
+		if got != c.want {
+			t.Errorf("%s placed=%v: %s, want %s", c.at.Format("15:04"), c.sun.Placed, got, c.want)
 		}
 	}
 	for _, c := range []struct {
@@ -93,7 +107,9 @@ func TestUnknownPVAfterSunsetKeepsHomeUse(t *testing.T) {
 					}
 				}
 				v := historySources(r)
-				darkPV(v, c.opts, c.sun)
+				if darkPV(v, c.opts, c.sun) && v.Missing&state.EstimatedLoad != 0 {
+					t.Fatal("0 W past civil dusk marked as an estimate")
+				}
 				if err := st.RecordTickWithEnergy(state.HistoryPoint{TsMs: at, Sources: v}, nil, nil); err != nil {
 					t.Fatal(err)
 				}
