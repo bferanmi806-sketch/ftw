@@ -153,7 +153,7 @@ func TestHeatingBoundNeedsSixColdHours(t *testing.T) {
 	feed(m, monday, thursday.Add(TrainingInterval), sample)
 	if m.HeatingW_per_degC != 300 || m.HeatingBoundRecentN != 2 {
 		t.Fatalf("%d cold samples counted as a day: coefficient %.2f, %d days",
-			heatingBoundMinSamples-1, m.HeatingW_per_degC, m.HeatingBoundRecentN)
+			heatingBoundMinSamples-heatingBoundSampleWeight, m.HeatingW_per_degC, m.HeatingBoundRecentN)
 	}
 	feed(m, thursday.Add(TrainingInterval), friday.Add(TrainingInterval), sample)
 	// Each bound is 800 W / 8 °C = 100 W/°C.
@@ -177,7 +177,7 @@ func TestHeatingBoundSumsSurviveRestart(t *testing.T) {
 
 	got := NewService(st, telemetry.NewStore(), "site", 4000, 0).Model()
 
-	n := int64(7 * time.Hour / TrainingInterval)
+	n := int64(7 * time.Hour / time.Minute)
 	if got.HeatingBoundDay != "2026-01-07" || got.HeatingBoundSamples != n ||
 		got.HeatingBoundLoadSumW != float64(n)*400 || got.HeatingBoundDeltaSumC != float64(n)*8 ||
 		got.HeatingBoundRecentN != 2 || got.HeatingBoundRecent != [heatingBoundDays]float64{0, 50, 50} {
