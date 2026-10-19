@@ -41,9 +41,8 @@ func (s historySun) zenith(atMS int64) (float64, bool) {
 // reading and carries no marker, so a night with a sleeping inverter also
 // trains the load models; no separate bit records it. In twilight the
 // snapshot carries EstimatedLoad: Home use counts it, training does not.
-// Grid, battery and EV keep their own evidence; Load stays unknown for any
-// cause but PV.
-func darkPV(p *state.HistorySources, opts telemetry.ForecastOptions, sun historySun) bool {
+// Every other flow, and Load, keeps its own evidence.
+func darkPV(p *state.HistorySources, sun historySun) bool {
 	if p == nil || p.Missing&state.MissingPV == 0 {
 		return false
 	}
@@ -55,12 +54,6 @@ func darkPV(p *state.HistorySources, opts telemetry.ForecastOptions, sun history
 	p.Missing &^= state.MissingPV
 	if z <= civilDuskZenithDeg {
 		p.Missing |= state.EstimatedLoad
-	}
-	// historySources sets MissingLoad for the first failing source or for
-	// site configuration. With every other source known and the
-	// configuration valid, PV was that source.
-	if opts.HouseholdInvalidReason == "" && p.Missing&(state.MissingGrid|state.MissingBattery|state.MissingEV|state.MissingV2X) == 0 {
-		p.Missing &^= state.MissingLoad
 	}
 	return true
 }

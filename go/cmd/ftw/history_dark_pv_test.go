@@ -19,28 +19,26 @@ func TestDarkPVByTimeOfDay(t *testing.T) {
 	stockholm := time.FixedZone("CEST", 2*3600)
 	sun := historySun{Lat: 59.6, Lon: 16.5, Placed: true}
 	night := time.Date(2026, 10, 19, 2, 22, 0, 0, stockholm)
-	const unknown = state.MissingPV | state.MissingLoad
 	for _, c := range []struct {
 		name    string
 		at      time.Time
 		sun     historySun
-		opts    telemetry.ForecastOptions
 		missing state.HistoryMissing
 		applied bool
 		want    state.HistoryMissing
 	}{
-		{name: "night", at: night, sun: sun, missing: unknown, applied: true},
-		{name: "after dusk", at: time.Date(2026, 10, 19, 18, 45, 0, 0, stockholm), sun: sun, missing: unknown, applied: true},
-		{name: "twilight", at: time.Date(2026, 10, 19, 17, 45, 0, 0, stockholm), sun: sun, missing: unknown, applied: true, want: state.EstimatedLoad},
-		{name: "noon", at: time.Date(2026, 10, 19, 12, 0, 0, 0, stockholm), sun: sun, missing: unknown, want: unknown},
-		{name: "before sunset", at: time.Date(2026, 10, 19, 17, 30, 0, 0, stockholm), sun: sun, missing: unknown, want: unknown},
-		{name: "no pin", at: night, missing: unknown, want: unknown},
-		// Load stays unknown for any cause but PV.
-		{name: "battery also unknown", at: night, sun: sun, missing: unknown | state.MissingBattery, applied: true, want: state.MissingBattery | state.MissingLoad},
-		{name: "PV array without a measurement source", at: night, sun: sun, opts: telemetry.ForecastOptions{HouseholdInvalidReason: "configured_pv_without_measurement_source"}, missing: unknown, applied: true, want: state.MissingLoad},
+		{name: "night", at: night, sun: sun, missing: state.MissingPV, applied: true},
+		{name: "after dusk", at: time.Date(2026, 10, 19, 18, 45, 0, 0, stockholm), sun: sun, missing: state.MissingPV, applied: true},
+		{name: "twilight", at: time.Date(2026, 10, 19, 17, 45, 0, 0, stockholm), sun: sun, missing: state.MissingPV, applied: true, want: state.EstimatedLoad},
+		{name: "noon", at: time.Date(2026, 10, 19, 12, 0, 0, 0, stockholm), sun: sun, missing: state.MissingPV, want: state.MissingPV},
+		{name: "before sunset", at: time.Date(2026, 10, 19, 17, 30, 0, 0, stockholm), sun: sun, missing: state.MissingPV, want: state.MissingPV},
+		{name: "no pin", at: night, missing: state.MissingPV, want: state.MissingPV},
+		// Other flows, and a configuration fault, keep their own evidence.
+		{name: "battery also unknown", at: night, sun: sun, missing: state.MissingPV | state.MissingBattery, applied: true, want: state.MissingBattery},
+		{name: "PV array without a measurement source", at: night, sun: sun, missing: state.MissingPV | state.MissingLoad, applied: true, want: state.MissingLoad},
 	} {
 		p := &state.HistorySources{AtMS: c.at.UnixMilli(), PVW: -300, Missing: c.missing}
-		applied := darkPV(p, c.opts, c.sun)
+		applied := darkPV(p, c.sun)
 		if applied != c.applied || p.Missing != c.want || applied && p.PVW != 0 {
 			t.Errorf("%s: applied=%v missing=%b PV=%v W, want applied=%v missing=%b", c.name, applied, p.Missing, p.PVW, c.applied, c.want)
 		}
@@ -59,8 +57,9 @@ func TestDarkPVByTimeOfDay(t *testing.T) {
 // every season. The inverter reports 0 W for ten minutes, then sleeps, and a
 // minute later the watchdog takes it offline. With a pin every snapshot is
 // fully known and of one topology, so the writer records measured minutes that
-// train the load models. Without one, PV stays unknown for the writer to
-// hold, and the topology changes when the device drops out.
+// train the load models. Without one, the writer holds PV's last value as an
+// estimate, and the topology changes when the device drops out. Home use is
+// known in both.
 func TestSleepingInverterNightIsMeasured(t *testing.T) {
 	const tick, hour = int64(5000), int64(3600000)
 	for _, c := range []struct {
@@ -110,7 +109,7 @@ func TestSleepingInverterNightIsMeasured(t *testing.T) {
 					r.Known[telemetry.DerPV], r.Reason = false, "offline:sma:pv"
 				}
 				v := historySources(r)
-				dark := darkPV(v, telemetry.ForecastOptions{}, c.sun)
+				dark := darkPV(v, c.sun)
 				v.Topology += historyDevices(st, tel, identity, buildEnergyObservations(st, tel, ctrl, state.HistoryPoint{}, identity), dark)
 				topologies[v.Topology] = true
 				if known := v.Missing == 0; known != (c.measured || off <= 10*60000) {
@@ -125,9 +124,6 @@ func TestSleepingInverterNightIsMeasured(t *testing.T) {
 			}
 			if one := len(topologies) == 1; one != c.measured {
 				t.Fatalf("%d topologies over the night", len(topologies))
-			}
-			if !c.measured {
-				return
 			}
 			d, err := st.DailyEnergy(base, base+8*hour)
 			if err != nil {
