@@ -1,6 +1,8 @@
 package main
 
 import (
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/state"
@@ -63,22 +65,29 @@ func darkPV(p *state.HistorySources, opts telemetry.ForecastOptions, sun history
 	return true
 }
 
-// sleepingPVDevices names PV devices the watchdog took offline. After sunset
-// a silent inverter is asleep, not replaced, so it stays in the topology and
-// its night is not cut out of the record.
-func sleepingPVDevices(st *state.Store, tel *telemetry.Store, identity energyIdentityLookup) []string {
-	if st == nil || tel == nil || identity == nil {
-		return nil
-	}
-	known := st.CachedDevices()
-	var out []string
-	for _, r := range tel.ReadingsByType(telemetry.DerPV) {
-		if h := tel.DriverHealth(r.Driver); h != nil && h.Status != telemetry.StatusOffline {
-			continue
-		}
-		if id := confirmedEnergyDeviceID(identity(r.Driver), known); id != "" {
-			out = append(out, string(state.AssetPV)+":"+id)
+// historyDevices names the hardware behind a history snapshot, as the
+// topology's devices line. The watchdog drops an offline driver from the
+// energy record. After sunset a silent inverter is asleep, not replaced, so it
+// keeps its place: the night stays one topology, and its minutes stay
+// measured.
+func historyDevices(st *state.Store, tel *telemetry.Store, identity energyIdentityLookup, observations []state.EnergyObservation, dark bool) string {
+	var devices []string
+	for _, o := range observations {
+		if o.DeviceID != "" {
+			devices = append(devices, string(o.AssetKind)+":"+o.DeviceID)
 		}
 	}
-	return out
+	if dark && st != nil && tel != nil && identity != nil {
+		known := st.CachedDevices()
+		for _, r := range tel.ReadingsByType(telemetry.DerPV) {
+			if h := tel.DriverHealth(r.Driver); h != nil && h.Status != telemetry.StatusOffline {
+				continue
+			}
+			if id := confirmedEnergyDeviceID(identity(r.Driver), known); id != "" {
+				devices = append(devices, string(state.AssetPV)+":"+id)
+			}
+		}
+	}
+	sort.Strings(devices)
+	return "\ndevices:" + strings.Join(devices, "\n")
 }

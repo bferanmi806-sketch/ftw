@@ -144,7 +144,7 @@ func TestSourceLoadKeepsUnknownDistinctFromZero(t *testing.T) {
 	}
 }
 
-// A snapshot holding an inferred value, such as PV read as 0 W after sunset,
+// A snapshot holding an inferred value, such as PV read as 0 W in twilight,
 // marks every interval it bounds and no other, so storage keeps it apart from
 // measurement.
 func TestSourceLoadMarksIntervalsOfAnEstimatedSnapshot(t *testing.T) {

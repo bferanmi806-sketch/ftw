@@ -4032,17 +4032,7 @@ func persistTelemetryTick(st *state.Store, tel *telemetry.Store, ctrl tickPersis
 	}
 	energyObservations := buildEnergyObservations(st, tel, ctrl, hp, identity)
 	if hp.Sources != nil {
-		var devices []string
-		for _, o := range energyObservations {
-			if o.DeviceID != "" {
-				devices = append(devices, string(o.AssetKind)+":"+o.DeviceID)
-			}
-		}
-		if dark {
-			devices = append(devices, sleepingPVDevices(st, tel, identity)...)
-		}
-		sort.Strings(devices)
-		hp.Sources.Topology += "\ndevices:" + strings.Join(devices, "\n")
+		hp.Sources.Topology += historyDevices(st, tel, identity, energyObservations, dark)
 	}
 	filtered := energyObservations[:0]
 	for _, observation := range energyObservations {
