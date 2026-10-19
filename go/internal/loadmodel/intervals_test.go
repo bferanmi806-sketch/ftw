@@ -47,9 +47,10 @@ func TestTrainsOnceOnEachClosedValidHouseholdInterval(t *testing.T) {
 		case at.Before(base.Add(q)):
 			return state.HistorySources{GridW: 1000}
 		case at.Before(base.Add(2 * q)):
-			// One battery reading is unknown: this quarter is no label.
+			// The battery is unknown for three minutes, longer than any gap
+			// history may bridge as an estimate: this quarter is no label.
 			v := state.HistorySources{GridW: 1000}
-			if at.Sub(base) == q+5*time.Minute {
+			if since := at.Sub(base); since >= q+5*time.Minute && since < q+8*time.Minute {
 				v.Missing = state.MissingBattery
 			}
 			return v

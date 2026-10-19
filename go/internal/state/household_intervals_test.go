@@ -62,9 +62,10 @@ func TestHouseholdIntervalsLeaveOutIncompleteEvidence(t *testing.T) {
 		name string
 		tick func(at, base int64) (HistorySources, bool)
 	}{
+		// Longer than any gap history may bridge as an estimate.
 		{"missing EV", func(at, base int64) (HistorySources, bool) {
 			v := HistorySources{GridW: 1000}
-			if at >= base+quarterMS+60000 && at < base+quarterMS+75000 {
+			if at >= base+quarterMS+60000 && at < base+quarterMS+240000 {
 				v.Missing = MissingEV
 			}
 			return v, true
