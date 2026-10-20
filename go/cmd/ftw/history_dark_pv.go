@@ -72,11 +72,8 @@ func historyDevices(st *state.Store, tel *telemetry.Store, identity energyIdenti
 	}
 	if dark && st != nil && tel != nil && identity != nil {
 		known := st.CachedDevices()
-		for _, r := range tel.ReadingsByType(telemetry.DerPV) {
-			if h := tel.DriverHealth(r.Driver); h != nil && h.Status != telemetry.StatusOffline {
-				continue
-			}
-			if id := confirmedEnergyDeviceID(identity(r.Driver), known); id != "" {
+		for _, driver := range tel.OfflineDrivers(telemetry.DerPV) {
+			if id := confirmedEnergyDeviceID(identity(driver), known); id != "" {
 				devices = append(devices, string(state.AssetPV)+":"+id)
 			}
 		}
