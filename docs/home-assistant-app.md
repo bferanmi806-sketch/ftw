@@ -1,22 +1,19 @@
 # FTW on Home Assistant (0.x beta, pilot)
 
-> **Beta / pilot.** The **FTW (0.x beta)** app is new and is being tested on
-> a few sites first, starting with Home Assistant Green. It gets every FTW
-> beta. If you want the long-tested path, run FTW on a
+> **Beta / pilot.** The **FTW (0.x beta)** app is for a first Home Assistant
+> Green pilot. Reviewed beta pins
+> arrive as app updates. You choose when to install them. You can also run FTW on a
 > [separate Linux host](native-beta.md) and connect it to Home Assistant with
 > the [MQTT integration](ha-integration.md).
->
-> Status: proposed in srcfl/home-assistant-addons#21 — until that is merged
-> the app does not appear in the store. This page describes how it will work.
 
 [Svenska](setup-guide/home-assistant-sv.md)
 
 ## What you need
 
-- Home Assistant OS (for example Home Assistant Green) or Supervised, amd64
+- Home Assistant OS (for example Home Assistant Green), amd64
   or aarch64. Home Assistant Container/Core has no apps; use a
   [separate host](native-beta.md) instead.
-- About 300 MB free disk for the app, plus room for FTW's history.
+- Keep at least 1 GB free for the first build, plus room for history and backups.
 - Your inverter, battery, meter or charger on the same network.
 
 ## 1. Stop any other FTW first
@@ -30,7 +27,7 @@ Only one FTW may control a site.
 
 ## 2. Add the app repository
 
-1. **Settings → Apps → App store**.
+1. **Settings → Apps → Install app** to open the App store.
 2. Menu (⋮) top right → **Repositories**.
 3. Paste `https://github.com/srcfl/home-assistant-addons` and choose **Add**.
 4. Close the dialog. Reload the page if the store has not changed.
@@ -42,13 +39,17 @@ Only one FTW may control a site.
    FTW's release package and checks its checksum. On a Green this takes a few
    minutes; wait for it to finish.
 3. Turn on **Start on boot** and **Watchdog**, then **Start**.
-4. Open the **Log** tab. You should see `FTW starting` and `HTTP API ready`.
+4. Open the **Log** tab. You should see `FTW starting`, then
+   `no config found — starting setup wizard` on a new install.
+   After setup, the log shows `HTTP API ready`.
 
 ## 4. Open FTW and set it up
 
 Choose **Open web UI** (or go to `http://<home-assistant-address>:8080`).
 A new install opens the setup wizard. Follow it to add your devices. The
 [setup guide](setup-guide/en.md) explains each step.
+The button opens FTW directly on your home network. The app does not use
+Home Assistant ingress. For remote access, pair an FTW client as described below.
 
 Give Home Assistant a fixed address (DHCP reservation in the router), so the
 FTW apps and your devices keep finding it.
@@ -70,13 +71,15 @@ and point FTW at your Home Assistant address.
 
 New FTW betas arrive as normal app updates under **Settings → Updates**.
 Expect frequent updates during the beta. Take a backup first if you want a way
-back. `ftw update` does not apply inside the app.
+back. Home Assistant owns the app's updates; the native launcher's trial and
+automatic rollback do not run here. `ftw update` does not apply inside the app.
 
 ## Backup and restore
 
 FTW's data (settings, history, pairing) lives in the app. Home Assistant
 backups include it; the app stops briefly while the backup is taken.
-Restore by restoring the backup (or only the FTW app from it).
+Under **Settings → System → Backups**, restore the FTW app from the backup.
+This restores its version and data together. Keep other FTW instances stopped.
 
 ## Troubleshooting
 

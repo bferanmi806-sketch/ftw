@@ -2,20 +2,17 @@
 
 [English](../home-assistant-app.md)
 
-> **Beta / pilot.** Appen **FTW (0.x beta)** är ny och testas först på några
-> få anläggningar, med start på Home Assistant Green. Den får varje FTW-beta.
-> Vill du ha den beprövade vägen: kör FTW på en
+> **Beta / pilot.** Appen **FTW (0.x beta)** är avsedd för en första pilot på
+> Home Assistant Green. Granskade betaversioner
+> kommer som appuppdateringar. Du väljer när du installerar dem. Du kan också köra FTW på en
 > [separat Linux-dator](update-sv.md) och koppla den till Home Assistant med
 > [MQTT](../ha-integration.md).
->
-> Status: föreslagen i srcfl/home-assistant-addons#21. Tills den är mergad
-> syns appen inte i butiken.
 
 ## Det här behöver du
 
 - Home Assistant OS (till exempel Home Assistant Green), amd64 eller aarch64.
   Home Assistant Container/Core har inga appar.
-- Ungefär 300 MB ledigt plus plats för historik.
+- Ha minst 1 GB ledigt för första bygget, plus plats för historik och backup.
 - Växelriktare, batteri, elmätare eller laddbox på samma nätverk.
 
 ## 1. Stoppa annan FTW först
@@ -29,8 +26,8 @@ Bara en FTW får styra anläggningen.
 
 ## 2. Lägg till app-repot
 
-1. **Inställningar → Appar → Appbutik**.
-2. Menyn (⋮) uppe till höger → **Repositories**.
+1. **Inställningar → Appar → Installera app** för att öppna appbutiken.
+2. Menyn (⋮) uppe till höger → **Git-arkiv** (**Repositories** på engelska).
 3. Klistra in `https://github.com/srcfl/home-assistant-addons`, välj **Lägg till**.
 4. Stäng och ladda om sidan om inget hänt.
 
@@ -41,13 +38,17 @@ Bara en FTW får styra anläggningen.
    releasepaket och kontrollerar kontrollsumman. På en Green tar det några
    minuter.
 3. Slå på **Starta vid uppstart** och **Watchdog**, sedan **Starta**.
-4. Fliken **Logg** ska visa `FTW starting` och `HTTP API ready`.
+4. Fliken **Logg** ska visa `FTW starting`, sedan
+   `no config found — starting setup wizard` vid en nyinstallation.
+   Efter installationen visar loggen `HTTP API ready`.
 
 ## 4. Öppna FTW och ställ in
 
 Välj **Öppna webbgränssnittet** (eller `http://<home-assistant-adress>:8080`).
 Följ installationsguiden och lägg till dina enheter ([guide](sv.md)).
 Ge Home Assistant en fast adress (DHCP-reservation i routern).
+Knappen öppnar FTW direkt på hemnätverket. Appen använder inte Home Assistants
+ingress. För fjärråtkomst parkopplar du en FTW-klient enligt nästa steg.
 
 ## 5. Koppla FTW-appen eller webappen
 
@@ -61,6 +62,9 @@ parkoppla igen.
 - Nya betor kommer som vanliga appuppdateringar under **Inställningar →
   Uppdateringar**. Räkna med täta uppdateringar under betan. Ta backup först.
 - Home Assistants backup tar med FTW:s data. Appen stoppas kort under backup.
+- Återställ FTW-appen via **Inställningar → System → Säkerhetskopior**.
+  Då återställer HA både appversionen och dess data. Håll andra FTW stoppade.
+  Native-installationens automatiska återgång finns inte här; HA äger uppdateringen.
 - Syns inte appen: kontrollera repo-URL:en och ladda om. Misslyckas
   installationen: se **Inställningar → System → Loggar → Supervisor**.
   Öppnas inte webbgränssnittet: kolla appens logg, port 8080 måste vara ledig.

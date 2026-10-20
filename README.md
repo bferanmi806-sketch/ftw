@@ -127,8 +127,7 @@ session and blind relay; relay loss does not stop local control.
 **Beta / pilot:** the new **FTW (0.x beta)** Home Assistant app runs new FTW
 directly on Home Assistant OS, for example a Home Assistant Green. Follow
 [FTW on Home Assistant](docs/home-assistant-app.md) step by step
-([svenska](docs/setup-guide/home-assistant-sv.md)). It is proposed in
-srcfl/home-assistant-addons#21 and is not in the store until that merges.
+([svenska](docs/setup-guide/home-assistant-sv.md)).
 
 The older **FTW (beta)** app is on the retired 3.x line and does not follow new
 0.x releases; do not install it to get current FTW. The tested alternative is
