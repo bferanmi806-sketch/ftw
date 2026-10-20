@@ -36,8 +36,8 @@ Only one FTW may control a site.
 
 1. Find **FTW (0.x beta)** in the store and open it.
 2. Choose **Install**. Home Assistant builds the app on your device from
-   FTW's release package and checks its checksum. On a Green this takes a few
-   minutes; wait for it to finish.
+   FTW's release package and checks its checksum. The first build downloads
+   packages and can take several minutes; wait for it to finish.
 3. Turn on **Start on boot** and **Watchdog**, then **Start**.
 4. Open the **Log** tab. You should see `FTW starting`, then
    `no config found — starting setup wizard` on a new install.

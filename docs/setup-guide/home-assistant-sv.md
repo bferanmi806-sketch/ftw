@@ -35,8 +35,8 @@ Bara en FTW får styra anläggningen.
 
 1. Öppna **FTW (0.x beta)** i butiken.
 2. Välj **Installera**. Home Assistant bygger appen på enheten från FTW:s
-   releasepaket och kontrollerar kontrollsumman. På en Green tar det några
-   minuter.
+   releasepaket och kontrollerar kontrollsumman. Första bygget laddar ned paket
+   och kan ta flera minuter. Vänta tills det är klart.
 3. Slå på **Starta vid uppstart** och **Watchdog**, sedan **Starta**.
 4. Fliken **Logg** ska visa `FTW starting`, sedan
    `no config found — starting setup wizard` vid en nyinstallation.
