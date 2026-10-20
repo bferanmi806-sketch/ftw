@@ -44,7 +44,7 @@ Välj **en** av följande vägar. De är alternativ, inte steg efter varandra:
 | Nya 0.x med native launcher och systemd | Uppdatera den befintliga installationen. Kör inte en nyinstallation. | `ftw update`, eller `ftw update --channel beta` för att välja beta. |
 | Nya 0.x i Docker, byggd från releasepaketet | Behåll Compose-projektet och dess datakatalog. | Ändra `FTW_VERSION` i `.env`, kör `docker compose up -d --build`. |
 | Äldre native-installation utan release slots | Identifiera tjänsten och datavägarna. Ny installation på separat värd/kort, eller en särskilt kontrollerad flytt. | Det befintliga `migrate-native`-verktyget är en pilot, inte en allmän migrationsguide. |
-| Home Assistant-app på gamla serien | Installera nya FTW på en separat Linux-värd och stoppa gamla appens Core, Start on boot och Watchdog innan du tar över. Installera inte 3.x-beta för att få det senaste. | Supervisor hanterar den gamla appen. Den ger ännu ingen väg till nya 0.x. |
+| Home Assistant-app på gamla serien | Installera appen **FTW (0.x beta)** (pilot, [FTW på Home Assistant](home-assistant-sv.md)) eller nya FTW på en separat Linux-värd. Stoppa först gamla appens Core, Start on boot och Watchdog. Installera inte 3.x-beta. | Supervisor hanterar den gamla appen. |
 | Egen build, manuellt startad binär, macOS eller Windows | Identifiera körsättet först. Den dokumenterade nya installationen kräver 64-bitars Linux. | Använd inte Linux-kommandon som om de gällde varje installation. |
 
 `ftw.service` eller en fungerande `ftw status` räcker inte för att skilja
