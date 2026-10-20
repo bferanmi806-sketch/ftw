@@ -418,10 +418,12 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		return
 	}
 	// A positive clamp explains the lower offer, not prolonged zero delivery.
-	// Keep known safety pauses and unconfirmed/stale commands authoritative.
+	// An explicit load-balancer reason can explain zero delivery. Keep known
+	// safety pauses and unconfirmed/stale commands authoritative.
 	evMismatchObserved := !cmd.PowerMismatchSince.IsZero() && cmd.LastObservation.Sub(cmd.PowerMismatchSince) >= 2*time.Minute
 	noPowerObserved := evMismatchObserved || !cmd.NoPowerSince.IsZero() && cmd.NoPowerAt.Sub(cmd.NoPowerSince) >= 2*time.Minute
 	if f.Kind == "ev" && commanded && cmd.Result == "accepted" &&
+		f.LimitedBy != "load_balancer" &&
 		coreReason != "site_meter_stale" && coreReason != "site_phase_currents_stale" && coreReason != "fuse_cooldown" &&
 		f.SentW != nil && *f.SentW > 100 && f.ActualW != nil && math.Abs(*f.ActualW) < 100 &&
 		f.OfferedA != nil && *f.OfferedA > 0 && noPowerObserved {
