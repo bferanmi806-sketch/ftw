@@ -394,3 +394,35 @@ func TestOCPPUnavailableAndFaultedStayUnknown(t *testing.T) {
 		}
 	}
 }
+
+// Connector 0 is the charge point. Its Available is not a cable status.
+func TestOCPPChargePointAvailableIsNotACableStatus(t *testing.T) {
+	f := newForecastOCPPFixture(t, "1.6")
+	chargePointAvailable := func() {
+		f.h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 0, Status: core.ChargePointStatusAvailable})
+	}
+	chargePointAvailable()
+	if r := f.live(); r.LoadQuality == telemetry.LoadMeasured {
+		t.Fatal("connector 0 Available became a measured zero")
+	}
+	if raw := f.tel.Get("charger", telemetry.DerEV); raw == nil || !strings.Contains(string(raw.Data), `"connection_unknown":true`) {
+		t.Fatalf("connector 0 Available reported the cable: %+v", raw)
+	}
+
+	f.status()
+	f.power(3000, time.Now())
+	chargePointAvailable()
+	if r := f.live(); r.LoadQuality != telemetry.LoadMeasured || r.EVW != 3000 {
+		t.Fatalf("connector 0 Available cleared a charging car: %s (%s), EV %v W", r.LoadQuality, r.LoadReason, r.EVW)
+	}
+	if v := f.h.Snapshot()["charger"]; !v.Connected || !v.Charging {
+		t.Fatalf("connector 0 Available unplugged the car: %+v", v)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	f.available()
+	chargePointAvailable()
+	f.age(2 * time.Minute)
+	f.heartbeat()
+	f.wantMeasuredZero(t, "connector 0 after connector 1 Available")
+}

@@ -514,6 +514,14 @@ func (h *Handler) OnDataTransfer(id string, req *core.DataTransferRequest) (*cor
 }
 
 func (h *Handler) OnStatusNotification(id string, req *core.StatusNotificationRequest) (*core.StatusNotificationConfirmation, error) {
+	// Connector 0 is the charge point itself. Its Available, sent at boot and
+	// on reconnect, says the controller is up, not that a cable is out.
+	// Unavailable and Faulted there cover every connector.
+	if req.ConnectorId == 0 && req.Status == core.ChargePointStatusAvailable {
+		slog.Info("OCPP status", "charger", id, "connector", req.ConnectorId, "status", req.Status)
+		h.telSuccess(id)
+		return core.NewStatusNotificationConfirmation(), nil
+	}
 	s := h.state(id)
 	h.mu.Lock()
 	s.connectedKnown = true
