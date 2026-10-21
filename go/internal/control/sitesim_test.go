@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
+	"fmt"
 	"maps"
 	"math"
 	"slices"
@@ -17,16 +17,14 @@ import (
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
-var simKnown = flag.Bool("sitesim.known", false, "also run site scenarios that fail on master")
-
 // simCoreEvery is control_interval_s's default. The plant steps every second.
 const simCoreEvery = 2 * time.Second
 
 // simSite runs Core's control tick against a sitesim.Plant in main.go's
 // order: site import, charger tick, then battery dispatch. Core's settings
-// are the config defaults. Every plant second it checks the invariants.
+// are the config defaults. Every plant second it checks the invariants and
+// keeps the first one broken.
 type simSite struct {
-	t       *testing.T
 	p       *sitesim.Plant
 	lp      loadpoint.Config
 	surplus bool           // the car charges from surplus; otherwise Charge now while plugged
@@ -43,15 +41,30 @@ type simSite struct {
 	meterAt, evAt       time.Time // last reading
 	ev                  sitesim.EVReading
 	seen                map[string]time.Time // each driver's last reading
-	offerW              float64              // the last ev_set_current
+	offerW, batteryCmdW float64              // our last commands
+	raisedAt            time.Time            // our last command that raised import
 	defaulted           bool
+	commands            []simCommand
 
 	heat                 [3]float64 // the phases' I², filtered as Core's heat model does
 	heatSet              bool
 	overSince, needSince time.Time
+	limitSince           time.Time // a phase above the fuse less its margin since
+	ownRaise             bool      // that run followed a raise we sent
 	peakA                float64
 	overLimit            time.Duration // time with a phase over the fuse less its margin
 	idleWithRoom         time.Duration // time the car was idle with room for it
+	failure              string
+}
+
+type simCommand struct {
+	at     time.Time
+	device string
+	w      float64
+}
+
+func (c simCommand) String() string {
+	return fmt.Sprintf("%s %.0f W at %s", c.device, c.w, c.at.Format("Jan 2 15:04:05"))
 }
 
 // boot starts Core with no memory. The devices keep their last command.
@@ -144,7 +157,11 @@ func (s *simSite) send(_ context.Context, driver string, payload []byte) error {
 	if age := s.p.Now.Sub(s.meterAt); age > time.Minute && cmd.PowerW > s.offerW {
 		s.fail("raised the car %.0f -> %.0f W on a meter %v old", s.offerW, cmd.PowerW, age)
 	}
+	if cmd.PowerW > s.offerW {
+		s.raisedAt = s.p.Now
+	}
 	s.offerW = cmd.PowerW
+	s.commands = append(s.commands, simCommand{s.p.Now, "evse", cmd.PowerW})
 	s.p.EVSE.Command(s.p.Now, cmd.PowerW, cmd.PhaseMode, cmd.SplitW, s.p.Voltage)
 	return nil
 }
@@ -154,7 +171,11 @@ func (s *simSite) emit(driver string, kind telemetry.DerType, w float64, soc *fl
 	maps.Copy(d, extra)
 	data, _ := json.Marshal(d)
 	s.store.Update(driver, kind, w, soc, data)
-	s.store.Get(driver, kind).UpdatedAt = s.p.Now
+	r := s.store.Get(driver, kind)
+	r.UpdatedAt = s.p.Now // Receipt on the plant's clock, as are SoC times:
+	if soc != nil {       // Update stamps both with the wall clock.
+		r.SoCUpdatedAt = s.p.Now
+	}
 	s.store.RecordDriverSuccess(driver)
 	s.seen[driver] = s.p.Now
 }
@@ -192,7 +213,7 @@ func (s *simSite) step() {
 }
 
 func (s *simSite) run(d time.Duration) {
-	for end := s.p.Now.Add(d); s.p.Now.Before(end); {
+	for end := s.p.Now.Add(d); s.p.Now.Before(end) && s.failure == ""; {
 		s.step()
 	}
 }
@@ -212,8 +233,8 @@ func (s *simSite) control() {
 	s.state.ObserveSiteImport(s.store)
 	s.ctrl.TickWithDispatch(context.Background(), now, allowed)
 	if !allowed {
-		if b := s.p.Battery; b != nil && !s.defaulted && !s.p.Offline("battery") {
-			b.Command(now, 0) // The driver's default mode, sent once.
+		if !s.defaulted {
+			s.batteryCommand(0) // The driver's default mode, sent once.
 			s.defaulted = true
 		}
 		return
@@ -233,18 +254,37 @@ func (s *simSite) control() {
 		capacityWh = b.CapacityWh
 	}
 	for _, target := range ComputeDispatch(s.store, s.state, map[string]float64{"battery": capacityWh}, s.fuseMaxW()) {
-		if target.Driver == "battery" && s.p.Battery != nil && !s.p.Offline("battery") {
-			s.p.Battery.Command(now, target.TargetW)
+		if target.Driver == "battery" {
+			s.batteryCommand(target.TargetW)
 		}
 	}
 }
 
-// responseTime is how long Core may take to move a phase: a meter reading,
-// a control tick and the slowest device's delay.
-func (s *simSite) responseTime() time.Duration {
+// batteryCommand sends w. More than an amp of extra import on one phase
+// counts as our raise; smaller moves are the PI's trim.
+func (s *simSite) batteryCommand(w float64) {
+	b := s.p.Battery
+	if b == nil || s.p.Offline("battery") {
+		return
+	}
+	if w-s.batteryCmdW > s.p.Voltage {
+		s.raisedAt = s.p.Now
+	}
+	s.batteryCmdW = w
+	s.commands = append(s.commands, simCommand{s.p.Now, "battery", w})
+	b.Command(s.p.Now, w)
+}
+
+// responseTime is how long a command takes to show on the meter: a control
+// tick, the device's delay and a meter reading. slowest picks the slower of
+// the charger and the battery.
+func (s *simSite) responseTime(slowest bool) time.Duration {
 	d := s.p.EVSE.Delay
 	if b := s.p.Battery; b != nil {
-		d = max(d, b.Latency)
+		d = min(d, b.Latency)
+		if slowest {
+			d = max(s.p.EVSE.Delay, b.Latency)
+		}
 	}
 	return d + max(s.p.Meter.Every, sitesim.Step) + simCoreEvery
 }
@@ -255,10 +295,12 @@ func (s *simSite) check() {
 	if p.Fuse.AnyBlown() {
 		s.fail("the main fuse blew: damage %.2f", p.Fuse.Damage)
 	}
-	// (a) Core's own limit, read from the physical currents as fuseHeat
-	// reads the meter: a phase may sit above the fuse less its margin only
-	// while its I²-filtered current is under it, and never above the instant
-	// limit. Either may break only for the response time plus 3 s.
+	// (a) A phase above the fuse less its margin after a raise we sent within
+	// the slowest response time is our own doing and may last 3 s. After an
+	// outside change, Core's own limit, read from the physical currents as
+	// fuseHeat reads the meter, may break for the fastest response time plus
+	// 3 s: a phase may sit above the fuse less its margin only while its
+	// I²-filtered current is under it, and never above the instant limit.
 	fuseA := p.Fuse.RatingA
 	limitA, k := fuseA-evPhaseMarginA, -math.Expm1(-sitesim.Step.Seconds()/fuseHeatTau.Seconds())
 	over, overLimit := false, false
@@ -275,13 +317,21 @@ func (s *simSite) check() {
 	s.heatSet = true
 	if overLimit {
 		s.overLimit += sitesim.Step
+		if s.limitSince.IsZero() {
+			s.limitSince, s.ownRaise = now, !s.raisedAt.IsZero() && now.Sub(s.raisedAt) <= s.responseTime(true)
+		}
+	} else {
+		s.limitSince = time.Time{}
+	}
+	if s.ownRaise && !s.limitSince.IsZero() && now.Sub(s.limitSince) > 3*time.Second {
+		s.fail("a raise we sent kept a phase over %.0f A for more than 3 s", limitA)
 	}
 	if !over {
 		s.overSince = time.Time{}
 	} else if s.overSince.IsZero() {
 		s.overSince = now
 	}
-	if allow := s.responseTime() + 3*time.Second; !s.overSince.IsZero() && now.Sub(s.overSince) > allow {
+	if allow := s.responseTime(false) + 3*time.Second; !s.overSince.IsZero() && now.Sub(s.overSince) > allow {
 		s.fail("over Core's limit for more than %v (heat %.1f A, limit %.0f A)", allow, math.Sqrt(max(s.heat[0], s.heat[1], s.heat[2])), limitA)
 	}
 	// (b) With the meter on schedule, room for the car's minimum and a car
@@ -321,9 +371,11 @@ func (s *simSite) wantsCharge() bool {
 }
 
 func (s *simSite) fail(format string, args ...any) {
-	s.t.Helper()
+	if s.failure != "" {
+		return
+	}
 	st, _ := s.mgr.State(s.lp.ID)
-	s.t.Fatalf("%v: "+format+"\n  phases %.1f A, offer %.0f W (%s), car draws %.0f W, battery %.0f W",
+	s.failure = fmt.Sprintf("%v: "+format+"\n  phases %.1f A, offer %.0f W (%s), car draws %.0f W, battery %.0f W",
 		append(append([]any{s.p.Now.Format("15:04:05")}, args...), s.p.A, s.offerW, st.CommandedReason, s.p.EVSE.DrawW, s.batteryW())...)
 }
 
@@ -335,8 +387,8 @@ func (s *simSite) batteryW() float64 {
 }
 
 // simScenario is one house. known names the finding that makes it fail on
-// master; the scenario is skipped until the fix deletes that line. Run the
-// known ones with -sitesim.known.
+// master: the row must keep failing, and fails once the fix lands until the
+// fix deletes that line. expect checks the plant at times along the run.
 type simScenario struct {
 	name    string
 	known   string
@@ -346,6 +398,12 @@ type simScenario struct {
 	plant   func(*sitesim.Plant)
 	lp      func(*loadpoint.Config)
 	setup   func(*simSite)
+	expect  []simExpect
+}
+
+type simExpect struct {
+	at    time.Duration
+	check func(*sitesim.Plant) error
 }
 
 var simStart = time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
@@ -381,11 +439,13 @@ func planBatteryCharge(w float64) func(*simSite) {
 }
 
 // simDay is a weekday from midnight in Self mode: the car is plugged
-// overnight with Charge now, a 9 kW PV peak at 13:00 fills the battery and
-// a heavy evening puts L1 at 13.7 A before the car. Core restarts at 18:31,
-// the battery driver drops out at 20:01 and the meter goes silent at 22:31.
+// overnight with Charge now, a 9 kW PV peak at 13:00 fills the 20 kWh
+// battery by 12:45 and a heavy evening puts L1 at 13.7 A before the car.
+// The battery lasts the heavy evening; "battery reaches its floor" is the
+// case where it does not. Core restarts at 18:31, the battery driver drops
+// out at 20:01 and the meter goes silent at 22:31.
 func simDay(p *sitesim.Plant) {
-	p.Battery = &sitesim.Battery{Phases: 3, MaxChargeW: 5000, MaxDischargeW: 5000, CapacityWh: 10000, SoC: .5, Latency: 2 * time.Second}
+	p.Battery = &sitesim.Battery{Phases: 3, MaxChargeW: 5000, MaxDischargeW: 5000, CapacityWh: 20000, SoC: .5, Latency: 2 * time.Second}
 	for q := range 96 {
 		h, houseW, pvW := float64(q)/4, 250.0, 0.0
 		switch {
@@ -441,7 +501,8 @@ func simScenarios() []simScenario {
 					{At: 15 * time.Minute, Do: func(p *sitesim.Plant) { p.HouseW = houseA(20, 20, 20) }},
 				}
 			}},
-		{name: "slow cloud charger 60 s", run: 15 * time.Minute, plant: slowCharger(time.Minute)},
+		{name: "slow cloud charger 60 s", known: "rises stack on a charger slower than evSettle, ev_fuse_budget.go:204", run: 15 * time.Minute,
+			plant: slowCharger(time.Minute)},
 		{name: "slow cloud charger 120 s", known: "rises stack on a charger slower than evSettle, ev_fuse_budget.go:204", run: 15 * time.Minute,
 			plant: slowCharger(2 * time.Minute)},
 		{name: "#1761 replay", run: 20 * time.Minute,
@@ -453,7 +514,14 @@ func simScenarios() []simScenario {
 			lp: func(c *loadpoint.Config) {
 				c.MaxChargeW, c.AllowedStepsW = 10350, c.AllowedStepsW[:len(c.AllowedStepsW)-1]
 			},
-			setup: planBatteryCharge(9400)},
+			setup: planBatteryCharge(9400),
+			expect: []simExpect{{9*time.Minute + 50*time.Second, func(p *sitesim.Plant) error {
+				offerW := p.EVSE.OfferA * p.Voltage * float64(p.EVSE.OfferPhases)
+				if offerW != 10350 || math.Abs(p.EVSE.DrawW-4200) > 50 || math.Abs(p.Battery.W-9400) > 200 {
+					return fmt.Errorf("not the #1761 state before the car takes its offer: offer %.0f W, car %.0f W, battery %.0f W", offerW, p.EVSE.DrawW, p.Battery.W)
+				}
+				return nil
+			}}}},
 		{name: "meter every 30 s after a cut", known: "a meter slower than evSettle makes every reading a gap, ev_fuse_budget.go:141", run: 10 * time.Minute,
 			plant: func(p *sitesim.Plant) {
 				p.HouseW = houseA(3, 3, 3)
@@ -479,32 +547,91 @@ func simScenarios() []simScenario {
 				planBatteryCharge(0)(s)
 				s.mgr.SetSchedule(s.lp.ID, loadpoint.Schedule{SurplusUnlockBatSoC: .9})
 			}},
+		{name: "battery reaches its floor under Charge now", known: "the battery stops at its 5 % floor with no room for that, dispatch.go:3540", run: 5 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.HouseW = houseA(13.7, 12, 12)
+				p.Battery = &sitesim.Battery{Phases: 3, MaxChargeW: 5000, MaxDischargeW: 5000, CapacityWh: 10000, SoC: .07, Latency: 2 * time.Second}
+			}},
 		{name: "a day", start: time.Date(2026, 10, 21, 0, 0, 0, 0, time.Local), run: 24 * time.Hour, plant: simDay},
 	}
+}
+
+// runSimScenario runs sc from start and returns the site, with the first
+// broken invariant or expectation in failure.
+func runSimScenario(sc simScenario, start time.Time) *simSite {
+	p := simPlant(start)
+	if sc.plant != nil {
+		sc.plant(p)
+	}
+	lp := simLoadpoint()
+	if sc.lp != nil {
+		sc.lp(&lp)
+	}
+	s := &simSite{p: p, lp: lp, surplus: sc.surplus, setup: sc.setup}
+	s.boot()
+	for _, e := range sc.expect {
+		s.run(start.Add(e.at).Sub(p.Now))
+		if err := e.check(p); err != nil {
+			s.fail("%v", err)
+		}
+	}
+	s.run(start.Add(sc.run).Sub(p.Now))
+	return s
 }
 
 func TestSiteSimScenarios(t *testing.T) {
 	for _, sc := range simScenarios() {
 		t.Run(sc.name, func(t *testing.T) {
-			if sc.known != "" && !*simKnown {
-				t.Skip("known: " + sc.known)
-			}
 			start := sc.start
 			if start.IsZero() {
 				start = simStart
 			}
-			p := simPlant(start)
-			if sc.plant != nil {
-				sc.plant(p)
+			s := runSimScenario(sc, start)
+			t.Logf("peak phase %.1f A, %v over %.0f A; car idle with room %v", s.peakA, s.overLimit, s.p.Fuse.RatingA-evPhaseMarginA, s.idleWithRoom)
+			switch {
+			case sc.known == "" && s.failure != "":
+				t.Fatal(s.failure)
+			case sc.known != "" && s.failure == "":
+				t.Fatalf("passes now: delete its known line (%s)", sc.known)
+			case sc.known != "":
+				t.Logf("fails as known (%s): %s", sc.known, s.failure)
 			}
-			lp := simLoadpoint()
-			if sc.lp != nil {
-				sc.lp(&lp)
-			}
-			s := &simSite{t: t, p: p, lp: lp, surplus: sc.surplus, setup: sc.setup}
-			s.boot()
-			s.run(sc.run)
-			t.Logf("peak phase %.1f A, %v over %.0f A; car idle with room %v", s.peakA, s.overLimit, p.Fuse.RatingA-evPhaseMarginA, s.idleWithRoom)
 		})
 	}
+}
+
+// Core reads only the plant's clock: a run that crosses the wall clock does
+// what the same run a day earlier or later does. Battery-full latching once
+// read SoC times from the wall clock.
+func TestSiteSimIgnoresWallClock(t *testing.T) {
+	sc := simScenario{run: 15 * time.Hour, plant: simDay}
+	// The battery is full from 12:45, so it is full when the plant passes now.
+	base := time.Now().Add(-13*time.Hour - 30*time.Minute).Truncate(time.Second)
+	want := runSimScenario(sc, base)
+	if want.failure != "" {
+		t.Fatal(want.failure)
+	}
+	for _, shift := range []time.Duration{-24 * time.Hour, 24 * time.Hour} {
+		got := runSimScenario(sc, base.Add(shift))
+		if i := firstCommandDiff(want, got, shift); i >= 0 {
+			t.Fatalf("shifted %v: command %d is %v, want %v", shift, i, commandAt(got.commands, i), commandAt(want.commands, i))
+		}
+	}
+}
+
+func firstCommandDiff(a, b *simSite, shift time.Duration) int {
+	for i := range max(len(a.commands), len(b.commands)) {
+		x, y := commandAt(a.commands, i), commandAt(b.commands, i)
+		if x.device != y.device || x.w != y.w || !x.at.Add(shift).Equal(y.at) {
+			return i
+		}
+	}
+	return -1
+}
+
+func commandAt(log []simCommand, i int) simCommand {
+	if i < len(log) {
+		return log[i]
+	}
+	return simCommand{}
 }
