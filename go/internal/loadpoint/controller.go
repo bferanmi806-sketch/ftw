@@ -509,8 +509,8 @@ func (c *Controller) sendCycleWithDeadline(
 	return c.send(cmdCtx, driver, payload)
 }
 
-// SetFuseEVMax wires the joint allocator's verdict from control.State.
-// Called once at startup from main.go. The returned (cap_w, true) is
+// SetFuseEVMax wires control.EVFuseBudget, the EVs' share of the site's
+// room. Called once at startup from main.go. The returned (cap_w, true) is
 // honored as a hard upper bound on this tick's EV command; (_, false)
 // means no constraint. Pass nil to disable.
 func (c *Controller) SetFuseEVMax(f func() (float64, bool)) {

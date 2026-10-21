@@ -57,59 +57,40 @@ func (h *fuseHeat) step(at time.Time, amps []float64) {
 	copy(h.amps[:], amps)
 }
 
-// overA is how far the importing phases the budget no longer covers sit
-// above limitA on this reading: a phase whose filtered current is over
-// limitA, or one above instantA. Zero while the budget covers every phase.
-// An exporting phase is never over: less EV load would raise its export.
-func (h *fuseHeat) overA(amps []float64, limitA, instantA float64) float64 {
-	over := 0.0
-	for i, a := range amps {
-		if h.sq[i] > limitA*limitA || a > instantA {
-			over = math.Max(over, a-limitA)
-		}
-	}
-	return over
-}
-
-// levelA is the highest phase current, with its direction, plus what we
-// sent that it may not show yet. An importing phase counts at the higher of
-// the reading and its heat, so a rise never spends heat the last minute has
-// already used. An exporting phase counts at its reading: new load lowers
-// its current. Rises and starts read it, so a rise never takes room an
-// earlier rise will take either.
-func (h *fuseHeat) levelA(amps []float64, pendingA [3]float64) float64 {
-	level := math.Inf(-1)
-	for i, a := range amps {
-		if a >= 0 {
-			a = math.Max(a, math.Sqrt(h.sq[i]))
-		}
-		level = math.Max(level, a+pendingA[i])
-	}
-	return level
-}
-
 // worstA is the highest filtered phase current.
 func (h *fuseHeat) worstA() float64 {
 	return math.Sqrt(max(h.sq[0], h.sq[1], h.sq[2]))
 }
 
-// stepFuseHeat folds each new site reading into the model, whether or not a
-// car is plugged in.
-func (s *State) stepFuseHeat(meter *telemetry.DerReading) {
+// stepFuseHeat folds each new site reading into the model once, at amps,
+// whichever decision reads it first.
+func (s *State) stepFuseHeat(meter *telemetry.DerReading, amps []float64) {
 	if s.fuseHeat.set && !meter.UpdatedAt.After(s.fuseHeat.at) {
 		return
 	}
-	if amps, _, valid := phaseCurrentsA(meter, s); valid {
-		s.fuseHeat.step(meter.UpdatedAt, amps)
-	}
+	s.fuseHeat.step(meter.UpdatedAt, amps)
 }
 
-// phaseCurrentsA reads the site's configured phases, import positive. A
-// phase's direction is its power's sign in the same reading: P1 and many
-// meters report current as a magnitude. Without that phase's power the
-// current counts as import, the safe side. present is false when the meter
-// reports no phase currents; valid is false when they cannot be used.
+// phaseCurrentsA reads the site's configured phases with SitePhaseCurrents.
+// valid is also false when the fuse is not described.
 func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, present, valid bool) {
+	if !finiteFuseValue(state.SiteFuseAmps) || !finiteFuseValue(state.SiteFuseVoltage) || state.SiteFuseAmps <= 0 || state.SiteFuseVoltage <= 0 {
+		_, present, _ = SitePhaseCurrents(meter, 3)
+		return nil, present, false
+	}
+	return SitePhaseCurrents(meter, state.SiteFusePhases)
+}
+
+// SitePhaseCurrents reads a site reading's current on each of the first
+// phases, import positive, as fuse protection reads it. A phase's direction
+// is its power's sign in the same reading: P1 and many meters report current
+// as a magnitude. Without that phase's power the current counts as import,
+// the safe side. present is false when the reading has no phase currents;
+// valid is false when any of the phases is missing or unreadable.
+func SitePhaseCurrents(meter *telemetry.DerReading, phases int) (amps []float64, present, valid bool) {
+	if meter == nil {
+		return nil, false, false
+	}
 	// DER data uses snake case; separate fields retain absent-vs-zero.
 	var data struct {
 		L1  *float64 `json:"l1_a"`
@@ -122,11 +103,11 @@ func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, 
 	if json.Unmarshal(meter.Data, &data) != nil || (data.L1 == nil && data.L2 == nil && data.L3 == nil) {
 		return nil, false, false
 	}
-	if !finiteFuseValue(state.SiteFuseAmps) || !finiteFuseValue(state.SiteFuseVoltage) || state.SiteFuseAmps <= 0 || state.SiteFuseVoltage <= 0 || state.SiteFusePhases < 1 || state.SiteFusePhases > 3 {
+	if phases < 1 || phases > 3 {
 		return nil, true, false
 	}
 	powers := []*float64{data.L1W, data.L2W, data.L3W}
-	for i, a := range []*float64{data.L1, data.L2, data.L3}[:state.SiteFusePhases] {
+	for i, a := range []*float64{data.L1, data.L2, data.L3}[:phases] {
 		if a == nil || !finiteFuseValue(*a) {
 			return nil, true, false
 		}

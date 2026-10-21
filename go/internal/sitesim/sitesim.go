@@ -131,6 +131,7 @@ func (p *Plant) Step() Tick {
 				r.PhaseA[i] = math.Abs(a)
 			}
 		}
+		r.W += p.Meter.TotalBiasW
 		tick.Meter = r
 	}
 	if b := p.Battery; b != nil && !p.Offline("battery") {
@@ -159,7 +160,8 @@ type timedW struct {
 // second when Every is zero.
 type Meter struct {
 	Every       time.Duration
-	Unsigned    bool // phase currents as magnitudes
+	Unsigned    bool    // phase currents as magnitudes
+	TotalBiasW  float64 // added to the total alone, as a Pixii total that disagrees with its phases
 	last        time.Time
 	silentUntil time.Time
 }
