@@ -729,8 +729,6 @@ func (s *Server) collectFindings(
 			"The required power measurements do not form a valid balance. " +
 				"Load forecast comparisons are skipped until that balance is available."})
 	}
-	if !snap.HaveLoad {
-	}
 
 	if ctrl.PlanStale {
 		out = append(out, finding{sevProblem, "The plan is stale",

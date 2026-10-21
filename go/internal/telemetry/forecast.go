@@ -214,6 +214,9 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 			flows[key(f)] = f
 		}
 	}
+	// Kinds configured twice: live Home use leaves them out, never subtracts twice.
+	duplicate := map[DerType]bool{}
+	var duplicateW float64
 	ids := map[string]ForecastFlow{}
 	for _, f := range opts.ExpectedFlows {
 		if f.DerType == DerVehicle || (f.DerType == DerMeter && f.Driver != siteMeter) {
@@ -223,6 +226,7 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 			if old, ok := ids[f.FlowID]; ok {
 				fail("duplicate_flow:"+f.FlowID, f.DerType == DerPV || old.DerType == DerPV)
 				out.Known[f.DerType], out.Known[old.DerType] = false, false
+				duplicate[f.DerType], duplicate[old.DerType] = true, true
 			}
 			ids[f.FlowID] = f
 		}
@@ -234,6 +238,7 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 			if _, ok := flows[f.Driver+":"+DerV2X.String()]; ok {
 				fail("duplicate_charger:"+f.Driver, false)
 				out.Known[DerEV], out.Known[DerV2X] = false, false
+				duplicate[DerEV], duplicate[DerV2X] = true, true
 			}
 		}
 	}
@@ -343,6 +348,9 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 				pvLast = powerAt
 			}
 		}
+		if duplicate[f.DerType] {
+			duplicateW += powerW
+		}
 		switch f.DerType {
 		case DerMeter:
 			out.GridW = powerW
@@ -380,7 +388,7 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 		fail("invalid_balance", false)
 	}
 	out.PVLiveKnown = pvLiveKnown && pvCount > 0 && !math.IsNaN(out.PVW) && !math.IsInf(out.PVW, 0)
-	out.setLiveLoad(liveIssue, meterIssue)
+	out.setLiveLoad(out.HouseholdW+duplicateW, liveIssue, meterIssue)
 	return out
 }
 
@@ -489,7 +497,7 @@ func (r ForecastReading) Error() error {
 // was read. A missing battery, EV, V2X or daytime PV is left out, as Core did
 // before history qualification, and the result is an estimate. It is unknown
 // only without a usable site meter. Quality is a hint and never hides it.
-func (out *ForecastReading) setLiveLoad(issue, meterIssue string) {
+func (out *ForecastReading) setLiveLoad(w float64, issue, meterIssue string) {
 	if !out.Known[DerMeter] || meterIssue != "" {
 		if meterIssue == "" {
 			meterIssue = "site_meter_unknown"
@@ -497,7 +505,6 @@ func (out *ForecastReading) setLiveLoad(issue, meterIssue string) {
 		out.LoadKnown, out.LoadQuality, out.LoadReason = false, LoadUnknown, meterIssue
 		return
 	}
-	w := out.HouseholdW
 	if math.IsNaN(w) || math.IsInf(w, 0) {
 		out.LoadKnown, out.LoadQuality, out.LoadReason = false, LoadUnknown, "nonfinite_balance"
 		return

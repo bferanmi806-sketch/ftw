@@ -134,3 +134,17 @@ func TestLiveLoadDarkDoesNotHideMalformedPV(t *testing.T) {
 		t.Fatalf("sign fault hidden at night: pv=%t %s %q", r.PVLiveKnown, r.LoadQuality, r.LoadReason)
 	}
 }
+
+func TestLiveLoadDuplicateChargerIsNotSubtractedTwice(t *testing.T) {
+	s := NewStore()
+	for _, d := range []string{"meter", "wallbox"} {
+		s.EnsureDriverHealth(d)
+	}
+	s.Update("meter", DerMeter, 5000, nil, nil)
+	s.Update("wallbox", DerEV, 3000, nil, nil)
+	s.Update("wallbox", DerV2X, 3000, nil, nil)
+	r := s.LiveMeasurementNow("meter", ForecastOptions{})
+	if !r.LoadKnown || r.LoadW != 5000 || r.LoadQuality != LoadEstimated || r.LoadReason != "duplicate_charger:wallbox" {
+		t.Fatalf("duplicate charger: %v known=%t %q", r.LoadW, r.LoadKnown, r.LoadReason)
+	}
+}
