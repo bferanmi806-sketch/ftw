@@ -301,7 +301,7 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 		}
 		if reason != "" {
 			switch {
-			case pv && darkness != DarknessUnknown:
+			case pv && darkness != DarknessUnknown && pvUnread(reason):
 				// Asleep after sunset: 0 W for live use. In twilight Home
 				// use is an estimate. History and forecasts keep their own
 				// evidence through Valid/Known.
@@ -513,4 +513,14 @@ func (out *ForecastReading) setLiveLoad(issue, meterIssue string) {
 		return
 	}
 	out.LoadQuality, out.LoadReason = LoadEstimated, issue
+}
+
+// pvUnread: the PV source gave no usable reading. Only then can darkness stand
+// in for it. A malformed reading (wrong sign, non-finite, future) stays a fault.
+func pvUnread(reason string) bool {
+	switch reason {
+	case "missing:", "offline:", "stale:", "unknown_power:":
+		return true
+	}
+	return false
 }

@@ -115,3 +115,13 @@ func TestLiveLoadNegativeBalanceIsUnknown(t *testing.T) {
 		t.Fatalf("negative balance: known=%t %q", r.LoadKnown, r.LoadReason)
 	}
 }
+
+func TestLiveLoadDarkDoesNotHideMalformedPV(t *testing.T) {
+	s, opts := andersSite(DarknessNight)
+	s.DriverHealthMut("growatt").RecordSuccess()
+	s.Get("growatt", DerPV).RawW = 300 // positive PV: a sign fault Update would refuse
+	r := s.LiveMeasurementNow("pixii", opts)
+	if r.PVLiveKnown || r.Sources["growatt:pv"].Dark || r.LoadQuality != LoadEstimated || r.LoadReason != "invalid_sign:growatt:pv" {
+		t.Fatalf("sign fault hidden at night: pv=%t %s %q", r.PVLiveKnown, r.LoadQuality, r.LoadReason)
+	}
+}
