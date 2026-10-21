@@ -171,13 +171,17 @@ func bootstrapAssistant(save func(*config.Config) error, restart func() error) h
 			writeBootstrapJSON(w, http.StatusBadRequest, map[string]string{"error": "send one setup request"})
 			return
 		}
-		hash, err := api.HashInitialLANPassword(q.Password)
+		var hash string
+		var err error
+		if !api.HomeAssistantIngress(r) {
+			hash, err = api.HashInitialLANPassword(q.Password)
+		}
 		if err != nil {
 			writeBootstrapJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 		cfg := config.NewSetup()
-		cfg.API.LANAuth, cfg.LANPasswordHash = true, hash
+		cfg.API.LANAuth, cfg.LANPasswordHash = !api.HomeAssistantIngress(r), hash
 		if err := save(cfg); err != nil {
 			writeBootstrapJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return

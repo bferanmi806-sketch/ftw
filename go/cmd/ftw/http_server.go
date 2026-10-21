@@ -2,7 +2,10 @@ package main
 
 import (
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/srcfl/ftw/go/internal/api"
 )
 
 const (
@@ -14,6 +17,10 @@ const (
 )
 
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	if os.Getenv("FTW_BUNDLE") == "home_assistant_addon" && os.Getenv("FTW_HA_INGRESS") == "1" {
+		addr = ":18099"
+		handler = api.WithHomeAssistantIngress(handler)
+	}
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
