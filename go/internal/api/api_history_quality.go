@@ -29,6 +29,9 @@ func (s *Server) qualifyStatusHistory(resp map[string]any, siteMeter string) {
 	}
 	if !r.Valid {
 		missing |= state.MissingLoad
+	} else if r.PVAssumedZero {
+		// Every PV source is either measured or dark and offline (0 W).
+		missing &^= state.MissingPV
 	}
 	if opts.PVInvalidReason != "" {
 		missing |= state.MissingPV

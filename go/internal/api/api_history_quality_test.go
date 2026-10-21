@@ -134,3 +134,29 @@ func TestLiveHistoryQualityConfiguredPVWithoutMeasurementIsUnknown(t *testing.T)
 		t.Fatal("unmeasured configured PV reported as zero", resp)
 	}
 }
+
+// Anders' night case: Growatt drops offline after sunset while the Pixii
+// meter and battery keep reporting. PV reads 0 and the home load stays shown.
+func TestStatusDarkOfflinePVKeepsLoad(t *testing.T) {
+	tel := telemetry.NewStore()
+	for _, name := range []string{"pixii", "growatt"} {
+		tel.EnsureDriverHealth(name)
+	}
+	tel.Update("pixii", telemetry.DerMeter, 780, nil, nil)
+	tel.Update("pixii", telemetry.DerBattery, -200, nil, nil)
+	tel.RecordDriverSuccess("pixii")
+	tel.Update("growatt", telemetry.DerPV, 0, nil, nil)
+	tel.DriverHealthMut("growatt").SetOffline()
+	srv := New(&Deps{Tel: tel})
+	resp := map[string]any{}
+	srv.qualifyStatusHistory(resp, "pixii")
+	if resp["pv_w"] != float64(0) || resp["load_w"] != float64(980) || resp["history_reason"] != "" {
+		t.Fatal(resp)
+	}
+	tel.Update("growatt", telemetry.DerPV, -3000, nil, nil)
+	tel.DriverHealthMut("growatt").SetOffline()
+	srv.qualifyStatusHistory(resp, "pixii")
+	if resp["pv_w"] != nil || resp["load_w"] != nil || resp["history_reason"] != "offline:growatt:pv" {
+		t.Fatal(resp)
+	}
+}

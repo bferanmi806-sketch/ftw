@@ -54,6 +54,8 @@ type ForecastSource struct {
 	Flow   ForecastFlow
 	PowerW *float64
 	SoC    *float64
+	// AssumedZero marks a dark PV source counted as 0 W while offline.
+	AssumedZero bool
 }
 
 type ForecastReading struct {
@@ -63,6 +65,8 @@ type ForecastReading struct {
 	GridW, PVW, BatteryW, EVW, V2XW, HouseholdW float64
 	Valid, PVValid                              bool
 	Reason, PVReason                            string
+	// PVAssumedZero: at least one dark, offline PV source was counted as 0 W.
+	PVAssumedZero bool
 }
 
 // ForecastMeasurement reads power and health under one lock. A command fault
@@ -112,6 +116,14 @@ func SourceFailure(reason string) bool {
 		}
 	}
 	return reason == "nonfinite_pv_sum"
+}
+
+// PVDarkThresholdW is the largest last PV output (absolute watts) for which an
+// inverter that goes offline is taken to have shut down for lack of sun.
+const PVDarkThresholdW = 50.0
+
+func pvDarkAtLastReading(w float64) bool {
+	return !math.IsNaN(w) && !math.IsInf(w, 0) && math.Abs(w) <= PVDarkThresholdW
 }
 
 func (s *Store) forecastMeasurementLocked(now time.Time, siteMeter string, opts ForecastOptions) ForecastReading {
@@ -244,6 +256,25 @@ func (s *Store) measurementLocked(now time.Time, siteMeter string, opts Forecast
 			reason = "future:"
 		case pv && powerW > 0:
 			reason = "invalid_sign:"
+		}
+		// A PV inverter that drops off the bus after sunset is producing
+		// nothing. On the live path, an offline or stale PV source whose last
+		// reading was near zero counts as 0 W so the meter and battery still
+		// give a home load. Daytime outages (last reading producing) and
+		// forecast/history alignment keep failing as before.
+		if pv && !alignSources && (reason == "offline:" || reason == "stale:") && r != nil && pvDarkAtLastReading(r.RawW) {
+			zero := 0.0
+			source.PowerW = &zero
+			source.AssumedZero = true
+			out.Sources[k] = source
+			// Not measured: history and the PV model keep it unknown.
+			out.Known[DerPV] = false
+			out.PVAssumedZero = true
+			if out.PVValid {
+				out.PVValid = false
+				out.PVReason = "assumed_zero:" + k
+			}
+			continue
 		}
 		if reason != "" {
 			fail(reason+k, pv)
