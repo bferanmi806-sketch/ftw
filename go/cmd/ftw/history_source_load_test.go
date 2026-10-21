@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"path/filepath"
 	"testing"
@@ -167,5 +168,53 @@ func TestHistoryCountsAnEmptyOCPPChargerAsMeasured(t *testing.T) {
 	}
 	if d.Missing&state.MissingLoad != 0 || math.Abs(d.LoadWh-2000.0/12) > 0.001 {
 		t.Fatalf("household %v Wh, quality %s", d.LoadWh, d.Missing.Quality())
+	}
+}
+
+// Between heartbeats an Available charger's 0 W is up to a minute old. The
+// time-aligned balance calls that time_skew; the chart's quality comes from
+// the source rows, so it must not say the measurements do not balance.
+func TestHistoryChartKeepsSourceQualityForAnAgeingOCPPZero(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.EnableHistoryAggregation(); err != nil {
+		t.Fatal(err)
+	}
+	tel := telemetry.NewStore()
+	tel.Update("grid", telemetry.DerMeter, 2000, nil, nil)
+	tel.RecordDriverSuccess("grid")
+	// What the OCPP handler publishes 40 s after the last heartbeat.
+	at := time.Now().Add(-40 * time.Second).UnixMilli()
+	data, _ := json.Marshal(map[string]any{"type": "ev", "w": 0.0, "connected": false, "forecast_power": telemetry.ForecastPowerSample{Version: 1, Known: true, MeasuredAtMS: at, ReceivedAtMS: at}})
+	tel.Update("charger", telemetry.DerEV, 0, nil, data)
+	tel.RecordDriverSuccess("charger")
+	base := time.Now().Add(-10 * time.Minute).Truncate(5 * time.Minute).UnixMilli()
+	for i := int64(0); i <= 30; i++ {
+		p, _ := buildHistoryPoint(tel, tickPersistControl{SiteMeterDriver: "grid"}, base+i*10000, time.Minute)
+		if p.Missing&state.BalanceMismatch == 0 || p.Sources.Missing != 0 {
+			t.Fatalf("want a skewed aligned balance and complete sources, got %b and %b", p.Missing, p.Sources.Missing)
+		}
+		p.Sources.AtMS = base + i*10000
+		if err := st.RecordTickWithEnergy(p, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.FlushHistory(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	points, err := st.LoadHistoryContext(context.Background(), base, base+300000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) == 0 {
+		t.Fatal("no chart points")
+	}
+	for _, p := range points {
+		if q := p.Missing.Quality(); q == "balance_mismatch" || q == "incomplete" {
+			t.Fatalf("chart point at %d says %s", p.TsMs, q)
+		}
 	}
 }

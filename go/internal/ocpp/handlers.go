@@ -84,7 +84,9 @@ type chargerState struct {
 	meterAtMS int64
 	// available: the connector reported Available on this socket. With no
 	// vehicle no current flows, so its power is a known 0 W. OCPP reports a
-	// status change when it happens, so each heartbeat confirms the reading.
+	// status change when it happens, so any later message from the charger
+	// confirms the reading. State is per charger, not per connector: on a
+	// two-connector charger an Available on one claims 0 W for both.
 	available        bool
 	powerConnectedAt time.Time
 	// lastAmps is the most recent per-phase limit this charger accepted.
@@ -210,7 +212,16 @@ func (h *Handler) isApproved(id string) bool {
 // The tel* wrappers are the quarantine choke points: every telemetry write
 // for a charger goes through one of them, so a pending charger is dropped
 // here once rather than gated at each call site.
+// telSuccess records a message from the charger. While the connector is
+// Available, any message also confirms its 0 W.
 func (h *Handler) telSuccess(id string) {
+	h.telHealth(id)
+	h.confirmAvailable(id)
+}
+
+// telHealth records a message without confirming the connector status: a
+// new socket or a boot says nothing about it until the charger reports.
+func (h *Handler) telHealth(id string) {
 	if h.isApproved(id) {
 		h.tel.RecordDriverSuccess(id)
 	}
@@ -420,7 +431,7 @@ func (h *Handler) OnConnect(id string) {
 	h.scheduleIdentityProbeLocked(id, s)
 	h.mu.Unlock()
 	h.pushReading(id, s)
-	h.telSuccess(id)
+	h.telHealth(id)
 	h.maybeProbeCapability(id)
 }
 
@@ -471,7 +482,7 @@ func (h *Handler) OnBootNotification(id string, req *core.BootNotificationReques
 	s.firmware = req.FirmwareVersion
 	h.mu.Unlock()
 	h.noteIdentity(id)
-	h.telSuccess(id)
+	h.telHealth(id)
 	h.maybeProbeCapability(id)
 	return core.NewBootNotificationConfirmation(
 		types.NewDateTime(time.Now()),
@@ -482,12 +493,11 @@ func (h *Handler) OnBootNotification(id string, req *core.BootNotificationReques
 
 func (h *Handler) OnHeartbeat(id string, _ *core.HeartbeatRequest) (*core.HeartbeatConfirmation, error) {
 	h.telSuccess(id)
-	h.confirmAvailable(id)
 	return core.NewHeartbeatConfirmation(types.NewDateTime(time.Now())), nil
 }
 
-// confirmAvailable publishes the held reading of an Available connector
-// again at the heartbeat's time. Both dialects call it.
+// confirmAvailable publishes the 0 W of an Available connector again at the
+// time of a message from the charger. telSuccess calls it for both dialects.
 func (h *Handler) confirmAvailable(id string) {
 	s := h.state(id)
 	h.mu.Lock()
@@ -502,6 +512,7 @@ func (h *Handler) OnAuthorize(id string, req *core.AuthorizeRequest) (*core.Auth
 	// Phase 1: auto-authorize every tag. RFID gating is a Phase 2 feature
 	// alongside RemoteStartTransaction.
 	slog.Debug("OCPP authorize", "charger", id, "tag", req.IdTag)
+	h.confirmAvailable(id)
 	return core.NewAuthorizationConfirmation(
 		types.NewIdTagInfo(types.AuthorizationStatusAccepted),
 	), nil
@@ -510,6 +521,7 @@ func (h *Handler) OnAuthorize(id string, req *core.AuthorizeRequest) (*core.Auth
 func (h *Handler) OnDataTransfer(id string, req *core.DataTransferRequest) (*core.DataTransferConfirmation, error) {
 	// Vendor-specific extensions — accept gracefully but do nothing.
 	slog.Debug("OCPP DataTransfer ignored", "charger", id, "vendor", req.VendorId)
+	h.confirmAvailable(id)
 	return core.NewDataTransferConfirmation(core.DataTransferStatusUnknownVendorId), nil
 }
 
@@ -525,12 +537,14 @@ func (h *Handler) OnStatusNotification(id string, req *core.StatusNotificationRe
 	s := h.state(id)
 	h.mu.Lock()
 	s.connectedKnown = true
-	s.available = false
+	if req.Status != core.ChargePointStatusAvailable {
+		s.leaveAvailable()
+	}
 	switch req.Status {
 	case core.ChargePointStatusAvailable:
 		s.connected = false
 		s.charging = false
-		s.holdAvailablePower(time.Now())
+		s.holdAvailablePower(time.Now(), statusTime(req.Timestamp))
 	case core.ChargePointStatusUnavailable:
 		// Out of service, maybe broken: no evidence that nothing flows.
 		s.connected = false
@@ -624,7 +638,7 @@ func (h *Handler) OnStartTransaction(id string, req *core.StartTransactionReques
 	s.sessionMeterWh = 0
 	s.connected = true
 	s.connectedKnown = true
-	s.available = false
+	s.leaveAvailable()
 	s.charging = true
 	h.mu.Unlock()
 
@@ -757,26 +771,52 @@ func (s *chargerState) recordPower(w float64, measured, received time.Time) bool
 	return true
 }
 
+// statusTime is the charger's own time of a status, when it sent one.
+func statusTime(t *types.DateTime) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return t.Time
+}
+
 // holdAvailablePower records the 0 W of an empty connector. A meter sample
-// from before the status cannot bring back the car's draw; a newer one wins.
-// The caller holds h.mu.
-func (s *chargerState) holdAvailablePower(now time.Time) {
+// the charger took before the status cannot bring back the car's draw; a
+// newer one wins. The gate uses the charger's clock, so a clock that runs
+// behind Core's does not reject the next session's samples. Without a
+// status time it stays where it was. The caller holds h.mu.
+func (s *chargerState) holdAvailablePower(now, at time.Time) {
 	ms := now.UnixMilli()
 	s.available = true
 	s.lastPowerW = 0
-	s.meterAtMS = max(s.meterAtMS, ms)
+	if !at.IsZero() {
+		s.meterAtMS = max(s.meterAtMS, min(at.UnixMilli(), ms))
+	}
 	s.forecastPower = telemetry.ForecastPowerSample{Version: 1, Known: true, Watts: 0, MeasuredAtMS: ms, ReceivedAtMS: ms}
 }
 
-// confirmAvailablePower moves the held reading to now while the connector
-// stays Available on a live socket. The caller holds h.mu.
+// confirmAvailablePower moves a 0 W reading to now while the connector stays
+// Available on a live socket. A meter that read more than 0 W is not
+// confirmed; it ages out. At most once a second. The caller holds h.mu.
 func (s *chargerState) confirmAvailablePower(now time.Time) bool {
 	ms := now.UnixMilli()
-	if !s.available || !s.online || !s.connectedKnown || !s.forecastPower.Known || ms <= s.forecastPower.MeasuredAtMS {
+	if !s.available || !s.online || !s.connectedKnown || !s.forecastPower.Known || s.forecastPower.Watts != 0 || ms-s.forecastPower.MeasuredAtMS < 1000 {
 		return false
 	}
 	s.forecastPower.MeasuredAtMS, s.forecastPower.ReceivedAtMS = ms, ms
 	return true
+}
+
+// leaveAvailable ends the hold when a car may be there. A 0 W reading is no
+// longer evidence then; power is unknown until the meter reports. The caller
+// holds h.mu.
+func (s *chargerState) leaveAvailable() {
+	if !s.available {
+		return
+	}
+	s.available = false
+	if s.forecastPower.Watts == 0 {
+		s.forecastPower.Known = false
+	}
 }
 
 // clearMeasuredPower zeros dispatch watts without recording a measured sample.

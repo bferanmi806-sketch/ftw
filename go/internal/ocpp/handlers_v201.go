@@ -66,7 +66,7 @@ func (h *handlerV201) OnBootNotification(id string, req *provisioning.BootNotifi
 	h.mu.Unlock()
 	h.setVersion(id, Version201)
 	h.noteIdentity(id)
-	h.telSuccess(id)
+	h.telHealth(id)
 
 	return provisioning.NewBootNotificationResponse(
 		types201.NewDateTime(time.Now()),
@@ -86,7 +86,6 @@ func (h *handlerV201) OnNotifyReport(id string, _ *provisioning.NotifyReportRequ
 
 func (h *handlerV201) OnHeartbeat(id string, _ *availability.HeartbeatRequest) (*availability.HeartbeatResponse, error) {
 	h.telSuccess(id)
-	h.confirmAvailable(id)
 	return availability.NewHeartbeatResponse(*types201.NewDateTime(time.Now())), nil
 }
 
@@ -99,12 +98,18 @@ func (h *handlerV201) OnStatusNotification(id string, req *availability.StatusNo
 	s := h.state(id)
 	h.mu.Lock()
 	s.connectedKnown = true
-	s.available = false
+	if req.ConnectorStatus != availability.ConnectorStatusAvailable {
+		s.leaveAvailable()
+	}
 	switch req.ConnectorStatus {
 	case availability.ConnectorStatusAvailable:
 		s.connected = false
 		s.charging = false
-		s.holdAvailablePower(time.Now())
+		var at time.Time
+		if req.Timestamp != nil {
+			at = req.Timestamp.Time
+		}
+		s.holdAvailablePower(time.Now(), at)
 	case availability.ConnectorStatusUnavailable:
 		s.connected = false
 		s.charging = false
@@ -149,6 +154,10 @@ func (h *handlerV201) OnTransactionEvent(id string, req *transactions.Transactio
 	h.mu.Lock()
 	acceptedPower := false
 	if req.EventType != transactions.TransactionEventEnded {
+		// A live transaction may mean a car, unless it says none is there.
+		if req.TransactionInfo.ChargingState != transactions.ChargingStateIdle {
+			s.leaveAvailable()
+		}
 		acceptedPower = s.recordPowerV201(req.MeterValue, time.Now())
 	}
 	switch req.EventType {
@@ -163,13 +172,11 @@ func (h *handlerV201) OnTransactionEvent(id string, req *transactions.Transactio
 		s.sessionMeterWh = 0
 		s.connected = true
 		s.connectedKnown = true
-		s.available = false
 		s.charging = true
 
 	case transactions.TransactionEventUpdated:
 		s.connected = true
 		s.connectedKnown = true
-		s.available = false
 		if hasEnergy && s.transactionID >= 0 {
 			s.sessionMeterWh = energyWh - s.sessionStartMeterWh
 		}
