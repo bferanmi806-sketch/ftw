@@ -218,3 +218,92 @@ func TestHistoryChartKeepsSourceQualityForAnAgeingOCPPZero(t *testing.T) {
 		}
 	}
 }
+
+// An idle charger often sends only heartbeats. At Core's default interval,
+// with ±1 s jitter, its Available 0 W is at most 31 s old at any 2 s history
+// tick: inside the 60 s limit, and its health never lapses. The old 60 s
+// default loses ticks to the same jitter.
+func TestHistoryKeepsAnIdleOCPPChargerMeasuredBetweenHeartbeats(t *testing.T) {
+	var c ocpp.Config
+	c.Defaults()
+	if lost := idleOCPPStaleTicks(t, time.Duration(c.HeartbeatIntervalS)*time.Second, true); lost != 0 {
+		t.Fatalf("default heartbeat %d s: %d ticks lost the charger", c.HeartbeatIntervalS, lost)
+	}
+	if lost := idleOCPPStaleTicks(t, time.Minute, false); lost == 0 {
+		t.Fatal("a 60 s heartbeat lost no tick; the test cannot see the edge")
+	}
+}
+
+// idleOCPPStaleTicks plays ten heartbeats at interval ±1 s through the real
+// handler and counts history ticks whose source row misses a flow. Between
+// beats the charger's reading and health are aged by the time since the beat.
+func idleOCPPStaleTicks(t *testing.T, interval time.Duration, record bool) int {
+	t.Helper()
+	const watchdog = time.Minute // site default; history uses it as its age limit
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.EnableHistoryAggregation(); err != nil {
+		t.Fatal(err)
+	}
+	tel := telemetry.NewStore()
+	h := ocpp.NewHandler(tel, int(interval/time.Second))
+	h.SetApprovedIDs([]string{"charger"})
+	h.OnConnect("charger")
+	if _, err := h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusAvailable, ErrorCode: core.NoError}); err != nil {
+		t.Fatal(err)
+	}
+	age := func(beat time.Time, since time.Duration) {
+		r := tel.Get("charger", telemetry.DerEV)
+		var d map[string]any
+		if err := json.Unmarshal(r.Data, &d); err != nil {
+			t.Fatal(err)
+		}
+		at := beat.Add(-since)
+		d["forecast_power"] = telemetry.ForecastPowerSample{Version: 1, Known: true, MeasuredAtMS: at.UnixMilli(), ReceivedAtMS: at.UnixMilli()}
+		r.Data, _ = json.Marshal(d)
+		r.UpdatedAt = at
+		tel.DriverHealthMut("charger").LastSuccess = &at
+	}
+	base := time.Now().Add(-time.Hour).Truncate(5 * time.Minute).UnixMilli()
+	tick, lost := base, 0
+	for beat := 0; beat < 10; beat++ {
+		gap := interval + []time.Duration{-time.Second, 0, time.Second}[beat%3]
+		if _, err := h.OnHeartbeat("charger", &core.HeartbeatRequest{}); err != nil {
+			t.Fatal(err)
+		}
+		beatAt := time.Now()
+		for since := time.Duration(beat%4) * 500 * time.Millisecond; since < gap; since += 2 * time.Second {
+			age(beatAt, since)
+			tel.Update("grid", telemetry.DerMeter, 2000, nil, nil)
+			tel.RecordDriverSuccess("grid")
+			tel.WatchdogScan(watchdog)
+			p, _ := buildHistoryPoint(tel, tickPersistControl{SiteMeterDriver: "grid"}, tick, watchdog)
+			if p.Sources.Missing != 0 {
+				lost++
+			}
+			if record {
+				p.Sources.AtMS = tick
+				if err := st.RecordTickWithEnergy(p, nil, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			tick += 2000
+		}
+	}
+	if record {
+		if err := st.FlushHistory(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		d, err := st.DailyEnergy(base, tick)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Missing&(state.MissingLoad|state.MissingEV) != 0 || d.LoadWh <= 0 {
+			t.Fatalf("history over %d s: %v Wh, quality %s", (tick-base)/1000, d.LoadWh, d.Missing.Quality())
+		}
+	}
+	return lost
+}
