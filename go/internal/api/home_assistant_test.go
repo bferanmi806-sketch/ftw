@@ -166,3 +166,20 @@ func TestIngressVendorCallbackKeepsTheExternalHAURL(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressAllowsTheNormalVendorOAuthReturn(t *testing.T) {
+	// An OAuth browser navigation arrives from the vendor's origin. The nonce
+	// protects the callback; the existing mutation policy exempts this GET.
+	req := ingressRequest("GET", myUplinkCallbackPath+"?code=example&state=example")
+	req.Header.Del("Origin")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	if requiresMutationProtection(req) {
+		t.Fatal("callback no longer uses its own state proof")
+	}
+	handler := WithHomeAssistantIngress(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 204 {
+		t.Fatalf("vendor return blocked: %d", w.Code)
+	}
+}

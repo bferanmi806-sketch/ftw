@@ -16,8 +16,12 @@ const (
 	httpIdleTimeout  = 60 * time.Second
 )
 
+func homeAssistantIngressEnabled() bool {
+	return os.Getenv("FTW_BUNDLE") == "home_assistant_addon" && os.Getenv("FTW_HA_INGRESS") == "1"
+}
+
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
-	if os.Getenv("FTW_BUNDLE") == "home_assistant_addon" && os.Getenv("FTW_HA_INGRESS") == "1" {
+	if homeAssistantIngressEnabled() {
 		addr = ":18099"
 		handler = api.WithHomeAssistantIngress(handler)
 	}

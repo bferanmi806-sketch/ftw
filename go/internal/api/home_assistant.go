@@ -37,7 +37,7 @@ func WithHomeAssistantIngress(next http.Handler) http.Handler {
 			return
 		}
 		authority, err := parseAuthority(r.Host)
-		if err != nil || validateFetchMetadata(r, authority) != nil {
+		if err != nil || (requiresMutationProtection(r) && validateFetchMetadata(r, authority) != nil) {
 			http.Error(w, "invalid Home Assistant request origin", http.StatusForbidden)
 			return
 		}
