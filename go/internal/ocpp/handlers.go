@@ -79,7 +79,14 @@ type chargerState struct {
 	sessionMeterWh      float64
 	lastPowerW          float64
 	forecastPower       telemetry.ForecastPowerSample
-	powerConnectedAt    time.Time
+	// meterAtMS is the newest meter sample time accepted. A heartbeat moves
+	// forecastPower's time to Core's clock; this gate stays on the meter's.
+	meterAtMS int64
+	// available: the connector reported Available on this socket. With no
+	// vehicle no current flows, so its power is a known 0 W. OCPP reports a
+	// status change when it happens, so each heartbeat confirms the reading.
+	available        bool
+	powerConnectedAt time.Time
 	// lastAmps is the most recent per-phase limit this charger accepted.
 	// A resume with no rate of its own restores it.
 	lastAmps float64
@@ -475,7 +482,20 @@ func (h *Handler) OnBootNotification(id string, req *core.BootNotificationReques
 
 func (h *Handler) OnHeartbeat(id string, _ *core.HeartbeatRequest) (*core.HeartbeatConfirmation, error) {
 	h.telSuccess(id)
+	h.confirmAvailable(id)
 	return core.NewHeartbeatConfirmation(types.NewDateTime(time.Now())), nil
+}
+
+// confirmAvailable publishes the held reading of an Available connector
+// again at the heartbeat's time. Both dialects call it.
+func (h *Handler) confirmAvailable(id string) {
+	s := h.state(id)
+	h.mu.Lock()
+	confirmed := s.confirmAvailablePower(time.Now())
+	h.mu.Unlock()
+	if confirmed {
+		h.pushReading(id, s)
+	}
 }
 
 func (h *Handler) OnAuthorize(id string, req *core.AuthorizeRequest) (*core.AuthorizeConfirmation, error) {
@@ -497,8 +517,14 @@ func (h *Handler) OnStatusNotification(id string, req *core.StatusNotificationRe
 	s := h.state(id)
 	h.mu.Lock()
 	s.connectedKnown = true
+	s.available = false
 	switch req.Status {
-	case core.ChargePointStatusAvailable, core.ChargePointStatusUnavailable:
+	case core.ChargePointStatusAvailable:
+		s.connected = false
+		s.charging = false
+		s.holdAvailablePower(time.Now())
+	case core.ChargePointStatusUnavailable:
+		// Out of service, maybe broken: no evidence that nothing flows.
 		s.connected = false
 		s.charging = false
 		s.clearMeasuredPower()
@@ -590,6 +616,7 @@ func (h *Handler) OnStartTransaction(id string, req *core.StartTransactionReques
 	s.sessionMeterWh = 0
 	s.connected = true
 	s.connectedKnown = true
+	s.available = false
 	s.charging = true
 	h.mu.Unlock()
 
@@ -612,7 +639,10 @@ func (h *Handler) OnStopTransaction(id string, req *core.StopTransactionRequest)
 	sessionWh := float64(req.MeterStop) - s.sessionStartMeterWh
 	s.transactionID = -1
 	s.charging = false
-	s.clearMeasuredPower()
+	// A charger may report Available before the stop. The car is gone then.
+	if !s.available {
+		s.clearMeasuredPower()
+	}
 	s.sessionMeterWh = sessionWh
 	h.mu.Unlock()
 
@@ -710,11 +740,34 @@ func meterPowerW(samples []powerSample) (float64, bool) {
 // accepted timestamp. Samples from before this socket or in the future cannot
 // revive a stale or synthesized reading. The caller holds h.mu.
 func (s *chargerState) recordPower(w float64, measured, received time.Time) bool {
-	if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 || measured.IsZero() || measured.After(received) || measured.Before(s.powerConnectedAt) || measured.UnixMilli() <= s.forecastPower.MeasuredAtMS {
+	if math.IsNaN(w) || math.IsInf(w, 0) || w < 0 || measured.IsZero() || measured.After(received) || measured.Before(s.powerConnectedAt) || measured.UnixMilli() <= s.meterAtMS {
 		return false
 	}
 	s.lastPowerW = w
+	s.meterAtMS = measured.UnixMilli()
 	s.forecastPower = telemetry.ForecastPowerSample{Version: 1, Known: true, Watts: w, MeasuredAtMS: measured.UnixMilli(), ReceivedAtMS: received.UnixMilli()}
+	return true
+}
+
+// holdAvailablePower records the 0 W of an empty connector. A meter sample
+// from before the status cannot bring back the car's draw; a newer one wins.
+// The caller holds h.mu.
+func (s *chargerState) holdAvailablePower(now time.Time) {
+	ms := now.UnixMilli()
+	s.available = true
+	s.lastPowerW = 0
+	s.meterAtMS = max(s.meterAtMS, ms)
+	s.forecastPower = telemetry.ForecastPowerSample{Version: 1, Known: true, Watts: 0, MeasuredAtMS: ms, ReceivedAtMS: ms}
+}
+
+// confirmAvailablePower moves the held reading to now while the connector
+// stays Available on a live socket. The caller holds h.mu.
+func (s *chargerState) confirmAvailablePower(now time.Time) bool {
+	ms := now.UnixMilli()
+	if !s.available || !s.online || !s.connectedKnown || !s.forecastPower.Known || ms <= s.forecastPower.MeasuredAtMS {
+		return false
+	}
+	s.forecastPower.MeasuredAtMS, s.forecastPower.ReceivedAtMS = ms, ms
 	return true
 }
 
@@ -722,4 +775,5 @@ func (s *chargerState) recordPower(w float64, measured, received time.Time) bool
 func (s *chargerState) clearMeasuredPower() {
 	s.lastPowerW = 0
 	s.forecastPower.Known = false
+	s.available = false
 }

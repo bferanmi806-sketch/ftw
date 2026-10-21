@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
+
+	"github.com/srcfl/ftw/go/internal/ocpp"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
@@ -118,5 +121,51 @@ func TestHistorySourceQualificationDoesNotInventMissingFlows(t *testing.T) {
 		if p.Missing != tc.want || math.IsNaN(p.EVW) || math.IsInf(p.EVW, 0) {
 			t.Fatal("history source qualification lost missing evidence or rejected unrelated telemetry")
 		}
+	}
+}
+
+// An OCPP charger with no car sends no MeterValues. Its Available status is
+// the evidence that nothing flows, so the household stays measured.
+func TestHistoryCountsAnEmptyOCPPChargerAsMeasured(t *testing.T) {
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.EnableHistoryAggregation(); err != nil {
+		t.Fatal(err)
+	}
+	tel := telemetry.NewStore()
+	h := ocpp.NewHandler(tel, 60)
+	h.SetApprovedIDs([]string{"charger"})
+	h.OnConnect("charger")
+	if _, err := h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusAvailable, ErrorCode: core.NoError}); err != nil {
+		t.Fatal(err)
+	}
+	tel.Update("grid", telemetry.DerMeter, 2000, nil, nil)
+	tel.RecordDriverSuccess("grid")
+	if live := tel.LiveMeasurementNow("grid", telemetry.ForecastOptions{}); live.LoadQuality != telemetry.LoadMeasured || live.LoadW != 2000 {
+		t.Fatalf("live Home use %s (%s), %v W", live.LoadQuality, live.LoadReason, live.LoadW)
+	}
+	base := time.Now().Add(-10 * time.Minute).Truncate(5 * time.Minute).UnixMilli()
+	for i := int64(0); i <= 30; i++ {
+		p, _ := buildHistoryPoint(tel, tickPersistControl{SiteMeterDriver: "grid"}, base+i*10000, time.Minute)
+		if p.Sources.Missing != 0 || p.Missing&^state.MissingSoC != 0 {
+			t.Fatalf("empty charger marked history %b, sources %b", p.Missing, p.Sources.Missing)
+		}
+		p.Sources.AtMS = base + i*10000
+		if err := st.RecordTickWithEnergy(p, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.FlushHistory(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d, err := st.DailyEnergy(base, base+300000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Missing&state.MissingLoad != 0 || math.Abs(d.LoadWh-2000.0/12) > 0.001 {
+		t.Fatalf("household %v Wh, quality %s", d.LoadWh, d.Missing.Quality())
 	}
 }

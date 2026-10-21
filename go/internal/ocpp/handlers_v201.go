@@ -86,6 +86,7 @@ func (h *handlerV201) OnNotifyReport(id string, _ *provisioning.NotifyReportRequ
 
 func (h *handlerV201) OnHeartbeat(id string, _ *availability.HeartbeatRequest) (*availability.HeartbeatResponse, error) {
 	h.telSuccess(id)
+	h.confirmAvailable(id)
 	return availability.NewHeartbeatResponse(*types201.NewDateTime(time.Now())), nil
 }
 
@@ -98,8 +99,13 @@ func (h *handlerV201) OnStatusNotification(id string, req *availability.StatusNo
 	s := h.state(id)
 	h.mu.Lock()
 	s.connectedKnown = true
+	s.available = false
 	switch req.ConnectorStatus {
-	case availability.ConnectorStatusAvailable, availability.ConnectorStatusUnavailable:
+	case availability.ConnectorStatusAvailable:
+		s.connected = false
+		s.charging = false
+		s.holdAvailablePower(time.Now())
+	case availability.ConnectorStatusUnavailable:
 		s.connected = false
 		s.charging = false
 		s.clearMeasuredPower()
@@ -157,11 +163,13 @@ func (h *handlerV201) OnTransactionEvent(id string, req *transactions.Transactio
 		s.sessionMeterWh = 0
 		s.connected = true
 		s.connectedKnown = true
+		s.available = false
 		s.charging = true
 
 	case transactions.TransactionEventUpdated:
 		s.connected = true
 		s.connectedKnown = true
+		s.available = false
 		if hasEnergy && s.transactionID >= 0 {
 			s.sessionMeterWh = energyWh - s.sessionStartMeterWh
 		}
@@ -178,7 +186,10 @@ func (h *handlerV201) OnTransactionEvent(id string, req *transactions.Transactio
 		s.transactionID = -1
 		s.transactionRef = ""
 		s.charging = false
-		s.clearMeasuredPower()
+		// Available may come first; the car has gone then.
+		if !s.available {
+			s.clearMeasuredPower()
+		}
 	}
 
 	powerW := s.lastPowerW

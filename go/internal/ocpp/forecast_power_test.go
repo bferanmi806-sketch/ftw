@@ -23,8 +23,12 @@ type forecastOCPPFixture struct {
 	energy    func()
 	status    func()
 	available func()
-	stop      func()
-	phases    func(l1, l2, l3 float64, at time.Time)
+	// unavailable and faulted leave power unknown; heartbeat is the charger's.
+	unavailable func()
+	faulted     func()
+	heartbeat   func()
+	stop        func()
+	phases      func(l1, l2, l3 float64, at time.Time)
 }
 
 func newForecastOCPPFixture(t *testing.T, version string) forecastOCPPFixture {
@@ -47,6 +51,13 @@ func newForecastOCPPFixture(t *testing.T, version string) forecastOCPPFixture {
 		f.available = func() {
 			h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusAvailable})
 		}
+		f.unavailable = func() {
+			h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusUnavailable})
+		}
+		f.faulted = func() {
+			h.OnStatusNotification("charger", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusFaulted, ErrorCode: core.GroundFailure})
+		}
+		f.heartbeat = func() { h.OnHeartbeat("charger", &core.HeartbeatRequest{}) }
 		f.stop = func() { h.OnStopTransaction("charger", &core.StopTransactionRequest{}) }
 		f.phases = func(l1, l2, l3 float64, at time.Time) {
 			h.OnMeterValues("charger", &core.MeterValuesRequest{ConnectorId: 1, MeterValue: []types16.MeterValue{{Timestamp: types16.NewDateTime(at), SampledValue: []types16.SampledValue{
@@ -69,6 +80,13 @@ func newForecastOCPPFixture(t *testing.T, version string) forecastOCPPFixture {
 		f.available = func() {
 			v.OnStatusNotification("charger", &availability.StatusNotificationRequest{EvseID: 1, ConnectorID: 1, ConnectorStatus: availability.ConnectorStatusAvailable})
 		}
+		f.unavailable = func() {
+			v.OnStatusNotification("charger", &availability.StatusNotificationRequest{EvseID: 1, ConnectorID: 1, ConnectorStatus: availability.ConnectorStatusUnavailable})
+		}
+		f.faulted = func() {
+			v.OnStatusNotification("charger", &availability.StatusNotificationRequest{EvseID: 1, ConnectorID: 1, ConnectorStatus: availability.ConnectorStatusFaulted})
+		}
+		f.heartbeat = func() { v.OnHeartbeat("charger", &availability.HeartbeatRequest{}) }
 		f.stop = func() {
 			v.OnTransactionEvent("charger", &transactions.TransactionEventRequest{EventType: transactions.TransactionEventEnded})
 		}
@@ -218,8 +236,8 @@ func TestOCPPLastPowerSharedAcceptRule(t *testing.T) {
 			if raw := f.tel.Get("charger", telemetry.DerEV); raw == nil || raw.RawW != 0 {
 				t.Fatalf("Available left lastPowerW set: %+v", raw)
 			}
-			if r := f.reading(); r.Valid {
-				t.Fatalf("Available published a measured zero: %+v", r)
+			if r := f.reading(); !r.Valid || r.EVW != 0 {
+				t.Fatalf("Available is not a measured zero: %+v", r)
 			}
 
 			f2 := newForecastOCPPFixture(t, version)
@@ -249,5 +267,130 @@ func TestMeterPowerWPrefersUnphasedThenSum(t *testing.T) {
 	}
 	if _, ok := meterPowerW([]powerSample{{w: -1}, {w: math.NaN(), phase: "L1"}}); ok {
 		t.Fatal("negative/NaN samples accepted")
+	}
+}
+
+// live is the balance every client shows: the site meter, PV and the charger.
+func (f forecastOCPPFixture) live() telemetry.ForecastReading {
+	f.tel.Update("site", telemetry.DerMeter, 5000, nil, nil)
+	f.tel.RecordDriverSuccess("site")
+	f.tel.Update("pv", telemetry.DerPV, -1000, nil, nil)
+	f.tel.RecordDriverSuccess("pv")
+	return f.tel.LiveMeasurementNow("site", telemetry.ForecastOptions{ExpectedFlows: []telemetry.ForecastFlow{{Driver: "charger", DerType: telemetry.DerEV}}})
+}
+
+// age moves the published charger reading back, as if no message came for d.
+func (f forecastOCPPFixture) age(d time.Duration) {
+	f.h.mu.Lock()
+	s := f.h.chargers["charger"]
+	s.forecastPower.MeasuredAtMS -= d.Milliseconds()
+	s.forecastPower.ReceivedAtMS -= d.Milliseconds()
+	f.h.mu.Unlock()
+	f.h.pushReading("charger", s)
+}
+
+func (f forecastOCPPFixture) wantMeasuredZero(t *testing.T, what string) {
+	t.Helper()
+	if r := f.live(); r.LoadQuality != telemetry.LoadMeasured || r.EVW != 0 || r.LoadW != 6000 {
+		t.Fatalf("%s: live Home use %s (%s), EV %v W, load %v W", what, r.LoadQuality, r.LoadReason, r.EVW, r.LoadW)
+	}
+	if r := f.reading(); !r.Valid || !r.Known[telemetry.DerEV] || r.EVW != 0 {
+		t.Fatalf("%s: forecast balance %+v", what, r)
+	}
+	if raw := f.tel.Get("charger", telemetry.DerEV); raw == nil || raw.RawW != 0 {
+		t.Fatalf("%s: dispatch power %+v", what, raw)
+	}
+}
+
+func TestOCPPAvailableIsAMeasuredZeroInBothVersions(t *testing.T) {
+	for _, version := range []string{"1.6", "2.0.1"} {
+		t.Run(version, func(t *testing.T) {
+			f := newForecastOCPPFixture(t, version)
+			f.available()
+			f.wantMeasuredZero(t, "Available after boot")
+
+			// No message for two minutes: the zero is as old as its evidence.
+			f.age(2 * time.Minute)
+			if r := f.live(); r.LoadQuality == telemetry.LoadMeasured || !strings.HasSuffix(r.LoadReason, ":charger:ev") {
+				t.Fatalf("an old Available stayed current: %s (%s)", r.LoadQuality, r.LoadReason)
+			}
+			f.heartbeat()
+			f.wantMeasuredZero(t, "heartbeat")
+
+			// A car arrives. The zero is no longer held and ages out.
+			f.status()
+			f.age(2 * time.Minute)
+			f.heartbeat()
+			if r := f.live(); r.LoadQuality == telemetry.LoadMeasured {
+				t.Fatalf("a heartbeat kept the zero after the car arrived: %s", r.LoadReason)
+			}
+			f.available()
+			f.wantMeasuredZero(t, "Available again")
+
+			// A new socket says nothing about the connector until it reports.
+			f.h.OnDisconnect("charger")
+			f.h.OnConnect("charger")
+			f.heartbeat()
+			if r := f.live(); r.LoadQuality == telemetry.LoadMeasured {
+				t.Fatalf("a reconnect kept the zero before any status: %s", r.LoadReason)
+			}
+		})
+	}
+}
+
+func TestOCPPAvailableAfterSessionIsAMeasuredZero(t *testing.T) {
+	for _, version := range []string{"1.6", "2.0.1"} {
+		for _, order := range []string{"stop first", "Available first"} {
+			t.Run(version+" "+order, func(t *testing.T) {
+				f := newForecastOCPPFixture(t, version)
+				f.status()
+				f.power(3000, time.Now())
+				if r := f.live(); r.LoadQuality != telemetry.LoadMeasured || r.EVW != 3000 || r.LoadW != 3000 {
+					t.Fatalf("charging with MeterValues: %s (%s), EV %v W, load %v W", r.LoadQuality, r.LoadReason, r.EVW, r.LoadW)
+				}
+				if r := f.reading(); !r.Valid || r.EVW != 3000 {
+					t.Fatalf("charging forecast balance: %+v", r)
+				}
+				lastCharge := time.Now()
+				time.Sleep(2 * time.Millisecond)
+				if order == "stop first" {
+					f.stop()
+					f.available()
+				} else {
+					f.available()
+					f.stop()
+				}
+				f.wantMeasuredZero(t, "after the session")
+
+				// A meter sample from before the car left cannot bring its draw back.
+				f.power(3000, lastCharge.Add(time.Millisecond))
+				f.wantMeasuredZero(t, "late session sample")
+				f.heartbeat()
+				f.wantMeasuredZero(t, "heartbeat after the session")
+			})
+		}
+	}
+}
+
+func TestOCPPUnavailableAndFaultedStayUnknown(t *testing.T) {
+	for _, version := range []string{"1.6", "2.0.1"} {
+		for name, status := range map[string]func(forecastOCPPFixture){
+			"Unavailable": func(f forecastOCPPFixture) { f.unavailable() },
+			"Faulted":     func(f forecastOCPPFixture) { f.faulted() },
+		} {
+			t.Run(version+" "+name, func(t *testing.T) {
+				f := newForecastOCPPFixture(t, version)
+				f.available()
+				status(f)
+				f.heartbeat()
+				r := f.live()
+				if r.LoadQuality != telemetry.LoadEstimated || !strings.HasPrefix(r.LoadReason, "unknown_power:charger:") {
+					t.Fatalf("%s became known power: %s (%s)", name, r.LoadQuality, r.LoadReason)
+				}
+				if r := f.reading(); r.Valid || !strings.HasPrefix(r.Reason, "unknown_power:charger:") {
+					t.Fatalf("%s became a measured balance: %+v", name, r)
+				}
+			})
+		}
 	}
 }
