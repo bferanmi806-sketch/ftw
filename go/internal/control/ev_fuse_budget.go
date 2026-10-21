@@ -346,6 +346,10 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 	perReadingW := r.fuseW
 	if !r.hourly {
 		perReadingW = math.Min(perReadingW, r.riseW)
+	} else {
+		// The start test below holds an idle car to the ceiling itself,
+		// whatever slack the hour has: name it by this reading.
+		lim.byImport = r.startLevelW-gridW < r.fuseW
 	}
 	room := 0.0
 	if fresh {
@@ -374,7 +378,7 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 	}
 	ceilingRoomW := r.startLevelW - lim.idleWh/dwell.Hours() - pending
 	if ceilingRoomW < pool.minW {
-		lim.capW, lim.roomSince, lim.idleWh = 0, at, 0 // Judge the next dwell.
+		lim.capW, lim.roomSince, lim.idleWh, lim.byImport = 0, at, 0, true // Judge the next dwell.
 		return
 	}
 	lim.capW = math.Min(lim.capW, ceilingRoomW)

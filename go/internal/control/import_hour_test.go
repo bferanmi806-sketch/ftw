@@ -428,6 +428,24 @@ func TestImportCeilingNoStartOnSlackAlone(t *testing.T) {
 	}
 }
 
+// A quiet first 40 minutes leave the hour so much slack that its limits sit
+// above what the 25 A fuse allows. An 8 kW house still keeps an idle car from
+// starting, by the ceiling's own start test, and the car says import_limit.
+func TestImportCeilingStartTestSaysImportLimit(t *testing.T) {
+	h := newHourSite(t, 7500, 0, clock(16, 21, 0))
+	h.unplugged = true
+	h.run(40 * time.Minute)
+	h.setHouse(8000)
+	h.plugIn()
+	h.run(5 * time.Minute)
+	if h.offer() != 0 {
+		t.Fatalf("the car started at %.0f W beside 8 kW under a 7.5 kW ceiling", h.offer())
+	}
+	if st, _ := h.mgr.State("garage"); st.CommandedReason != "import_limit" {
+		t.Fatalf("idle under the ceiling says %q, want import_limit", st.CommandedReason)
+	}
+}
+
 // A reading after a clock jump of years counts only the hour it falls in.
 func TestImportCeilingClockJumpCountsOnlyItsHour(t *testing.T) {
 	var now time.Time
