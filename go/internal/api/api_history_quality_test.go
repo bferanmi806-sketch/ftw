@@ -84,7 +84,8 @@ func TestLiveHistoryQualitySeparatesOfflineFromInvalidBalance(t *testing.T) {
 	tel.Update("battery", telemetry.DerBattery, 2000, nil, nil)
 	tel.RecordDriverSuccess("battery")
 	srv.qualifyStatusHistory(resp, "meter")
-	if resp["bat_w"] != float64(2000) || resp["load_w"] != nil || resp["history_quality"] != "balance_mismatch" {
+	// Negative balance: shown as is, history still records the mismatch.
+	if resp["bat_w"] != float64(2000) || resp["load_w"] != float64(-800) || resp["load_reason"] != "invalid_balance" || resp["history_quality"] != "balance_mismatch" {
 		t.Fatal(resp)
 	}
 	tel.Update("battery", telemetry.DerBattery, 0, nil, nil)

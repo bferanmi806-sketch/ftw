@@ -214,7 +214,8 @@ export function flowReadingsFromStatus(status, opts) {
   // nor overwrite current household power. Never derive another balance from
   // independently smoothed display readings here.
   const rawLoad = num(status?.load_w);
-  const powerBalanceW = rawLoad !== null && rawLoad >= 0 ? rawLoad : null;
+  // Shown as Core sends it. Negative means production Core cannot see.
+  const powerBalanceW = rawLoad;
   const loadW = powerBalanceW;
   // Today's share is kWh already in the box, not the live meter. A
   // quiet meter blanks % SELF-POWERED NOW (unknown instantaneous load)

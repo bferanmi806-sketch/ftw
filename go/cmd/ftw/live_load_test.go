@@ -76,7 +76,7 @@ func TestLiveLoadAppAndLANShareSourcePowerAndValidity(t *testing.T) {
 				want = 1500
 			case "negative":
 				tel.Update("battery", telemetry.DerBattery, 2000, nil, nil)
-				valid = false
+				want = -1000 // shown as is: production Core cannot see
 			case "offline_ev":
 				tel.Update("charger", telemetry.DerEV, 500, nil, nil)
 				tel.DriverHealthMut("charger").SetOffline()

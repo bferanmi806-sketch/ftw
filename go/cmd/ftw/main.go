@@ -4036,6 +4036,12 @@ func persistTelemetryTick(st *state.Store, tel *telemetry.Store, ctrl tickPersis
 			Value: sm.Value, Unit: sm.Unit,
 		}
 	}
+	// Display load: the live balance exactly as clients show it. A record of
+	// what was on screen, never a training label; models read the household
+	// energy intervals the source writer closes (HouseholdIntervals).
+	if display, ok := displayLoadSample(tel, ctrl.SiteMeterDriver, nowMs, options, sun); ok {
+		stSamples = append(stSamples, display)
+	}
 	energyObservations := buildEnergyObservations(st, tel, ctrl, hp, identity)
 	if hp.Sources != nil {
 		hp.Sources.Topology += historyDevices(st, tel, identity, energyObservations, dark)

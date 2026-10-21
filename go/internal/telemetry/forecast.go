@@ -488,7 +488,7 @@ func (r ForecastReading) Error() error {
 // setLiveLoad derives live Home use from the site meter and every flow that
 // was read. A missing battery, EV, V2X or daytime PV is left out, as Core did
 // before history qualification, and the result is an estimate. It is unknown
-// only without a usable site meter or when the read flows do not balance.
+// only without a usable site meter. Quality is a hint and never hides it.
 func (out *ForecastReading) setLiveLoad(issue, meterIssue string) {
 	if !out.Known[DerMeter] || meterIssue != "" {
 		if meterIssue == "" {
@@ -502,12 +502,12 @@ func (out *ForecastReading) setLiveLoad(issue, meterIssue string) {
 		out.LoadKnown, out.LoadQuality, out.LoadReason = false, LoadUnknown, "nonfinite_balance"
 		return
 	}
-	if w < 0 {
-		// A house cannot export. Some flow is wrong; zero would hide it.
-		out.LoadKnown, out.LoadQuality, out.LoadReason = false, LoadUnknown, "invalid_balance"
-		return
-	}
+	// Shown as is. A negative balance is a hint of production Core cannot
+	// see; zero or blank would hide it.
 	out.LoadKnown, out.LoadW = true, w
+	if w < 0 && issue == "" {
+		issue = "invalid_balance"
+	}
 	if issue == "" {
 		out.LoadQuality = LoadMeasured
 		return

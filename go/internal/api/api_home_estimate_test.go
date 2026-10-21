@@ -72,8 +72,8 @@ func TestStatusKeepsPowerBalanceWhenSessionEnergyCannotFormAnInterval(t *testing
 	tel.RecordDriverSuccess("charger")
 	tel.Update("charger", telemetry.DerEV, 6000, nil, nil)
 	srv.qualifyStatusHistory(resp, "site")
-	if resp["load_w"] != nil || resp["history_reason"] != "invalid_balance" {
-		t.Fatal("negative residual became a zero household balance")
+	if resp["load_w"] != float64(1234-6000) || resp["history_reason"] != "invalid_balance" {
+		t.Fatal("negative residual was hidden or zeroed")
 	}
 }
 
@@ -97,12 +97,13 @@ func TestStatusHomePowerUsesPixiiACWithoutChangingRawHistoryInputs(t *testing.T)
 	}
 	tel.Update("battery", telemetry.DerBattery, -2500, nil, json.RawMessage(`{"control_power_available":false}`))
 	srv.qualifyStatusHistory(resp, "site")
-	if resp["load_w"] != nil || resp["bat_w"] != nil {
-		t.Fatal("missing AC measurement became DC power or zero")
+	// Unknown AC power leaves the battery out; the balance is shown as is.
+	if resp["load_w"] != float64(5000-6000) || resp["bat_w"] != nil || resp["load_quality"] != "estimated" {
+		t.Fatal("missing AC measurement became DC power or hid the balance")
 	}
 	tel.Update("battery", telemetry.DerBattery, -2500, nil, json.RawMessage(`{"control_power_w":-500,"control_power_available":true}`))
 	srv.qualifyStatusHistory(resp, "site")
-	if resp["load_w"] != nil || resp["history_reason"] != "invalid_balance" {
+	if resp["load_w"] != float64(5000-(-500)-6000) || resp["history_reason"] != "invalid_balance" {
 		t.Fatal("negative AC balance became zero or a DC estimate")
 	}
 }

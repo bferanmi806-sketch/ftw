@@ -70,7 +70,7 @@ func TestSupportLiveLoadMatchesLANSourcePowerAndKnownZero(t *testing.T) {
 }
 
 func TestSupportUnknownLoadRendersUnavailableWithoutForecastClaims(t *testing.T) {
-	for _, scenario := range []string{"negative_balance", "stale_power"} {
+	for _, scenario := range []string{"stale_power"} {
 		t.Run(scenario, func(t *testing.T) {
 			s, ctrl, tel := reportTestServer(t)
 			switch scenario {

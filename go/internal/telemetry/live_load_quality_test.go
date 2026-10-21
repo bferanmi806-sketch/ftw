@@ -108,11 +108,20 @@ func TestLiveLoadOfflineBatteryLeftOut(t *testing.T) {
 	}
 }
 
-func TestLiveLoadNegativeBalanceIsUnknown(t *testing.T) {
+func TestLiveLoadNegativeBalanceIsShown(t *testing.T) {
 	s, opts := andersSite(DarknessNight)
 	s.Update("pixii", DerBattery, 2000, nil, nil)
-	if r := s.LiveMeasurementNow("pixii", opts); r.LoadKnown || r.LoadReason != "invalid_balance" {
-		t.Fatalf("negative balance: known=%t %q", r.LoadKnown, r.LoadReason)
+	if r := s.LiveMeasurementNow("pixii", opts); !r.LoadKnown || r.LoadW != -1220 || r.LoadQuality != LoadEstimated || r.LoadReason != "invalid_balance" {
+		t.Fatalf("negative balance: %v known=%t %q", r.LoadW, r.LoadKnown, r.LoadReason)
+	}
+}
+
+func TestLiveLoadMisconfigurationStillShowsValue(t *testing.T) {
+	s, opts := andersSite(DarknessNight)
+	opts.HouseholdInvalidReason = "unresolved_topology"
+	opts.ExpectedFlows = []ForecastFlow{{Driver: "ghost", DerType: DerBattery}, {Driver: "ghost-ev", DerType: DerEV}}
+	if r := s.LiveMeasurementNow("pixii", opts); !r.LoadKnown || r.LoadW != 980 || r.LoadQuality != LoadEstimated {
+		t.Fatalf("misconfiguration hid the balance: %v known=%t %q", r.LoadW, r.LoadKnown, r.LoadReason)
 	}
 }
 
