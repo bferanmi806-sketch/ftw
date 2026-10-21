@@ -152,6 +152,29 @@ func TestImportCeilingHouseStepLateInHourStepsCarDown(t *testing.T) {
 	}
 }
 
+// The car held below its want by the hour's import ceiling says
+// import_limit, not fuse_limit: at 23:00 in #1674 the phases sit near 12 A
+// on a 25 A fuse. Held by the fuse instead, it says fuse_limit.
+func TestImportCeilingSaysImportLimitNotFuse(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		ceilingW, houseW float64
+		want             string
+	}{
+		{"hour's ceiling", 7500, 900, "import_limit"},
+		{"fuse", 0, 9000, "fuse_limit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHourSite(t, tc.ceilingW, tc.houseW, clock(16, 22, 0))
+			h.run(70 * time.Minute)
+			st, _ := h.mgr.State("garage")
+			if h.evW <= 0 || h.evW >= 10350 || st.CommandedReason != tc.want {
+				t.Fatalf("car draws %.0f W of 10,350 W, reason %q, want %q", h.evW, st.CommandedReason, tc.want)
+			}
+		})
+	}
+}
+
 // A Core restart mid-hour keeps the hour's import from state.db. A sauna
 // spent most of the budget; without the record the box would count the
 // first half-hour at the ceiling and let the car overrun the hour.
