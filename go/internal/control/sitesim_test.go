@@ -55,6 +55,7 @@ type simSite struct {
 	limitSince           time.Time // a phase above the fuse less its margin since
 	ownRaise             bool      // that run followed a raise we sent
 	peakA                float64
+	minBatteryW          float64       // the battery's lowest power since the start
 	overLimit            time.Duration // time with a phase over the fuse less its margin
 	idleWithRoom         time.Duration // time the car was idle with room for it
 	failure              string
@@ -194,7 +195,8 @@ func (s *simSite) step() {
 	}
 	if s.downUntil.IsZero() {
 		if m := tick.Meter; m != nil {
-			s.emit("meter", telemetry.DerMeter, m.W, nil, map[string]any{"l1_a": m.PhaseA[0], "l2_a": m.PhaseA[1], "l3_a": m.PhaseA[2]})
+			s.emit("meter", telemetry.DerMeter, m.W, nil, map[string]any{"l1_a": m.PhaseA[0], "l2_a": m.PhaseA[1], "l3_a": m.PhaseA[2],
+				"l1_w": m.PhaseW[0], "l2_w": m.PhaseW[1], "l3_w": m.PhaseW[2]})
 		}
 		if b := tick.Battery; b != nil {
 			s.emit("battery", telemetry.DerBattery, b.W, &b.SoC, nil)
@@ -314,8 +316,11 @@ func (s *simSite) check() {
 			s.heat[i] = a * a
 		}
 		over = over || math.Abs(a) > fuseInstantFactor*fuseA || (math.Abs(a) > limitA && s.heat[i] > limitA*limitA)
-		overLimit = overLimit || math.Abs(a) > limitA
+		overLimit = overLimit || math.Abs(a) > limitA+.01 // At the limit is not over it.
 		s.peakA = math.Max(s.peakA, math.Abs(a))
+	}
+	if p.Battery != nil {
+		s.minBatteryW = math.Min(s.minBatteryW, p.Battery.W)
 	}
 	s.heatSet = true
 	if overLimit {
@@ -374,7 +379,7 @@ func (s *simSite) wantsCharge() bool {
 	minW := e.MinA * p.Voltage * float64(phases)
 	if ceilingW := s.state.PeakImportCeilingW; ceilingW > 0 {
 		left := s.hourStart.Add(time.Hour).Sub(p.Now)
-		if left < 15*time.Minute || baseW+minW > (ceilingW-s.hourWh)/left.Hours() {
+		if left < importHourRiseMinLeft || baseW+minW > (ceilingW-s.hourWh)/left.Hours() {
 			return false
 		}
 	}
@@ -499,9 +504,9 @@ func simScenarios() []simScenario {
 		}
 	}
 	return []simScenario{
-		{name: "export start", known: "export counted as import, fuse_heat.go:120", run: 5 * time.Minute,
+		{name: "export start", run: 5 * time.Minute,
 			plant: func(p *sitesim.Plant) { p.HouseW, p.PVW = houseA(2, 2, 2), -22*690 }},
-		{name: "export start, unsigned phase currents", known: "export counted as import, fuse_heat.go:120", run: 5 * time.Minute,
+		{name: "export start, unsigned phase currents", run: 5 * time.Minute,
 			plant: func(p *sitesim.Plant) { p.HouseW, p.PVW, p.Meter.Unsigned = houseA(2, 2, 2), -22*690, true }},
 		{name: "charger's own load balancer", known: "a cut comes off an offer the car does not draw, ev_fuse_budget.go:172", run: 20 * time.Minute,
 			plant: func(p *sitesim.Plant) {
@@ -534,7 +539,7 @@ func simScenarios() []simScenario {
 				}
 				return nil
 			}}}},
-		{name: "meter every 30 s after a cut", known: "a meter slower than evSettle makes every reading a gap, ev_fuse_budget.go:141", run: 10 * time.Minute,
+		{name: "meter every 30 s after a cut", known: "the heat model holds the spike before a 30 s silence for 30 s, fuse_heat.go step; the car restarts after about 2 min", run: 10 * time.Minute,
 			plant: func(p *sitesim.Plant) {
 				p.HouseW = houseA(3, 3, 3)
 				p.Events = []sitesim.Event{
@@ -581,6 +586,39 @@ func simScenarios() []simScenario {
 				}
 				return nil
 			}}}},
+		{name: "Pixii total disagrees with its phases", run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.HouseW = houseA(1, 1, 1)
+				p.Battery = &sitesim.Battery{Phases: 3, MaxChargeW: 3000, MaxDischargeW: 5000, CapacityWh: 20000, SoC: .5, Latency: 2 * time.Second}
+				p.Events = []sitesim.Event{
+					{At: 2 * time.Minute, Do: func(p *sitesim.Plant) { p.Meter.TotalBiasW = 5000 }},
+					{At: 8 * time.Minute, Do: func(p *sitesim.Plant) { p.Meter.TotalBiasW = 0 }},
+				}
+			},
+			setup: planBatteryCharge(3000),
+			expect: []simExpect{{7 * time.Minute, func(s *simSite) error {
+				if p := s.p; p.EVSE.DrawW < 11000 || p.Battery.W < 2900 {
+					return fmt.Errorf("a total 5 kW above its phases (%.1f A) moved the car to %.0f W or the battery to %.0f W", p.A[0], p.EVSE.DrawW, p.Battery.W)
+				}
+				return nil
+			}}}},
+		{name: "car and battery relieve one overage", run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.HouseW = houseA(4, 4, 4)
+				p.Battery = &sitesim.Battery{Phases: 3, MaxChargeW: 5000, MaxDischargeW: 5000, CapacityWh: 20000, SoC: .5, Latency: 2 * time.Second}
+				p.Events = []sitesim.Event{{At: 3 * time.Minute, Do: func(p *sitesim.Plant) { p.HouseW = houseA(12, 12, 12) }}}
+			},
+			setup: planBatteryCharge(0),
+			expect: []simExpect{{9 * time.Minute, func(s *simSite) error {
+				if s.minBatteryW < -100 {
+					return fmt.Errorf("the battery discharged %.0f W for an overage the car's cut covers", -s.minBatteryW)
+				}
+				return nil
+			}}}},
+		{name: "idle start on a 16 A fuse", run: 5 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.Fuse.RatingA, p.HouseW = 16, houseA(8.5, 3, 3)
+			}},
 		{name: "a day", start: time.Date(2026, 10, 21, 0, 0, 0, 0, time.Local), run: 24 * time.Hour, plant: simDay},
 	}
 }
