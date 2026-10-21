@@ -226,3 +226,11 @@ it('marks only devices that need attention and keeps an offline sibling visible 
   assert.equal(failed.clickable,true);
   assert.equal(flowReadingsFromStatus(status,{live:false}).planets.find(p=>p.name==='b').controlMark,undefined);
 });
+
+it("draws Core's estimated Home use as an estimate, not a blank", () => {
+  const status = {load_w: 980, load_quality: "estimated", load_reason: "offline:growatt:pv", history_quality: "incomplete"};
+  const result = flowReadingsFromStatus(status);
+  assert.equal(result.load, 0.98);
+  assert.equal(result.loadEstimated, true);
+  assert.equal(flowReadingsFromStatus({load_w: 980, load_quality: "measured"}).loadEstimated, false);
+});

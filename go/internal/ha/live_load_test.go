@@ -99,9 +99,9 @@ func TestLoadPublishClearsUnknownAndRecovers(t *testing.T) {
 	}
 	check("1000.00")
 
+	// A declared battery that never reported is left out, not a blank.
 	options.ExpectedFlows = []telemetry.ForecastFlow{{Driver: "battery", DerType: telemetry.DerBattery}}
-	check("None") // HA ignores an empty numeric payload; None clears it to unknown.
-	check("None")
+	check("1000.00")
 	b.tel.EnsureDriverHealth("battery")
 	b.tel.Update("battery", telemetry.DerBattery, -200, nil, nil)
 	check("1200.00")
@@ -110,8 +110,12 @@ func TestLoadPublishClearsUnknownAndRecovers(t *testing.T) {
 	b.tel.Update("battery", telemetry.DerBattery, 0, nil, nil)
 	check("0.00")
 
+	// Unresolved topology still has a read site meter: an estimate.
 	options.HouseholdInvalidReason = "unresolved_topology"
-	check("None")
+	check("0.00")
+	b.tel.DriverHealthMut("meter").SetOffline()
+	check("None") // HA ignores an empty numeric payload; None clears it to unknown.
+	b.tel.DriverHealthMut("meter").RecordSuccess()
 	options.HouseholdInvalidReason = ""
 	check("0.00")
 }

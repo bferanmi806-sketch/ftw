@@ -65,8 +65,9 @@ func TestStatusKeepsPowerBalanceWhenSessionEnergyCannotFormAnInterval(t *testing
 	}
 	tel.DriverHealthMut("charger").SetOffline()
 	srv.qualifyStatusHistory(resp, "site")
-	if resp["load_w"] != nil || resp["load_estimate"].(telemetry.HomeEstimate).Watts != nil {
-		t.Fatal("offline charger became zero load")
+	// The offline charger is left out of live Home use, which says so.
+	if resp["load_w"] != float64(1234) || resp["load_quality"] != "estimated" || resp["load_estimate"].(telemetry.HomeEstimate).Watts != nil {
+		t.Fatal("offline charger blanked Home use or became an energy interval")
 	}
 	tel.RecordDriverSuccess("charger")
 	tel.Update("charger", telemetry.DerEV, 6000, nil, nil)

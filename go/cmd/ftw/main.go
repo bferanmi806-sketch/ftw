@@ -858,7 +858,10 @@ func main() {
 	}
 	forecastSettings := newForecastSiteConfig(st)
 	liveMeasurementOptions := func() telemetry.ForecastOptions {
-		return forecastSettings.Snapshot().HistoryOptions
+		site := forecastSettings.Snapshot()
+		opts := site.HistoryOptions
+		opts.PVDark = site.HistorySun.darkness
+		return opts
 	}
 	forecastSettings.identity = func(name string) (string, bool) {
 		if id, ok := runningDeviceID(reg, name); ok {
@@ -3169,6 +3172,8 @@ func main() {
 					"ev_w", evW,
 					"v2x_w", v2xW,
 					"load_valid", live.Valid,
+					"load_quality", live.LoadQuality,
+					"load_reason", live.LoadReason,
 					"self_tune_active", selfTuneActive,
 					"self_tune_driver", selfTuneName,
 					"self_tune_command_w", selfTuneCmd,

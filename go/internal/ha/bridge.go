@@ -949,8 +949,8 @@ func (b *Bridge) publishState() {
 	b.publishValue("bat_w", batW)
 	b.publishValue("ev_w", evW)
 	b.publishValue("v2x_w", v2xW)
-	if live.Valid {
-		b.publishValue("load_w", live.HouseholdW)
+	if live.LoadKnown {
+		b.publishValue("load_w", live.LoadW)
 	} else {
 		// HA's numeric MQTT sensors ignore an empty payload. The literal
 		// None replaces the previous value with unknown.
