@@ -374,7 +374,7 @@ func (s *simSite) wantsCharge() bool {
 	minW := e.MinA * p.Voltage * float64(phases)
 	if ceilingW := s.state.PeakImportCeilingW; ceilingW > 0 {
 		left := s.hourStart.Add(time.Hour).Sub(p.Now)
-		if left < importHourRiseMinLeft || baseW+minW > (ceilingW-s.hourWh)/left.Hours() {
+		if left < 15*time.Minute || baseW+minW > (ceilingW-s.hourWh)/left.Hours() {
 			return false
 		}
 	}

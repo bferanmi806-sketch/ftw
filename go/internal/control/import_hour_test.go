@@ -428,6 +428,30 @@ func TestImportCeilingNoStartOnSlackAlone(t *testing.T) {
 	}
 }
 
+// The field case from the review of #1783: a 7.5 kW hourly ceiling, a 25 A
+// fuse, a light first half hour, and a car plugged in at 22:40 beside 6 kW
+// (and 8 kW) of house load. The ceiling keeps it idle to the end of the
+// hour, and not one tick of that says fuse_limit.
+func TestImportCeilingNightNeverSaysFuse(t *testing.T) {
+	for _, houseW := range []float64{6000, 8000} {
+		h := newHourSite(t, 7500, 500, clock(16, 22, 0))
+		h.unplugged = true
+		h.run(40 * time.Minute)
+		h.setHouse(houseW)
+		h.plugIn()
+		for h.now.Before(clock(16, 23, 0)) {
+			h.step()
+			if st, _ := h.mgr.State("garage"); st.CommandedReason == "fuse_limit" {
+				t.Fatalf("house %.0f W: %s says fuse_limit with the phases low under a 7.5 kW hourly ceiling",
+					houseW, h.now.In(hourTestZone).Format("15:04:05"))
+			}
+		}
+		if h.offer() != 0 {
+			t.Fatalf("house %.0f W: the car started at %.0f W under the ceiling", houseW, h.offer())
+		}
+	}
+}
+
 // A quiet first 40 minutes leave the hour so much slack that its limits sit
 // above what the 25 A fuse allows. An 8 kW house still keeps an idle car from
 // starting, by the ceiling's own start test, and the car says import_limit.
