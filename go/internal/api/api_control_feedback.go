@@ -460,13 +460,6 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		set("warning", "no_power_response", "warning")
 		return
 	}
-	// A one-phase car drawing a third of a three-phase order does what it
-	// can: the order is its current per phase, on its one phase.
-	if f.ChargingPhase != "" && commanded && cmd.Result == "accepted" && f.SentW != nil && *f.SentW > 100 &&
-		f.ActualW != nil && math.Abs(*f.ActualW-*f.SentW) <= telemetry.ControlToleranceW(*f.SentW) {
-		set("limited", "one_phase", "info")
-		return
-	}
 	if f.RequestedA != nil && f.DeviceLimitA != nil && *f.RequestedA > *f.DeviceLimitA+0.5 {
 		set("limited", "device_limit", "warning")
 		return
@@ -508,6 +501,14 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	}
 	if cmd.Result == "pending" || (!settled && f.Response == "unconfirmed") || f.ObservedAtMs < cmd.Since.UnixMilli() {
 		set("waiting", "waiting_response", "info")
+		return
+	}
+	// A one-phase car drawing a third of a three-phase order does what it
+	// can: the order is its current per phase, on its one phase. A limit, a
+	// changed setpoint or a response still due says more, and comes first.
+	if f.ChargingPhase != "" && cmd.Result == "accepted" && f.SentW != nil && *f.SentW > 100 &&
+		f.ActualW != nil && math.Abs(*f.ActualW-*f.SentW) <= telemetry.ControlToleranceW(*f.SentW) {
+		set("limited", "one_phase", "info")
 		return
 	}
 	if f.SentW == nil || f.ActualW == nil {
