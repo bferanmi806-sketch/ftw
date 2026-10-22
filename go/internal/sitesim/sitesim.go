@@ -205,6 +205,7 @@ type EVSE struct {
 	Delay         time.Duration // from command to current at the car
 	ReadbackLag   time.Duration // the charger reports the draw this late
 	LoadBalancerA float64       // > 0: its own balancer keeps each phase under this
+	StuckPhases   int           // > 0: draws on this many phases whatever it is told, as an Easee stuck on 1p
 	OfferA        float64       // current limit in force
 	OfferPhases   int
 	DrawW         float64 // the car's draw now
@@ -244,6 +245,9 @@ func (e *EVSE) step(now time.Time, car *Car, houseA [3]float64, voltage float64)
 	w := 0.0
 	if car != nil && car.Plugged && e.OfferA > 0 {
 		e.DrawPhases = min(max(e.OfferPhases, 1), e.Phases, car.Phases)
+		if e.StuckPhases > 0 {
+			e.DrawPhases = e.StuckPhases
+		}
 		a := math.Min(e.OfferA, car.MaxW/voltage/float64(e.DrawPhases))
 		if e.LoadBalancerA > 0 {
 			for i := range e.DrawPhases {

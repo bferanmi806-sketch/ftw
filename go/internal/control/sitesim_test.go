@@ -95,6 +95,7 @@ func (s *simSite) boot() {
 	})
 	s.ctrl.SetFusePhaseRoomA(func() (float64, bool) { return EVFusePhaseRoomA(s.state) })
 	s.ctrl.SetFuseLimitReason(func() string { return EVLimitReason(s.state) })
+	s.ctrl.SetSitePhases(func() (loadpoint.SitePhases, bool) { return SitePhases(s.store, s.state) })
 	s.ctrl.SetSiteSurplusForEV(func() (float64, bool) {
 		if !s.meterFresh() {
 			return 0, false
@@ -142,6 +143,7 @@ func (s *simSite) send(_ context.Context, driver string, payload []byte) error {
 		PowerW    float64 `json:"power_w"`
 		PhaseMode string  `json:"phase_mode"`
 		SplitW    float64 `json:"phase_split_w"`
+		MaxA      float64 `json:"max_amps_per_phase"`
 	}
 	if err := json.Unmarshal(payload, &cmd); err != nil {
 		return err
@@ -161,6 +163,11 @@ func (s *simSite) send(_ context.Context, driver string, payload []byte) error {
 	}
 	s.offerW = cmd.PowerW
 	s.commands = append(s.commands, simCommand{s.p.Now, "evse", cmd.PowerW})
+	// Without a split the Easee driver splits auto at the fuse's current
+	// on one phase (easee_cloud.lua pick_phases).
+	if cmd.SplitW <= 0 && cmd.MaxA > 0 {
+		cmd.SplitW = s.p.Voltage * cmd.MaxA
+	}
 	s.p.EVSE.Command(s.p.Now, cmd.PowerW, cmd.PhaseMode, cmd.SplitW, s.p.Voltage)
 	return nil
 }
@@ -581,7 +588,44 @@ func simScenarios() []simScenario {
 				}
 				return nil
 			}}}},
+		// Field report 22 Oct 2026: a three-phase order an Easee served on L1
+		// at 3.13 kW, about 13.6 A, all night. The plan counted the order.
+		{name: "charger stuck on one phase", run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.HouseW, p.EVSE.StuckPhases, p.EVSE.Delay, p.Car.MaxW = houseA(1, .5, .5), 1, time.Minute, 3130
+			},
+			expect: []simExpect{{6 * time.Minute, onePhaseSeen(1, 3130)}}},
+		// Core counts an auto order above 3,680 W on three phases and sends no
+		// split; the Easee driver then splits at the fuse's current on one
+		// phase, 8,050 W at 35 A, and puts 7.6 kW on one phase.
+		{name: "Easee resolves auto to one phase", run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.Fuse.RatingA, p.HouseW, p.EVSE.Delay, p.Car.MaxW = 35, houseA(1, .5, .5), time.Minute, 3130
+			},
+			lp:     func(c *loadpoint.Config) { c.PhaseMode, c.MaxChargeW = "auto", 7590 },
+			expect: []simExpect{{6 * time.Minute, onePhaseSeen(1, 3130)}}},
+		// A three-phase car at its minimum beside a heavy L1 and solar export
+		// on the other two is not a one-phase draw.
+		{name: "three-phase car, heavy L1, export", run: 10 * time.Minute,
+			plant:  func(p *sitesim.Plant) { p.HouseW, p.PVW, p.Car.MaxW = houseA(13, .5, .5), -3000, 4140 },
+			expect: []simExpect{{10*time.Minute - time.Second, onePhaseSeen(0, 0)}}},
 		{name: "a day", start: time.Date(2026, 10, 21, 0, 0, 0, 0, time.Local), run: 24 * time.Hour, plant: simDay},
+	}
+}
+
+// onePhaseSeen checks that the loadpoint sees its draw on phase, at about
+// rateW, and that the plan counts that rate; phase 0 is no one-phase draw.
+func onePhaseSeen(phase int, rateW float64) func(*simSite) error {
+	return func(s *simSite) error {
+		st, _ := s.mgr.State(s.lp.ID)
+		if st.OnePhase != phase || math.Abs(st.OnePhaseW-rateW) > 50 {
+			return fmt.Errorf("one-phase draw: phase %d at %.0f W (order %.0f W), want phase %d at %.0f W; car draws %.0f W on %d phases",
+				st.OnePhase, st.OnePhaseW, st.OnePhaseOrderW, phase, rateW, s.p.EVSE.DrawW, s.p.EVSE.DrawPhases)
+		}
+		if _, maxW, _ := loadpoint.LimitPower(st, st.AllowedStepsW); phase > 0 && maxW != st.OnePhaseW {
+			return fmt.Errorf("the plan counts %.0f W, not the %.0f W delivered on one phase", maxW, st.OnePhaseW)
+		}
+		return nil
 	}
 }
 

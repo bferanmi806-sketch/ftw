@@ -51,6 +51,8 @@ type Controller struct {
 	fusePhaseRoomA func() (float64, bool)
 	// fuseLimitReason names the site limit behind the cap.
 	fuseLimitReason func() string
+	// sitePhases reads the site meter's phases for the one-phase check.
+	sitePhases func() (SitePhases, bool)
 
 	// tickFuseCaps belongs to the serial tick, after one shared budget read.
 	tickFuseCaps        map[string]float64
@@ -1318,6 +1320,7 @@ func (c *Controller) observeTick(now time.Time, cfg Config, sample EVSample, dis
 	wasSurplus := cfg.SurplusOnly || (!sched.HasTarget() && armed)
 	c.manager.SetSurplusWithheld(cfg.ID, wasSurplus && enteringSurplusPaused)
 	c.manager.ObserveSample(cfg.ID, sample)
+	c.observeOnePhase(cfg, sample, now)
 	c.restoreManualHoldForSession(cfg.ID)
 	c.evaluateBatteryBoost(cfg.ID, now, sample.Connected, dispatchAllowed && !sample.PowerUnavailable)
 }
@@ -2492,6 +2495,11 @@ func (c *Controller) computeCommandForBudget(now time.Time, lpCfg Config, curren
 		}
 		// A duty plan commands its legal on-power until the Wh budget is spent.
 		wantW = maxW
+	}
+	// The plan counts a charger on one phase at the rate it delivered. Repeat
+	// the order that delivered it until the slot's energy is spent.
+	if st, known := c.manager.State(lpCfg.ID); known && wantW > 0 && st.OnePhase > 0 && st.OnePhaseOrderW > 0 {
+		wantW = min(st.OnePhaseOrderW, maxW)
 	}
 	// Joint fuse allocator (dispatch.go) caps EV demand when battery + EV
 	// would together bust the fuse. Honour it before snapping to the

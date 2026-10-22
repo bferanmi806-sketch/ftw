@@ -5,6 +5,7 @@ import (
 	"math"
 	"time"
 
+	"github.com/srcfl/ftw/go/internal/loadpoint"
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
@@ -121,4 +122,22 @@ func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, 
 		amps = append(amps, math.Abs(*a))
 	}
 	return amps, true, true
+}
+
+// SitePhases is the site meter's last reading of its phase currents, as
+// magnitudes, for the loadpoints' one-phase check. false when the meter
+// reports no usable phase currents or the site has fewer than three phases.
+func SitePhases(store *telemetry.Store, state *State) (loadpoint.SitePhases, bool) {
+	if store == nil || state == nil || state.SiteFusePhases != 3 {
+		return loadpoint.SitePhases{}, false
+	}
+	meter := store.Get(state.SiteMeterDriver, telemetry.DerMeter)
+	if meter == nil {
+		return loadpoint.SitePhases{}, false
+	}
+	amps, _, valid := phaseCurrentsA(meter, state)
+	if !valid || len(amps) != 3 {
+		return loadpoint.SitePhases{}, false
+	}
+	return loadpoint.SitePhases{A: [3]float64(amps), At: meter.UpdatedAt}, true
 }

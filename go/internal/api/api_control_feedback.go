@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -55,9 +56,13 @@ type ControlFeedback struct {
 	OfferedA         *float64 `json:"offered_a"`
 	DeviceLimitA     *float64 `json:"device_limit_a"`
 	DeviceReason     string   `json:"device_reason,omitempty"`
-	SinceMs          int64    `json:"since_ms,omitempty"`
-	CommandAtMs      int64    `json:"command_at_ms,omitempty"`
-	ObservedAtMs     int64    `json:"observed_at_ms,omitempty"`
+	// ChargingPhase names the one phase (L1-L3) that carries a charger's
+	// draw under a three-phase order, and ChargingPhaseA its current there.
+	ChargingPhase  string   `json:"charging_phase,omitempty"`
+	ChargingPhaseA *float64 `json:"charging_phase_a,omitempty"`
+	SinceMs        int64    `json:"since_ms,omitempty"`
+	CommandAtMs    int64    `json:"command_at_ms,omitempty"`
+	ObservedAtMs   int64    `json:"observed_at_ms,omitempty"`
 }
 
 type feedbackReading struct {
@@ -208,6 +213,14 @@ func (s *Server) controlFeedback(now time.Time) []ControlFeedback {
 					fresh = false
 					f.ActualW = nil
 				}
+				if lp.OnePhase > 0 && f.ActualW != nil {
+					voltage := lp.VoltageV
+					if voltage <= 0 {
+						voltage = 230
+					}
+					f.ChargingPhase = fmt.Sprintf("L%d", lp.OnePhase)
+					f.ChargingPhaseA = watts(*f.ActualW / voltage)
+				}
 			}
 			// Evidence describes measured power, not target fulfilment. A device
 			// delivering 4.4 kW against a 5 kW command can still be site-confirmed.
@@ -341,7 +354,7 @@ func setControlStatus(f *ControlFeedback) {
 		status = "limited"
 	case "import_limit":
 		status = "limited"
-	case "device_limit", "offered_current_lower":
+	case "device_limit", "offered_current_lower", "one_phase":
 		status, severity = "limited", "warning"
 	case "setpoint_changed", "power_below_target", "power_above_target", "power_wrong_direction",
 		"no_power_response", "power_while_idle":
@@ -426,6 +439,13 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		f.SentW != nil && *f.SentW > 100 && f.ActualW != nil && math.Abs(*f.ActualW) < 100 &&
 		f.OfferedA != nil && *f.OfferedA > 0 && noPowerObserved {
 		set("warning", "no_power_response", "warning")
+		return
+	}
+	// The site meter shows a three-phase order drawn on one phase. That
+	// explains a draw below the order, never one above it.
+	if f.ChargingPhase != "" && commanded && cmd.Result == "accepted" && f.SentW != nil && *f.SentW > 100 &&
+		f.ActualW != nil && *f.ActualW <= *f.SentW+telemetry.ControlToleranceW(*f.SentW) {
+		set("limited", "one_phase", "warning")
 		return
 	}
 	if f.RequestedA != nil && f.DeviceLimitA != nil && *f.RequestedA > *f.DeviceLimitA+0.5 {

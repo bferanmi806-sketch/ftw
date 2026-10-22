@@ -2015,6 +2015,11 @@ func main() {
 			defer ctrlMu.Unlock()
 			return control.EVLimitReason(ctrl)
 		})
+		lpController.SetSitePhases(func() (loadpoint.SitePhases, bool) {
+			ctrlMu.Lock()
+			defer ctrlMu.Unlock()
+			return control.SitePhases(tel, ctrl)
+		})
 		// Every lease is preflighted and re-evaluated on each loadpoint tick.
 		// This closure owns site/battery health because those concepts belong
 		// to core, not to the protocol-neutral loadpoint package.

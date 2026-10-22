@@ -203,6 +203,13 @@ type State struct {
 	// PlanningTarget).
 	CarMaxW        float64 `json:"-"`
 	CarChargeLimit float64 `json:"-"`
+	// OnePhase is the phase (1-3) that carries all of this session's draw
+	// under a three-phase order, zero when it is not seen. OnePhaseW is the
+	// most it delivered there and OnePhaseOrderW the order that got it.
+	// The plan counts that rate (LimitPower).
+	OnePhase       int     `json:"-"`
+	OnePhaseW      float64 `json:"-"`
+	OnePhaseOrderW float64 `json:"-"`
 
 	// MinChargeW / MaxChargeW / AllowedStepsW are repeated here so the
 	// UI has everything for rendering in one fetch.
@@ -408,6 +415,9 @@ type loadpointRuntime struct {
 	goalRiskNotified  bool
 	vehicleAnchored   bool
 	chargedSinceStart bool
+	// onePhase is this session's evidence of a three-phase order drawn on
+	// one phase (one_phase.go).
+	onePhase onePhaseState
 	Config
 
 	pluggedIn            bool
@@ -847,11 +857,13 @@ func (m *Manager) observe(id string, pluggedIn bool, powerW, deliveredWh float64
 		lp.deliveredHistory = nil
 		lp.notRequestingSince = time.Time{}
 		lp.chargingDeclined = false
+		lp.onePhase = onePhaseState{}
 	}
 	if !pluggedIn {
 		// Plug-out: drop any pending completion timer / latch.
 		lp.notRequestingSince = time.Time{}
 		lp.chargingDeclined = false
+		lp.onePhase = onePhaseState{}
 		if lp.capacityFromCar {
 			// The car that measured its own capacity left with its
 			// session — the next one may be different.
@@ -1368,6 +1380,9 @@ func (lp *loadpointRuntime) snapshot() State {
 		CommandedReason:          lp.commandedReason,
 		CommandedKnown:           lp.commandedKnown,
 		CommandedPhases:          lp.commandedPhases,
+		OnePhase:                 lp.onePhase.phase,
+		OnePhaseW:                lp.onePhase.rateW,
+		OnePhaseOrderW:           lp.onePhase.orderW,
 	}
 	if lp.VehicleCapacityWh <= 0 {
 		st.VehicleCapacityWh = 60000

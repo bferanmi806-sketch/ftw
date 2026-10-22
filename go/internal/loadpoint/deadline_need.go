@@ -2,6 +2,7 @@ package loadpoint
 
 import (
 	"math"
+	"slices"
 )
 
 // DeadlineNeed is the remaining AC energy and legal on-power of a saved goal,
@@ -43,8 +44,20 @@ func DeadlineNeed(st State) (energyWh, powerW float64, ok bool) {
 // lower of the charger's and the car's maximum, and the charger's steps up to
 // it. When the charger's lowest step is above the car's maximum it keeps that
 // one step: the car takes what it can, and a plan with no step would never
-// charge.
+// charge. A charger seen on one phase under a three-phase order delivers its
+// one-phase rate whatever step is ordered, so the plan counts that rate; the
+// controller repeats the order that delivered it.
 func LimitPower(st State, steps []float64) (minW, maxW float64, out []float64) {
+	if st.OnePhase > 0 && finite(st.OnePhaseW) && st.OnePhaseW > 0 {
+		rate := st.OnePhaseW
+		if len(steps) == 0 {
+			return rate, rate, nil
+		}
+		if slices.Contains(steps, 0) {
+			out = append(out, 0)
+		}
+		return rate, rate, append(out, rate)
+	}
 	minW, maxW = st.MinChargeW, st.MaxChargeW
 	if st.CarMaxW <= 0 || (maxW > 0 && st.CarMaxW >= maxW) {
 		return minW, maxW, steps
