@@ -202,3 +202,19 @@ func TestRepeatedOrderKeepsEarlierOrderInForce(t *testing.T) {
 		t.Fatalf("1 min after a cut the earlier 7590 W order was out of force: gap %v, mismatch since %v", got.LastGapW, got.PowerMismatchSince)
 	}
 }
+
+// A one-phase car takes a third of a three-phase order. The command says
+// what it should draw, and the evidence compares the car with that.
+func TestExpectedDrawReplacesTheOrder(t *testing.T) {
+	s := NewStore()
+	start := time.Now()
+	c := s.BeginCommand("easee", []byte(`{"action":"ev_set_current","power_w":11100,"expected_w":3700}`), start)
+	s.CompleteCommand(c, "accepted")
+	s.mu.Lock()
+	s.observeCommand("easee", DerEV, 3680, json.RawMessage(`{}`), start.Add(3*time.Minute))
+	s.mu.Unlock()
+	got, _ := s.CommandEvidence("easee", "ev")
+	if got.PowerW == nil || *got.PowerW != 3700 || !got.PowerMismatchSince.IsZero() {
+		t.Fatalf("evidence %+v", got)
+	}
+}

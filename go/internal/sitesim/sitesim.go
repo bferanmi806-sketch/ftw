@@ -139,10 +139,13 @@ func (p *Plant) Step() Tick {
 	return tick
 }
 
-// spread puts w on L1 alone or evenly on three phases.
+// spread puts w on L1 alone, evenly on L1 and L2, or evenly on three phases.
 func spread(w float64, phases int) [3]float64 {
-	if phases == 1 {
+	switch phases {
+	case 1:
 		return [3]float64{w, 0, 0}
+	case 2:
+		return [3]float64{w / 2, w / 2, 0}
 	}
 	return [3]float64{w / 3, w / 3, w / 3}
 }

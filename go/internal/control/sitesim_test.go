@@ -106,6 +106,7 @@ func (s *simSite) boot() {
 	})
 	s.ctrl.SetFusePhaseRoomA(func() (float64, bool) { return EVFusePhaseRoomA(s.state) })
 	s.ctrl.SetFuseLimitReason(func() string { return EVLimitReason(s.state) })
+	s.ctrl.SetSitePhases(func() (loadpoint.SitePhases, bool) { return SitePhases(s.store, s.state) })
 	s.ctrl.SetSiteSurplusForEV(func() (float64, bool) {
 		if !s.meterFresh() {
 			return 0, false
@@ -468,6 +469,22 @@ func simLoadpoint() loadpoint.Config {
 
 func houseA(l1, l2, l3 float64) [3]float64 { return [3]float64{l1 * 230, l2 * 230, l3 * 230} }
 
+// fieldNightLoadpoint is the 22 Oct 2026 field site's Easee: auto, with
+// one-phase levels up to 3.8 kW and three-phase levels from 4.8 kW.
+func fieldNightLoadpoint(c *loadpoint.Config) {
+	c.MinChargeW, c.MaxChargeW, c.PhaseMode = 1600, 11100, "auto"
+	c.AllowedStepsW = []float64{0, 1600, 1900, 2100, 2400, 2600, 2800, 3100, 3300, 3500, 3800,
+		4800, 5500, 6200, 6900, 7600, 8300, 9000, 9700, 10400, 11100}
+}
+
+// carPhasesUnknown checks that the session's car was never marked one-phase.
+func carPhasesUnknown(s *simSite) error {
+	if st, _ := s.mgr.State(s.lp.ID); st.CarPhases != 0 {
+		return fmt.Errorf("car marked one-phase on L%d; car draws %.0f W on %d phases", st.CarPhase, s.p.EVSE.DrawW, s.p.EVSE.DrawPhases)
+	}
+	return nil
+}
+
 // planEV is a saved goal and a plan that gives the car w in every quarter
 // hour: the path Core takes overnight.
 func planEV(w float64) loadpoint.PlanFunc {
@@ -628,11 +645,7 @@ func simScenarios() []simScenario {
 			plant: func(p *sitesim.Plant) {
 				p.Fuse.RatingA, p.HouseW, p.EVSE.Delay = 20, houseA(1.6, 1.7, 2.3), 40*time.Second
 			},
-			lp: func(c *loadpoint.Config) {
-				c.MinChargeW, c.MaxChargeW, c.PhaseMode = 1600, 11100, "auto"
-				c.AllowedStepsW = []float64{0, 1600, 1900, 2100, 2400, 2600, 2800, 3100, 3300, 3500, 3800,
-					4800, 5500, 6200, 6900, 7600, 8300, 9000, 9700, 10400, 11100}
-			},
+			lp:   fieldNightLoadpoint,
 			plan: planEV(11100),
 			expect: []simExpect{
 				{2 * time.Minute, func(s *simSite) error {
@@ -648,6 +661,44 @@ func simScenarios() []simScenario {
 					return nil
 				}},
 			}},
+		// A one-phase car (a plug-in hybrid) on the field night's table: the
+		// plan's 4.8 kW three-phase order is 7 A a phase, which the car takes
+		// on L1 alone, 1.6 kW. Once the meter shows it, the order is the
+		// current per phase the car should take, and it gets 3.7 kW as fast
+		// as the fuse limit lets the order rise.
+		{name: "one-phase car, field table", start: time.Date(2026, 10, 22, 3, 0, 0, 0, time.Local), run: 15 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.Fuse.RatingA, p.HouseW, p.EVSE.Delay = 20, houseA(1.6, 1.7, 2.3), 40*time.Second
+				p.Car.Phases, p.Car.MaxW = 1, 3700
+			},
+			lp:   fieldNightLoadpoint,
+			plan: planEV(4800),
+			expect: []simExpect{{8 * time.Minute, func(s *simSite) error {
+				st, _ := s.mgr.State(s.lp.ID)
+				if st.CarPhases != 1 || st.CarPhase != 1 || s.p.EVSE.DrawW < 3600 {
+					return fmt.Errorf("car phases %d (L%d), car draws %.0f W", st.CarPhases, st.CarPhase, s.p.EVSE.DrawW)
+				}
+				return nil
+			}}}},
+		// A house load on one phase as a three-phase car starts, and a
+		// two-phase car: neither is one-phase.
+		{name: "three-phase car, kettle on L1 at the start", start: time.Date(2026, 10, 22, 3, 0, 0, 0, time.Local), run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.Fuse.RatingA, p.HouseW, p.EVSE.Delay, p.Car.MaxW = 25, houseA(1, 1, 1), 40*time.Second, 7360
+				p.Events = []sitesim.Event{
+					{At: 5 * time.Second, Do: func(p *sitesim.Plant) { p.HouseW = houseA(10, 1, 1) }},
+					{At: 4 * time.Minute, Do: func(p *sitesim.Plant) { p.HouseW = houseA(1, 1, 1) }},
+				}
+			},
+			lp: fieldNightLoadpoint, plan: planEV(11100),
+			expect: []simExpect{{10*time.Minute - time.Second, carPhasesUnknown}}},
+		{name: "two-phase car", start: time.Date(2026, 10, 22, 3, 0, 0, 0, time.Local), run: 10 * time.Minute,
+			plant: func(p *sitesim.Plant) {
+				p.Fuse.RatingA, p.HouseW, p.EVSE.Delay = 25, houseA(1, 1, 1), 40*time.Second
+				p.Car.Phases, p.Car.MaxW = 2, 7360
+			},
+			lp: fieldNightLoadpoint, plan: planEV(11100),
+			expect: []simExpect{{10*time.Minute - time.Second, carPhasesUnknown}}},
 		{name: "a day", start: time.Date(2026, 10, 21, 0, 0, 0, 0, time.Local), run: 24 * time.Hour, plant: simDay},
 	}
 }

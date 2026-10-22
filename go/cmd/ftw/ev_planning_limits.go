@@ -13,5 +13,10 @@ func planningStepsForLoadpoint(st loadpoint.State, cfg *config.Config) []float64
 			break
 		}
 	}
-	return loadpoint.PlanningSteps(lp, loadpoint.SiteFuse{MaxAmps: cfg.Fuse.MaxAmps, Voltage: cfg.Fuse.Voltage, PhaseCnt: cfg.Fuse.Phases})
+	site := loadpoint.SiteFuse{MaxAmps: cfg.Fuse.MaxAmps, Voltage: cfg.Fuse.Voltage, PhaseCnt: cfg.Fuse.Phases}
+	if st.CarPhases == 1 {
+		// A one-phase car takes one phase of the charger's current.
+		return loadpoint.OnePhaseCarSteps(lp, site)
+	}
+	return loadpoint.PlanningSteps(lp, site)
 }

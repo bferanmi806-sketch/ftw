@@ -51,6 +51,8 @@ type Controller struct {
 	fusePhaseRoomA func() (float64, bool)
 	// fuseLimitReason names the site limit behind the cap.
 	fuseLimitReason func() string
+	// sitePhases reads the site meter's phases for the one-phase car check.
+	sitePhases func() (SitePhases, bool)
 
 	// tickFuseCaps belongs to the serial tick, after one shared budget read.
 	tickFuseCaps        map[string]float64
@@ -1325,6 +1327,7 @@ func (c *Controller) observeTick(now time.Time, cfg Config, sample EVSample, dis
 	wasSurplus := cfg.SurplusOnly || (!sched.HasTarget() && armed)
 	c.manager.SetSurplusWithheld(cfg.ID, wasSurplus && enteringSurplusPaused)
 	c.manager.ObserveSample(cfg.ID, sample)
+	c.observePhases(cfg, sample, now)
 	c.restoreManualHoldForSession(cfg.ID)
 	c.evaluateBatteryBoost(cfg.ID, now, sample.Connected, dispatchAllowed && !sample.PowerUnavailable)
 }
@@ -1644,6 +1647,13 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 		split, _ := cmd["phase_split_w"].(float64)
 		c.manager.setCommandedPhases(lpCfg.ID, c.commandPhases(mode, w, split))
 		c.saveOffer(now, lpCfg, sample, w, fusePhase(mode), cmdReason)
+	}
+	// A one-phase car takes a third of a three-phase order: command evidence
+	// compares its draw with that.
+	if st, known := c.manager.State(lpCfg.ID); known && haveOffer && st.CarPhases == 1 && c.siteFuse().Phases() == 3 {
+		if mode, _ := cmd["phase_mode"].(string); fusePhase(mode) == "3p" {
+			cmd["expected_w"] = offerW / 3
+		}
 	}
 	payload, err := json.Marshal(cmd)
 	if err != nil {
@@ -2483,8 +2493,19 @@ func (c *Controller) computeCommandForBudget(now time.Time, lpCfg Config, curren
 	}
 	remainingWh := budgetWh - alreadyWh
 	wantW := EnergyBudgetToPowerW(remainingWh, remainingS)
+	// A one-phase car takes a three-phase order's current per phase on its
+	// one phase. The plan counts what it takes; the order names that current
+	// on all three, within the charger's maximum.
+	onePhaseCar := false
+	if st, known := c.manager.State(lpCfg.ID); known && st.CarPhases == 1 && c.siteFuse().Phases() == 3 &&
+		fusePhase(c.tickChoices[lpCfg.ID].phaseMode) == "3p" {
+		onePhaseCar, wantW = true, wantW*3
+	}
 	maxW := lpCfg.MaxChargeW
 	if ceiling, ok := d.LoadpointMaxPowerW[lpCfg.ID]; ok {
+		if onePhaseCar {
+			ceiling *= 3
+		}
 		maxW = min(maxW, ceiling)
 		if maxW <= 0 || remainingWh <= 1e-6 || remainingS <= 0 {
 			return 0, true, false
