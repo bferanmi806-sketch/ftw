@@ -390,8 +390,8 @@ func (s *simSite) wantsCharge() bool {
 			return false
 		}
 	}
-	if s.field != nil && !s.field.wantsCharge(s) {
-		return false
+	if s.field != nil {
+		return s.field.wantsCharge(s, baseW)
 	}
 	return !s.surplus || -baseW >= minW
 }

@@ -53,6 +53,7 @@ const (
 	useSurplus fieldUse = "surplus"   // surplus_only while export steps up and down
 	usePause   fieldUse = "pause"     // Charge now, Pause for 25 s, then Start
 	useRestart fieldUse = "restart"   // a planned charge across a 20 s Core restart
+	usePhaseUp fieldUse = "1p-to-3p"  // a held 1p order changed to 3p after 5 min
 )
 
 // fieldCase is one site and one request. The name is stable: the known rows
@@ -71,6 +72,12 @@ type fieldCase struct {
 	every     time.Duration // control_interval_s; zero: 2 s
 	lp        func(*loadpoint.Config)
 	car       func(*sitesim.Car)
+
+	charger   string        // the charger itself when not what the phase mode says: "1p32A"
+	planW     float64       // > 0: the plan asks this many W each slot, as Wh only
+	goal      bool          // surplus-only with a ready-by goal
+	exportW   []float64     // surplus: export each quarter hour
+	houseStep time.Duration // > 0: L1 +8 A for 10 min from this time into the run
 }
 
 func (c fieldCase) key() string {
@@ -79,8 +86,20 @@ func (c fieldCase) key() string {
 		mode = "empty"
 	}
 	name := fmt.Sprintf("%gA/%s/%s/%s/car%dp/%s/%s", c.fuseA, mode, c.steps, c.timing.name, c.carPhases, c.houseName, c.use)
-	if c.battery {
-		name += "+battery"
+	export := ""
+	if len(c.exportW) > 0 {
+		export = fmt.Sprintf("export%gW", c.exportW[0])
+	}
+	for _, v := range []struct {
+		on   bool
+		text string
+	}{
+		{c.battery, "battery"}, {c.charger != "", "charger" + c.charger}, {c.planW > 0, fmt.Sprintf("plan%gW", c.planW)},
+		{c.goal, "goal"}, {export != "", export}, {c.houseStep > 0, "L1step"},
+	} {
+		if v.on {
+			name += "+" + v.text
+		}
 	}
 	return name
 }
@@ -104,6 +123,8 @@ func stepTable(name string) (steps []float64, minW, maxW float64) {
 		return slices.Concat([]float64{0}, amps(3, 6, 16)), 4140, 11040
 	case "1p":
 		return slices.Concat([]float64{0}, amps(1, 6, 16)), 1380, 3680
+	case "1p-3": // three one-phase levels and a maximum above them
+		return []float64{0, 1380, 2300, 3680}, 1380, 5520
 	}
 	return nil, 4140, 11000 // What the settings page writes for a new charger.
 }
@@ -221,7 +242,51 @@ func fieldCases() []fieldCase {
 			}
 		}
 	}
+	for _, c := range probeCases() {
+		add(c)
+	}
 	return out
+}
+
+// probeCases are the edges srcfl/ftw#1799's review named, and the one-phase
+// car that fix D is for.
+func probeCases() []fieldCase {
+	var out []fieldCase
+	two := []fieldTiming{timingFast, timingEasee}
+	for _, tm := range two {
+		for _, use := range []fieldUse{usePlanned, useNow} {
+			// A table of one-phase levels with a maximum above it, on auto.
+			out = append(out, fieldCase{report: "probe", fuseA: 25, mode: "auto", steps: "1p-3", timing: tm, carPhases: 3, use: use,
+				house: houseBalanced, houseName: "balanced", charger: "1p32A"})
+		}
+		for _, fuse := range []float64{16, 25} {
+			// Phase mode unset, a goal, and a plan slot of 2,300 W.
+			out = append(out, fieldCase{report: "probe", fuseA: fuse, mode: "", steps: "none", timing: tm, carPhases: 3, use: usePlanned,
+				house: houseBalanced, houseName: "balanced", planW: 2300})
+		}
+		// Surplus-only with a goal and 2.5 kW of export: one phase is allowed.
+		out = append(out, fieldCase{report: "probe", fuseA: 25, mode: "auto", steps: "mixed", timing: tm, carPhases: 3, use: useSurplus,
+			house: houseBalanced, houseName: "balanced", goal: true, exportW: []float64{2500, 2500, 3000, 2500}})
+		// A house step on one phase under a three-phase car is not a one-phase car.
+		out = append(out, fieldCase{report: "probe", fuseA: 25, mode: "3p", steps: "3p", timing: tm, carPhases: 3, use: usePlanned,
+			house: houseBalanced, houseName: "balanced", houseStep: 30 * time.Minute})
+	}
+	for _, tm := range []fieldTiming{timingFast, timingEasee, timingSlowCloud} {
+		// A held 1p order raised to 3p beside a phase at 20 A.
+		out = append(out, fieldCase{report: "probe", fuseA: 25, mode: "auto", steps: "mixed", timing: tm, carPhases: 3, use: usePhaseUp,
+			house: [3]float64{2, 20, 2}, houseName: "2-20-2"})
+	}
+	for _, tm := range fieldTimings {
+		for _, use := range []fieldUse{usePlanned, useNow} {
+			// The help report's site with a one-phase car.
+			c := helpReport(use, tm)
+			c.carPhases = 1
+			out = append(out, c)
+		}
+	}
+	c := helpReport(usePlanned, timingEasee)
+	c.houseStep = 30 * time.Minute
+	return append(out, c)
 }
 
 // Failure kinds: the invariants. The sitesim adapter's own checks give the
@@ -262,6 +327,7 @@ type fieldPlan struct {
 	deadline       time.Time
 	needWh         float64
 	planning       func() []float64 // the steps main.go gives the planner
+	fixedW         float64          // > 0: every slot asks this, as Wh only
 	slotStart      time.Time
 	stepW, slotWh  float64
 	slotDelivered0 float64
@@ -286,7 +352,9 @@ func (p *fieldPlan) directive(now time.Time) (loadpoint.Directive, bool) {
 		p.slotStart, p.slotDelivered0 = start, p.run.deliveredWh
 		p.stepW, p.slotWh = 0, 0
 		left, hours := p.needWh-p.run.deliveredWh, p.deadline.Sub(start).Hours()
-		if steps := p.planning(); left > 0 && hours > 0 && len(steps) > 0 {
+		if p.fixedW > 0 {
+			p.stepW, p.slotWh = p.fixedW, p.fixedW*p.slotEnd().Sub(start).Hours()
+		} else if steps := p.planning(); left > 0 && hours > 0 && len(steps) > 0 {
 			p.stepW = slices.Max(steps)
 			for _, w := range steps {
 				if w > 0 && w >= left/hours {
@@ -297,8 +365,11 @@ func (p *fieldPlan) directive(now time.Time) (loadpoint.Directive, bool) {
 			p.slotWh = math.Min(left, p.stepW*p.slotEnd().Sub(start).Hours())
 		}
 	}
-	return loadpoint.Directive{SlotStart: p.slotStart, SlotEnd: p.slotEnd(),
-		LoadpointEnergyWh: map[string]float64{p.id: p.slotWh}, LoadpointMaxPowerW: map[string]float64{p.id: p.stepW}}, true
+	d := loadpoint.Directive{SlotStart: p.slotStart, SlotEnd: p.slotEnd(), LoadpointEnergyWh: map[string]float64{p.id: p.slotWh}}
+	if p.fixedW == 0 {
+		d.LoadpointMaxPowerW = map[string]float64{p.id: p.stepW}
+	}
+	return d, true
 }
 
 // fieldPlanningSteps is what main.go gives the planner for the session:
@@ -337,6 +408,8 @@ type fieldRun struct {
 	heatRoomSince time.Time // the phases' heat has left room to start since
 	nextLook      time.Time
 	trace         func(format string, args ...any) // FTW_FIELD_TRACE names the case
+	tracedReason  string
+	exportPeak    func(window time.Duration) (float64, bool) // surplus: the forecast from now
 }
 
 // FieldVerdict returns a reader of the EV verdict the API shows for a store
@@ -402,12 +475,13 @@ func (f *fieldRun) send(ctx context.Context, s *simSite, driver string, payload 
 	}
 	if err := json.Unmarshal(payload, &cmd); err == nil && cmd.Action == "ev_set_current" && driver == s.lp.DriverName &&
 		cmd.PowerW < s.offerW-1 && !s.p.Offline("evse") {
-		if st, _ := s.mgr.State(s.lp.ID); st.CommandedReason == "fuse_limit" {
+		// Surplus follows the export, an outside step; its cuts are not judged.
+		if st, _ := s.mgr.State(s.lp.ID); st.CommandedReason == "fuse_limit" && !s.surplus {
 			f.checkCut(s, cmd.PowerW)
 		}
 	}
-	if f.trace != nil && cmd.Action == "ev_set_current" && cmd.PowerW != s.offerW {
-		st, _ := s.mgr.State(s.lp.ID)
+	if st, _ := s.mgr.State(s.lp.ID); f.trace != nil && cmd.Action == "ev_set_current" && (cmd.PowerW != s.offerW || st.CommandedReason != f.tracedReason) {
+		f.tracedReason = st.CommandedReason
 		e := s.p.EVSE
 		f.trace("%s order %.0f W (%s); phases %.1f A, offer %.0f A on %d, car %.0f W on %d",
 			s.p.Now.Format("15:04:05"), cmd.PowerW, st.CommandedReason, s.p.A, e.OfferA, e.OfferPhases, e.DrawW, e.DrawPhases)
@@ -471,7 +545,7 @@ func (f *fieldRun) checkCut(s *simSite, w float64) {
 // After an overage Core waits for the importing phases' heat (I² over 60 s,
 // the fuse's own memory) to leave room for the car's minimum and a step, for
 // evRestartDwell, as its start rule does.
-func (f *fieldRun) wantsCharge(s *simSite) bool {
+func (f *fieldRun) wantsCharge(s *simSite, baseW float64) bool {
 	p, limit := s.p, f.limitA(s)
 	room := true
 	for i := range min(p.EVSE.Phases, p.Car.Phases) {
@@ -492,8 +566,28 @@ func (f *fieldRun) wantsCharge(s *simSite) bool {
 		return false
 	case f.plan != nil:
 		return f.plan.asks(p.Now, p.EVSE.Delay+time.Minute)
+	case s.surplus:
+		return -baseW >= f.surplusMinW(s)
 	}
 	return true
+}
+
+// surplusMinW is the least export surplus charging can use: one phase at
+// 6 A where the loadpoint may run on one phase and the next 30 min of
+// forecast stay below three phases at 6 A, as pickSurplusSteps decides;
+// else the car's phases.
+func (f *fieldRun) surplusMinW(s *simSite) float64 {
+	e, phases := s.p.EVSE, min(s.p.EVSE.Phases, s.p.Car.Phases)
+	min3 := 3 * s.p.Voltage * e.MinA
+	onePhase := s.lp.PhaseMode != "3p" && slices.ContainsFunc(s.lp.AllowedStepsW, func(w float64) bool { return w > 0 && w < min3 })
+	near, ok := 0.0, false
+	if f.exportPeak != nil {
+		near, ok = f.exportPeak(30 * time.Minute)
+	}
+	if onePhase && (!ok || near < min3) || s.lp.PhaseMode == "1p" {
+		phases = 1
+	}
+	return e.MinA * s.p.Voltage * float64(phases)
 }
 
 // response is how long Core may wait for the charger's power to show an
@@ -512,7 +606,7 @@ func (f *fieldRun) check(s *simSite) {
 	if p.EVSE.DrawW != f.drawW {
 		f.drawW, f.drawChangedAt = p.EVSE.DrawW, now
 	}
-	if f.c.use != useSurplus && p.EVSE.Phases == 3 && p.EVSE.OfferPhases == 1 && p.EVSE.OfferA > 0 {
+	if f.c.use != useSurplus && f.c.use != usePhaseUp && p.EVSE.Phases == 3 && p.EVSE.OfferPhases == 1 && p.EVSE.OfferA > 0 {
 		f.fail(s, failOnePhase, "%s put the three-phase charger on one phase at %.0f A", f.c.use, p.EVSE.OfferA)
 	}
 	up := s.downUntil.IsZero()
@@ -578,6 +672,9 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 		phases = 1
 	}
 	p.EVSE = &sitesim.EVSE{Phases: phases, MinA: 6, MaxA: 16, Delay: c.timing.delay}
+	if c.charger == "1p32A" {
+		p.EVSE.Phases, p.EVSE.MaxA = 1, 32
+	}
 	if c.timing.cloud {
 		p.EVSE.ReadbackLag, p.EVSE.SplitAtA, p.EVSE.PhaseHold = 10*time.Second, c.fuseA, 90*time.Second
 	}
@@ -604,6 +701,7 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 		return func(p *sitesim.Plant) { do(p); s.outsideAt = p.Now }
 	}
 	var actions []fieldAction
+	var exportPlan []float64 // surplus: each quarter hour's export without the car
 	switch c.use {
 	case usePlanned, useRestart:
 		run, kettle = 3*time.Hour, []time.Duration{50 * time.Minute, 140 * time.Minute}
@@ -611,9 +709,12 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 			run, kettle = 90*time.Minute, []time.Duration{50 * time.Minute}
 			p.Events = append(p.Events, sitesim.Event{At: 30 * time.Minute, Kind: sitesim.CoreRestart, For: 20 * time.Second})
 		}
-		roomW := fieldRoomW(c, p.EVSE, p.Car)
+		roomW, askW := fieldRoomW(c, p.EVSE, p.Car), 3300.0
+		if c.planW > 0 {
+			askW = c.planW
+		}
 		f.plan = &fieldPlan{id: lp.ID, deadline: start.Add(run), run: f, planning: func() []float64 { return fieldPlanningSteps(s) },
-			needWh: math.Min(3300*run.Hours(), .8*roomW*run.Hours())}
+			fixedW: c.planW, needWh: math.Min(askW*run.Hours(), .8*roomW*run.Hours())}
 		s.plan = f.plan.directive
 	case usePause:
 		run, kettle = 15*time.Minute, []time.Duration{11 * time.Minute}
@@ -627,6 +728,11 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 				s.ctrl.SetManualHold(lp.ID, loadpoint.ManualHold{PowerW: lp.MaxChargeW, PhaseMode: f.holdPhase, Persistent: true, StartedAt: s.p.Now, UpdatedAt: s.p.Now})
 			}},
 		}
+	case usePhaseUp:
+		run, kettle = 15*time.Minute, nil
+		actions = []fieldAction{{5 * time.Minute, func(s *simSite) {
+			s.ctrl.SetManualHold(lp.ID, loadpoint.ManualHold{PowerW: lp.MaxChargeW, PhaseMode: "3p", Persistent: true, StartedAt: s.p.Now, UpdatedAt: s.p.Now})
+		}}}
 	case useSurplus:
 		run, kettle = time.Hour, nil
 		// Export steps up and down, never past the fuse with the car off.
@@ -634,8 +740,13 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 		for _, a := range c.house {
 			maxPVW = math.Min(maxPVW, 3*230*(c.fuseA-2*evPhaseMarginA+a))
 		}
-		for i, exportW := range []float64{2500, 6000, 9000, 3000} {
+		exports := []float64{2500, 6000, 9000, 3000}
+		if len(c.exportW) > 0 {
+			exports = c.exportW
+		}
+		for i, exportW := range exports {
 			pvW := -math.Min(houseW+exportW, maxPVW)
+			exportPlan = append(exportPlan, -pvW-houseW)
 			p.Events = append(p.Events, sitesim.Event{At: time.Duration(i) * 15 * time.Minute, Do: outside(func(p *sitesim.Plant) { p.PVW = pvW })})
 		}
 	}
@@ -644,6 +755,11 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 		p.Events = append(p.Events,
 			sitesim.Event{At: at, Do: outside(func(p *sitesim.Plant) { p.HouseW[0] += 6 * 230 })},
 			sitesim.Event{At: at + 3*time.Minute, Do: outside(func(p *sitesim.Plant) { p.HouseW[0] -= 6 * 230 })})
+	}
+	if c.houseStep > 0 {
+		p.Events = append(p.Events,
+			sitesim.Event{At: c.houseStep, Do: outside(func(p *sitesim.Plant) { p.HouseW[0] += 8 * 230 })},
+			sitesim.Event{At: c.houseStep + 10*time.Minute, Do: outside(func(p *sitesim.Plant) { p.HouseW[0] -= 8 * 230 })})
 	}
 	slices.SortStableFunc(p.Events, func(a, b sitesim.Event) int { return cmp.Compare(a.At, b.At) })
 
@@ -657,16 +773,38 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 			}
 			return err
 		})
-		if c.use == useNow || c.use == usePause {
+		switch c.use {
+		case useNow, usePause:
 			// Charge now from the app, which names the loadpoint's phases (web/app.js).
 			s.ctrl.SetManualHold(lp.ID, loadpoint.ManualHold{PowerW: lp.MaxChargeW, PhaseMode: f.holdPhase, Persistent: true, StartedAt: s.p.Now, UpdatedAt: s.p.Now})
+		case usePhaseUp:
+			s.ctrl.SetManualHold(lp.ID, loadpoint.ManualHold{PowerW: 3680, PhaseMode: "1p", Persistent: true, StartedAt: s.p.Now, UpdatedAt: s.p.Now})
 		}
-		if f.plan != nil {
-			deadline := f.plan.deadline.Local()
+		if f.plan != nil || c.goal {
+			deadline := start.Add(run).Local()
 			s.mgr.SetSchedule(lp.ID, loadpoint.NewSchedule(1, deadline.Hour()*60+deadline.Minute(), false, 0, false))
 		}
 		if c.battery {
 			fieldBatteryPlan(s, 6000)
+		}
+		if exportPlan != nil {
+			// The planner's PV forecast, which decides when surplus may use
+			// one phase: here it knows the export to come.
+			peak := func(from, to time.Duration) (float64, bool) {
+				w, ok := 0.0, false
+				for i, e := range exportPlan {
+					at := time.Duration(i) * 15 * time.Minute
+					if at+15*time.Minute > from && at <= to {
+						w, ok = math.Max(w, e), true
+					}
+				}
+				return w, ok
+			}
+			f.exportPeak = func(window time.Duration) (float64, bool) {
+				return peak(s.p.Now.Sub(start), s.p.Now.Sub(start)+window)
+			}
+			s.ctrl.SetNearTermPeakSurplusW(f.exportPeak)
+			s.ctrl.SetPeakRemainingSurplusW(func() (float64, bool) { return peak(s.p.Now.Sub(start), run) })
 		}
 		if FieldVerdict != nil {
 			f.verdict = FieldVerdict(s.store, s.mgr, s.ctrl)
