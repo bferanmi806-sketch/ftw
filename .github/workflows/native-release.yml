@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  checks: read
 
 concurrency:
   group: native-release-${{ inputs.tag }}
@@ -122,6 +123,30 @@ jobs:
             "${RUNNER_TEMP}/native-release-pages.json"
           printf 'tag=%s\ncommit=%s\nschema=%s\n' "${TAG}" "${source_commit}" "${schema}" >> "${GITHUB_OUTPUT}"
         id: source
+      # A beta publishes only a commit on which every site-test scenario
+      # passed (site.yml, go/test/site): the job "site full" of a nightly or
+      # dispatched run. A stable promotes a beta, which already passed.
+      - name: Require a full site test on the exact source
+        if: ${{ inputs.channel == 'beta' }}
+        env:
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          passed=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_COMMIT}/check-runs?check_name=site%20full&filter=all&per_page=100" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
+          if [ "${passed}" -gt 0 ]; then
+            echo "Full site test passed on ${SOURCE_COMMIT}."
+            exit 0
+          fi
+          msg="no passing full site test on ${SOURCE_COMMIT}. Run: gh workflow run site.yml --ref master -f set=full, and wait for its \"site full\" job"
+          if [ "${DRY_RUN}" = true ]; then
+            echo "::warning::${msg}"
+            exit 0
+          fi
+          echo "::error::${msg}"
+          exit 1
       - name: Build complete ARM64 and AMD64 packages
         env:
           TAG: ${{ inputs.tag }}
