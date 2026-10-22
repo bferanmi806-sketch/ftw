@@ -751,6 +751,35 @@ func TestEVHardLimitIdleStartNeedsRoomOnDeclaredPhases(t *testing.T) {
 	}
 }
 
+// Our own battery order the meter may not show yet counts as a
+// three-phase battery puts it: the same current on each phase. A one-phase
+// car's room is one phase's, so the whole order there counted it three
+// times: 4,703 W of battery order left 661 W below one phase's limit, under
+// the 1,610 W a start needs, and the car stayed at 0 W (fuse_limit) until
+// the order had shown for evSettle and the meter had shown room for
+// evRestartDwell (the rig of 22 Oct 2026, 42 s). The cap counts 6.8 A on
+// each phase instead; a three-phase car's cap does not change.
+func TestEVHardLimitBatteryOrderCountsOnEachPhase(t *testing.T) {
+	for _, tc := range []struct {
+		phase string
+		want  float64
+	}{
+		{"1p", (24 - 0.68 - 4703.0/690 - 1) * 230},
+		{"auto", (24 - 0.68 - 4703.0/690 - 1) * 230},
+		{"3p", (24 - 0.68 - 4703.0/690 - 1) * 690},
+	} {
+		t.Run(tc.phase, func(t *testing.T) {
+			store, state, points, configs := evMeterBudgetFixture(t, -466, []float64{-0.68, -0.68, -0.68}, 0, tc.phase)
+			now := time.Now()
+			state.batteryCommands = map[string]commandLog{"ferroamp": commandLog{}.add(now, 4703)}
+			got, known := EVFuseBudget(store, state, points, configs, 17250)
+			if !known || math.Abs(got-tc.want) > .01 {
+				t.Fatalf("cap %.1f W, want %.1f W", got, tc.want)
+			}
+		})
+	}
+}
+
 // A lone 0 W or unavailable charger reading is not a reason to cut, and
 // before our first command a charging car's reading earns no credit: the
 // meter alone decides.

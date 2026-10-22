@@ -389,7 +389,10 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	if _, high, _, ok := s.evOffers.span(now); ok {
 		peakW = math.Max(peakW, high)
 	}
-	r := s.evMeterRoom(meter, gridW, pool.phases, fuseMaxW, s.pendingLoad(at))
+	// Our own battery orders the meter may not show yet count beside the
+	// chargers' offers, in total import and on each phase.
+	pending := s.pendingBatteryCommandsW(now)
+	r := s.evMeterRoom(meter, gridW, pool.phases, fuseMaxW, s.withBatteryOrders(s.pendingLoad(at), pending))
 	_, fresh := qualifiedFuseObservation(meter, now)
 	fresh = fresh && r.measured
 	lim.phaseRoomA, lim.phaseRoomKnown = 0, r.phaseRoomKnown
@@ -465,11 +468,10 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	}
 	// An increase needs a fresh reading and room below the level increases
 	// may reach, left after our own battery commands that the meter may not
-	// show yet. Between that level and the import limit the cap holds.
-	pending := s.pendingBatteryCommandsW(now)
+	// show yet (in r). Between that level and the import limit the cap holds.
 	room := 0.0
 	if fresh {
-		room = math.Max(0, math.Min(r.fuseW, r.riseW)-pending)
+		room = math.Max(0, math.Min(r.fuseW, r.riseW))
 	}
 	if pool.offerW <= 0 {
 		s.stepEVIdleStart(r, gridW, pool, first, gap, fresh, at, prevAt, pending, step)
@@ -503,7 +505,7 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 	}
 	room := 0.0
 	if fresh {
-		room = math.Max(0, perReadingW-pending)
+		room = math.Max(0, perReadingW) // r holds our battery orders.
 	}
 	if room < pool.minW+step {
 		lim.roomSince = time.Time{}
@@ -600,6 +602,21 @@ func worstPhaseA(meter *telemetry.DerReading, state *State) (worstA float64, pre
 		worstA = math.Max(worstA, a)
 	}
 	return worstA, present, valid
+}
+
+// withBatteryOrders adds battery increase we ordered that the meter may not
+// show yet, w, to the chargers' unshown offers: in total import, and as a
+// three-phase battery puts it, the same current on each phase. A one-phase
+// pool's room is one phase's, so the battery's whole power there would count
+// it three times.
+func (s *State) withBatteryOrders(p pendingLoad, w float64) pendingLoad {
+	p.w += w
+	if s.SiteFuseVoltage > 0 && s.SiteFusePhases > 0 {
+		for i := range p.phaseA {
+			p.phaseA[i] += w / (s.SiteFuseVoltage * float64(s.SiteFusePhases))
+		}
+	}
+	return p
 }
 
 // pendingBatteryCommandsW is battery increase we ordered that the meter may
