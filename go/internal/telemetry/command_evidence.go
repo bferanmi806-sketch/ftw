@@ -26,10 +26,13 @@ type CommandEvidence struct {
 	Result                string
 	ReadbackMismatchSince time.Time
 	PowerMismatchSince    time.Time
-	PowerMatchSince       time.Time
-	PowerObservedSince    time.Time
-	LastObservation       time.Time
-	LastMeasuredAt        time.Time
+	// PowerOverSince is the start of the current run of readings above
+	// every command in force, a part of PowerMismatchSince's run.
+	PowerOverSince     time.Time
+	PowerMatchSince    time.Time
+	PowerObservedSince time.Time
+	LastObservation    time.Time
+	LastMeasuredAt     time.Time
 	// NoPower is an observed EV stop during uninterrupted positive orders.
 	// Retuning the current cannot restart this clock; a pause, failed command,
 	// missing measurement or observed power ends it.
@@ -152,6 +155,7 @@ func (s *Store) BeginCommand(driver string, payload []byte, now time.Time) Comma
 		if !materialStep(old.PowerW, c.PowerW) {
 			c.Since, c.Baseline, c.StepAfter, c.StepAfterAt = old.Since, old.Baseline, old.StepAfter, old.StepAfterAt
 			c.ReadbackMismatchSince, c.PowerMismatchSince, c.PowerMatchSince = old.ReadbackMismatchSince, old.PowerMismatchSince, old.PowerMatchSince
+			c.PowerOverSince = old.PowerOverSince
 			c.PowerObservedSince, c.LastObservation, c.LastGapW = old.PowerObservedSince, old.LastObservation, old.LastGapW
 		}
 	}
@@ -294,6 +298,7 @@ func (s *Store) endCommandControlAt(driver string, failed bool, now time.Time) {
 			c.Result = "released"
 		}
 		c.ReadbackMismatchSince, c.PowerMismatchSince, c.PowerMatchSince = time.Time{}, time.Time{}, time.Time{}
+		c.PowerOverSince = time.Time{}
 		c.PowerObservedSince, c.LastObservation, c.LastGapW = time.Time{}, time.Time{}, nil
 		c.Recent, c.StepAfter, c.StepAfterAt = nil, nil, time.Time{}
 		if !failed {
@@ -377,6 +382,7 @@ func (s *Store) observeCommand(driver string, kind DerType, power float64, data 
 	if json.Unmarshal(data, &d) != nil {
 		c.NoPowerSince, c.NoPowerAt = time.Time{}, time.Time{}
 		c.ReadbackMismatchSince, c.PowerMismatchSince, c.PowerMatchSince = time.Time{}, time.Time{}, time.Time{}
+		c.PowerOverSince = time.Time{}
 		c.PowerObservedSince, c.LastObservation = time.Time{}, time.Time{}
 		s.commands[k] = c
 		return
@@ -384,7 +390,7 @@ func (s *Store) observeCommand(driver string, kind DerType, power float64, data 
 	c.MaxAge = DeclaredPowerMaxAge(data)
 	if now.Sub(c.LastObservation) > max(time.Minute, c.MaxAge) {
 		c.ReadbackMismatchSince, c.PowerMismatchSince, c.PowerMatchSince = time.Time{}, time.Time{}, time.Time{}
-		c.PowerObservedSince = time.Time{}
+		c.PowerOverSince, c.PowerObservedSince = time.Time{}, time.Time{}
 	}
 	mark := func(since *time.Time, mismatch bool, at time.Time) {
 		if !mismatch {
@@ -425,7 +431,7 @@ func (s *Store) observeCommand(driver string, kind DerType, power float64, data 
 	// delivery of one source sample also cannot extend a measured time window.
 	if !fresh || !finite(power) || observedAt.Before(c.Since) {
 		c.PowerMismatchSince, c.PowerMatchSince, c.LastObservation = time.Time{}, time.Time{}, time.Time{}
-		c.PowerObservedSince, c.LastGapW = time.Time{}, nil
+		c.PowerOverSince, c.PowerObservedSince, c.LastGapW = time.Time{}, time.Time{}, nil
 		s.commands[k] = c
 		return
 	}
@@ -443,6 +449,8 @@ func (s *Store) observeCommand(driver string, kind DerType, power float64, data 
 	tolerance := ControlToleranceW(*c.PowerW)
 	mismatch := !finite(gap) || gap > tolerance
 	mark(&c.PowerMismatchSince, mismatch, observedAt)
+	// Above the latest command and off every one in force is above them all.
+	mark(&c.PowerOverSince, mismatch && kind != DerPV && power > *c.PowerW, observedAt)
 	follows := !mismatch
 	if kind == DerPV {
 		// Weak sun alone cannot prove that a ceiling took effect.

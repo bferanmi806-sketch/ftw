@@ -521,7 +521,7 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		// FTW cannot stop a charger that draws more than it is told. A car
 		// that takes less only charges slower.
 		if f.Kind == "ev" && (reason == "power_while_idle" || reason == "power_above_target") {
-			f.Escalated = cmd.LastObservation.Sub(cmd.PowerMismatchSince) >= evMismatchWait+evOverdrawAlarm
+			f.Escalated = !cmd.PowerOverSince.IsZero() && cmd.LastObservation.Sub(cmd.PowerOverSince) >= evMismatchWait+evOverdrawAlarm
 		}
 		return
 	}

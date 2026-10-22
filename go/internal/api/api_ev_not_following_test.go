@@ -95,22 +95,57 @@ func TestChargerDrawingAgainstAFuseStopIsNotFollowing(t *testing.T) {
 	})
 }
 
-// A charger that obeys the cut within its response time stays Limited.
+// A charger that obeys the cut within its response time stays Limited,
+// including Easee Cloud at the end of its declared 180 s.
 func TestChargerFollowingAFuseStopStaysLimited(t *testing.T) {
+	for _, after := range []time.Duration{100 * time.Second, 175 * time.Second} {
+		synctest.Test(t, func(t *testing.T) {
+			e := newEVTrace(7500)
+			for range 10 * 60 / 5 {
+				e.tick(7590, "plan")
+			}
+			cut := time.Now()
+			for range 15 * 60 / 5 {
+				if time.Since(cut) >= after && e.drawW > 0 {
+					e.drawW, e.changedAt = 0, time.Now()
+				}
+				e.tick(0, "fuse_limit")
+				if f := e.verdict(t); f.Status != "limited" || f.Reason != "fuse_limit" || f.Severity == "alarm" {
+					t.Fatalf("stopped after %v: at %v the verdict is %s/%s/%s", after, time.Since(cut), f.Status, f.Reason, f.Severity)
+				}
+			}
+		})
+	}
+}
+
+// Time spent drawing below the order is not time drawing above it. After
+// 13 minutes at 3 kW against a 7 kW order, a car that rises to 9 kW is
+// drawing more than it is told: a warning now, an alarm only ten minutes
+// after that wait has passed for the overdraw itself.
+func TestOverdrawAfterAShortfallAlarmsOnItsOwnTime(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		e := newEVTrace(7500)
-		for range 10 * 60 / 5 {
-			e.tick(7590, "plan")
+		e := newEVTrace(3000)
+		for range 13 * 60 / 5 {
+			e.tick(7000, "plan")
 		}
-		cut := time.Now()
+		if f := e.verdict(t); f.Reason != "power_below_target" || f.Severity != "warning" {
+			t.Fatalf("3 kW against 7 kW reads %s/%s", f.Reason, f.Severity)
+		}
+		e.drawW, e.changedAt = 9000, time.Now()
+		over := time.Now()
+		var alarm time.Duration
 		for range 15 * 60 / 5 {
-			if time.Since(cut) >= 100*time.Second && e.drawW > 0 {
-				e.drawW, e.changedAt = 0, time.Now()
+			e.tick(7000, "plan")
+			f := e.verdict(t)
+			if f.Reason != "power_above_target" {
+				t.Fatalf("at %v 9 kW against 7 kW reads %s", time.Since(over), f.Reason)
 			}
-			e.tick(0, "fuse_limit")
-			if f := e.verdict(t); f.Status != "limited" || f.Reason != "fuse_limit" {
-				t.Fatalf("at %v a charger that stopped reads %s/%s", time.Since(cut), f.Status, f.Reason)
+			if f.Severity == "alarm" && alarm == 0 {
+				alarm = time.Since(over)
 			}
+		}
+		if alarm < 12*time.Minute || alarm > 13*time.Minute {
+			t.Fatalf("overdraw alarmed after %v, want two minutes plus ten", alarm)
 		}
 	})
 }
