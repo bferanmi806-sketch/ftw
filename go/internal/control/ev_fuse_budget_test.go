@@ -780,6 +780,28 @@ func TestEVHardLimitBatteryOrderCountsOnEachPhase(t *testing.T) {
 	}
 }
 
+// While the hour's import ceiling holds an idle car back, the label names
+// the ceiling. The fuse's room counts our battery order on its way, so the
+// ceiling's room in the comparison must count it too, or a 5,500 W order
+// with 2,750 W of fuse room read fuse_limit from the second reading on.
+func TestEVHardLimitIdleCeilingLabelCountsBatteryOrder(t *testing.T) {
+	store, state, points, configs := evMeterBudgetFixture(t, 9000, []float64{13, 13, 13}, 0, "3p")
+	now := time.Now()
+	state.clock = func() time.Time { return now }
+	state.PeakImportCeilingW = 12000
+	state.importHour = hourImport{start: state.importHourStart(now), ceilingW: 12000, limitW: 12000, riseW: 12000,
+		changedAt: now, seen: true, seenCeiling: 12000, lastAt: now.Add(-time.Second)}
+	state.batteryCommands = map[string]commandLog{"battery": commandLog{}.add(now, 5500)}
+	for reading := 1; reading <= 2; reading++ {
+		store.Get("meter", telemetry.DerMeter).UpdatedAt = now
+		got, _ := EVFuseBudget(store, state, points, configs, 17250)
+		if reason := EVLimitReason(state); got != 0 || reason != "import_limit" {
+			t.Fatalf("reading %d: cap %.1f W %s, want 0 W import_limit", reading, got, reason)
+		}
+		now = now.Add(2 * time.Second)
+	}
+}
+
 // A lone 0 W or unavailable charger reading is not a reason to cut, and
 // before our first command a charging car's reading earns no credit: the
 // meter alone decides.

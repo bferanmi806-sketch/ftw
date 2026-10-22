@@ -181,6 +181,7 @@ type chargerOffers struct {
 // each EV offer sent above what the reading may show, until its charger
 // can have applied it. A single-phase offer may land on any phase. Rises
 // and starts count it on top of the meter; a cut never waits for it.
+// stepEVMeterLimit adds our unshown battery orders (withBatteryOrders).
 type pendingLoad struct {
 	w      float64    // in total import
 	phaseA [3]float64 // on each phase
@@ -501,7 +502,7 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 	} else {
 		// The start test below holds an idle car to the ceiling itself,
 		// whatever slack the hour has: name it by this reading.
-		lim.byImport = r.startLevelW-gridW < r.fuseW
+		lim.byImport = r.startLevelW-gridW-pending < r.fuseW
 	}
 	room := 0.0
 	if fresh {
