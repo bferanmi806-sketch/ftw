@@ -242,3 +242,44 @@ func TestOnePhaseCarMarkedAfterARestart(t *testing.T) {
 		}
 	}
 }
+
+// Device-simulator rig s14 on 2e847104: a three-phase charger with the
+// settings page's minimum, 4,140 W. Once the car was marked one-phase the
+// planner got its one-phase levels with that minimum, dropped every level
+// below it and planned nothing. The plan's minimum is a third of the
+// charger's, as the order is three times the plan.
+func TestOnePhaseCarPlanningLimits(t *testing.T) {
+	site := SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3}
+	planned := func(minW, maxW float64, steps []float64) (n int) {
+		for _, w := range steps {
+			if w > 0 && w >= minW && w <= maxW {
+				n++
+			}
+		}
+		return n
+	}
+	for _, c := range []struct {
+		name              string
+		cfg               Config
+		carMaxW           float64
+		wantMin, wantMax  float64
+		wantPlannedLevels int
+	}{
+		{"settings page's charger", Config{MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto"}, 0, 1380, 3450, 10},
+		{"three-phase table", Config{MinChargeW: 4140, MaxChargeW: 11040, PhaseMode: "3p", AllowedStepsW: []float64{0, 4140, 6900, 11040}}, 0, 1380, 3680, 11},
+		{"field table", Config{MinChargeW: 1600, MaxChargeW: 11100, PhaseMode: "auto", AllowedStepsW: easeeFieldSteps}, 0, 1380, 3680, 11},
+		{"car's own maximum", Config{MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto"}, 3000, 1380, 3000, 8},
+	} {
+		st := State{MinChargeW: c.cfg.MinChargeW, MaxChargeW: c.cfg.MaxChargeW, AllowedStepsW: c.cfg.AllowedStepsW, CarMaxW: c.carMaxW, CarPhases: 1}
+		minW, maxW, steps := PlanningLimits(st, c.cfg, site)
+		if minW != c.wantMin || maxW != c.wantMax || planned(minW, maxW, steps) != c.wantPlannedLevels {
+			t.Errorf("%s: min %.0f max %.0f, %d levels the planner keeps (%v); want %.0f, %.0f, %d",
+				c.name, minW, maxW, planned(minW, maxW, steps), steps, c.wantMin, c.wantMax, c.wantPlannedLevels)
+		}
+	}
+	// An unmarked car keeps the charger's limits.
+	cfg := Config{MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto"}
+	if minW, maxW, _ := PlanningLimits(State{MinChargeW: 4140, MaxChargeW: 11000}, cfg, site); minW != 4140 || maxW != 11000 {
+		t.Fatalf("unmarked car: %.0f-%.0f W", minW, maxW)
+	}
+}

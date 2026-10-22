@@ -46,6 +46,22 @@ func PlanningSteps(cfg Config, site SiteFuse) []float64 {
 	return steps
 }
 
+// PlanningLimits is the power range and the steps the planner gets for a
+// loadpoint's session, held to the car by LimitPower. A one-phase car is
+// planned at what it takes: 6 A up to the charger's current per phase, on
+// one phase. Its order is three times the plan, so the charger's minimum,
+// which holds for the order, is a third as much in the plan; a charger's
+// three-phase minimum would leave the planner no step but 0.
+func PlanningLimits(st State, cfg Config, site SiteFuse) (minW, maxW float64, steps []float64) {
+	if st.CarPhases == 1 {
+		if steps := OnePhaseCarSteps(cfg, site); len(steps) > 1 {
+			st.MinChargeW, st.MaxChargeW = st.MinChargeW/3, steps[len(steps)-1]
+			return LimitPower(st, steps)
+		}
+	}
+	return LimitPower(st, PlanningSteps(cfg, site))
+}
+
 // ThreePhaseCapable reports whether a charger can run three phases at 6 A
 // each; see threePhaseCapable.
 func ThreePhaseCapable(cfg Config, site SiteFuse) bool { return threePhaseCapable(cfg, site) }

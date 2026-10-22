@@ -372,13 +372,14 @@ func (p *fieldPlan) directive(now time.Time) (loadpoint.Directive, bool) {
 	return d, true
 }
 
-// fieldPlanningSteps is what main.go gives the planner for the session:
-// planningStepsForLoadpoint's steps, held to the car by LimitPower.
+// fieldPlanningSteps is what the planner can choose for the session: the
+// steps main.go gives it (planningLimitsForLoadpoint), within the minimum
+// and maximum it gets with them, as mpc's normalizedSteps keeps them.
 func fieldPlanningSteps(s *simSite) []float64 {
 	st, _ := s.mgr.State(s.lp.ID)
 	cfg := loadpoint.Config{MinChargeW: st.MinChargeW, MaxChargeW: st.MaxChargeW, AllowedStepsW: st.AllowedStepsW, PhaseMode: s.lp.PhaseMode}
-	_, _, steps := loadpoint.LimitPower(st, loadpoint.PlanningSteps(cfg, loadpoint.SiteFuse{MaxAmps: s.p.Fuse.RatingA, Voltage: s.p.Voltage, PhaseCnt: 3}))
-	return steps
+	minW, maxW, steps := loadpoint.PlanningLimits(st, cfg, loadpoint.SiteFuse{MaxAmps: s.p.Fuse.RatingA, Voltage: s.p.Voltage, PhaseCnt: 3})
+	return slices.DeleteFunc(slices.Clone(steps), func(w float64) bool { return w > 0 && (w < minW || maxW > 0 && w > maxW) })
 }
 
 // asks reports whether the plan wants the car charging now: its slot has an

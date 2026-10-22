@@ -5,7 +5,9 @@ import (
 	"github.com/srcfl/ftw/go/internal/loadpoint"
 )
 
-func planningStepsForLoadpoint(st loadpoint.State, cfg *config.Config) []float64 {
+// planningLimitsForLoadpoint is the power range and the steps the planner
+// gets for a loadpoint's session.
+func planningLimitsForLoadpoint(st loadpoint.State, cfg *config.Config) (minW, maxW float64, steps []float64) {
 	lp := loadpoint.Config{MinChargeW: st.MinChargeW, MaxChargeW: st.MaxChargeW, AllowedStepsW: st.AllowedStepsW}
 	for _, configured := range cfg.Loadpoints {
 		if configured.ID == st.ID {
@@ -14,9 +16,5 @@ func planningStepsForLoadpoint(st loadpoint.State, cfg *config.Config) []float64
 		}
 	}
 	site := loadpoint.SiteFuse{MaxAmps: cfg.Fuse.MaxAmps, Voltage: cfg.Fuse.Voltage, PhaseCnt: cfg.Fuse.Phases}
-	if st.CarPhases == 1 {
-		// A one-phase car takes one phase of the charger's current.
-		return loadpoint.OnePhaseCarSteps(lp, site)
-	}
-	return loadpoint.PlanningSteps(lp, site)
+	return loadpoint.PlanningLimits(st, lp, site)
 }
