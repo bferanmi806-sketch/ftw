@@ -37,6 +37,12 @@ const evRestartDwell = 35 * time.Second
 // and rise thresholds.
 const evPhaseMarginA = 1.0
 
+// fuseHourFactor is the phase current, as a multiple of the fuse rating,
+// that a gG fuse of 16-63 A carries for an hour. A cut on its way covers the
+// overage it was sent for only while every phase's filtered current stays
+// at or below it.
+const fuseHourFactor = 1.25
+
 // sentCommand is one of our own commands, never a device reading.
 type sentCommand struct {
 	at time.Time
@@ -119,11 +125,50 @@ func (l commandLog) unshown(at time.Time, settle time.Duration) (w, a float64) {
 	return math.Max(0, highW-lowW), math.Max(0, highA-lowA)
 }
 
+// toCome is what a charger's latest offer will still change in a reading
+// taken at `at`, as a cut counts it, in watts and in current per phase:
+// positive is a raise on its way, negative a cut on its way. The reading may
+// show the offer in force settle before it or one sent since, up to `at`,
+// but a cut and every offer after it count as not shown yet: a cut covers
+// the overage it was sent for until its charger can have applied it. Of the
+// offers before the first cut, a raise counts from the lowest. Before the
+// first logged offer the charger counts as before.
+func (l commandLog) toCome(at time.Time, settle time.Duration, before sentCommand) (w, a float64) {
+	from := at.Add(-settle)
+	settled, latest := before, before
+	for _, c := range l {
+		latest = c
+		if !c.at.After(from) {
+			settled = c
+		}
+	}
+	low, prev, cutW, cutA := settled, settled, false, false
+	for _, c := range l {
+		if !c.at.After(from) || c.at.After(at) {
+			continue
+		}
+		cutW, cutA = cutW || c.w < prev.w, cutA || c.a < prev.a
+		if !cutW {
+			low.w = math.Min(low.w, c.w)
+		}
+		if !cutA {
+			low.a = math.Min(low.a, c.a)
+		}
+		prev = c
+	}
+	return latest.w - low.w, latest.a - low.a
+}
+
 // chargerOffers is one charger's offers, kept for the time its driver
 // declares its power takes to show.
 type chargerOffers struct {
 	log    commandLog
 	settle time.Duration
+	// found is the offer in force before the limit's first site reading,
+	// after a restart: Core did not send it in this run. A rise counts the
+	// charger as 0 before it; a cut takes it as shown, since the reading is
+	// all Core knows of it.
+	found sentCommand
 }
 
 // pendingLoad is load we ordered that a site reading may not show yet:
@@ -145,6 +190,25 @@ func (s *State) pendingLoad(at time.Time) pendingLoad {
 		}
 	}
 	return p
+}
+
+// unshownOrders is what a cut counts beside a reading taken at `at`: rise,
+// the load our latest offers add that the reading may not show yet, and
+// cut, the load the reading may still show that they remove (toCome).
+// latestW is the latest offers.
+func (s *State) unshownOrders(at time.Time) (rise, cut pendingLoad, latestW float64) {
+	for _, c := range s.evLimit.offers {
+		w, a := c.log.toCome(at, c.settle, c.found)
+		rise.w, cut.w = rise.w+math.Max(0, w), cut.w+math.Max(0, -w)
+		for i := range rise.phaseA {
+			rise.phaseA[i] += math.Max(0, a)
+			cut.phaseA[i] += math.Max(0, -a)
+		}
+		if n := len(c.log); n > 0 {
+			latestW += c.log[n-1].w
+		}
+	}
+	return rise, cut, latestW
 }
 
 // recordEVOffers keeps each plugged charger's offers, with the current each
@@ -172,6 +236,9 @@ func (s *State) recordEVOffers(store *telemetry.Store, points []loadpoint.State)
 		w := math.Max(0, point.CommandedW)
 		sent := sentCommand{at: now, w: w, a: s.offerPhaseA(w, point.CommandedPhases)}
 		if n := len(c.log); n == 0 || c.log[n-1].w != sent.w || c.log[n-1].a != sent.a {
+			if n == 0 && !s.evLimit.set {
+				c.found = sent
+			}
 			c.log = c.log.keep(sent, read.Add(-c.settle))
 		}
 		offers[point.ID] = c
@@ -236,8 +303,12 @@ type evPool struct {
 // rises one step on a fresh reading with room for two, at least evSettle
 // after the last cut. Room counts every
 // offer sent above what the reading may show as flowing until its charger
-// can have applied it; cuts read the meter alone. EVFusePhaseRoomA gives
-// the same room per phase to the split between cars. An idle pool starts only after the meter has kept showing
+// can have applied it; a cut never frees room before the meter shows it.
+// A cut counts our orders both ways: a raise on its way adds to the overage,
+// and a cut on its way covers the overage it was sent for until its charger
+// can have applied it, while the phases stay at or below fuseHourFactor.
+// EVFusePhaseRoomA gives the same room per phase to the split between cars.
+// An idle pool starts only after the meter has kept showing
 // room for its minimum plus a step. Each reading acts once, so a silent
 // meter can never raise or restart a charge.
 func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State, configs []loadpoint.Config, fuseMaxW float64) (float64, bool) {
@@ -283,7 +354,8 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	if _, high, _, ok := s.evOffers.span(now); ok {
 		peakW = math.Max(peakW, high)
 	}
-	r := s.evMeterRoom(meter, gridW, pool.phases, fuseMaxW, s.pendingLoad(at))
+	rise, cut, latestW := s.unshownOrders(at)
+	r := s.evMeterRoom(meter, gridW, pool.phases, fuseMaxW, s.pendingLoad(at), rise, cut)
 	_, fresh := qualifiedFuseObservation(meter, now)
 	fresh = fresh && r.measured
 	lim.phaseRoomA, lim.phaseRoomKnown = 0, r.phaseRoomKnown
@@ -293,11 +365,16 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	step := evPhaseMarginA * s.SiteFuseVoltage * pool.phases
 	// The label follows whichever limit leaves less room.
 	lim.byImport = math.Min(r.limitW, r.riseW) < r.fuseW
-	// The fuse cuts on every reading, by its heat budget where the meter
-	// reports phase currents. The hour's budget absorbs a short overage of
-	// less than a step: it cuts once the overage has lasted evSettle, so one
-	// reading over the ceiling changes nothing.
-	cutW := r.fuseCutW
+	// The fuse cuts on every reading over it, by its heat budget where the
+	// meter reports phase currents. It takes off the latest offers only what
+	// the cuts the reading may still show do not cover, plus the rises it may
+	// not show yet. Over the fuse, the cap never rises. The hour's budget
+	// absorbs a short overage of less than a step: it cuts once the overage
+	// has lasted evSettle, so one reading over the ceiling changes nothing.
+	over, capW, byImport := r.fuseOverW > 0, math.Inf(1), false
+	if over {
+		capW = latestW - math.Max(0, r.fuseCutW)
+	}
 	if r.limitW >= 0 {
 		lim.overSince = time.Time{}
 	} else {
@@ -305,19 +382,21 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 			lim.overSince, lim.overOffers = at, pool.offers
 		}
 		if !r.hourly || gap || -r.limitW >= step || at.Sub(lim.overSince) >= evSettle {
-			cutW = math.Min(cutW, r.limitW)
+			// The meter may still show any offer of the last evSettle.
+			// Taking the overage from the highest cuts each measured watt once.
+			hourW := peakW + r.limitW
+			byImport, capW, over = !over || hourW < capW, math.Min(capW, hourW), true
 		}
 	}
-	if cutW < 0 {
-		lim.byImport = cutW < r.fuseCutW
-		// The meter may still show any offer of the last evSettle. Taking
-		// the overage from the highest cuts each measured watt once.
-		lim.capW, lim.roomSince = math.Min(prev, math.Max(0, peakW+cutW)), time.Time{}
+	if over {
+		lim.byImport = byImport
+		lim.capW, lim.roomSince = math.Min(prev, math.Max(0, capW)), time.Time{}
 		if lim.capW < prev {
 			lim.cutAt = now
 			slog.Info("EV hard limit: site meter over limit", "grid_w", gridW, "worst_phase_a", r.worstA,
 				"fuse_heat_a", s.fuseHeat.worstA(), "import_limit_w", s.effectiveImportCeilingW(fuseMaxW),
-				"overage_w", -cutW, "offer_w", peakW, "cap_w", lim.capW)
+				"overage_w", r.fuseOverW, "import_overage_w", math.Max(0, -r.limitW),
+				"unshown_rise_w", rise.w, "unshown_cut_w", cut.w, "offer_w", latestW, "cap_w", lim.capW)
 		}
 		return
 	}
@@ -406,7 +485,8 @@ func EVLimitReason(state *State) string {
 // every reading. The import ceiling's parts are +Inf while it is off.
 type evMeterRoom struct {
 	fuseW          float64 // below the fuse less its margin and the worst phase, read or heat, and what we sent; rises and starts
-	fuseCutW       float64 // what the fuse needs cut now, negative; see fuseHeat
+	fuseOverW      float64 // the fuse's measured overage, 0 under it; see fuseHeat
+	fuseCutW       float64 // what the fuse needs cut from the latest offers: the overage and unshown rises, less unshown cuts
 	limitW         float64 // below the hour's import limit; negative is an overage
 	riseW          float64 // below the level an increase may reach, less what we sent
 	startLevelW    float64 // import an idle start may reach: the rise level, at most the ceiling
@@ -417,11 +497,12 @@ type evMeterRoom struct {
 	phaseRoomKnown bool    // the meter reports phase currents
 }
 
-func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64, sent pendingLoad) evMeterRoom {
+func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64, pending, rise, cut pendingLoad) evMeterRoom {
 	inf, totalW := math.Inf(1), math.Max(0, fuseMaxW-s.fuseSafetyMarginW())-gridW
-	r := evMeterRoom{fuseW: totalW - sent.w, fuseCutW: totalW, limitW: inf, riseW: inf, startLevelW: inf}
+	r := evMeterRoom{fuseW: totalW - pending.w, fuseOverW: math.Max(0, -totalW), limitW: inf, riseW: inf, startLevelW: inf}
+	r.fuseCutW = r.fuseOverW + rise.w - cut.w
 	if limitW, riseW, ok := s.importHourLimitsW(); ok {
-		r.limitW, r.riseW = limitW-gridW, riseW-gridW-sent.w
+		r.limitW, r.riseW = limitW-gridW, riseW-gridW-pending.w
 		// A car that could run only on one hour's slack would stop when
 		// the next hour starts at the ceiling.
 		r.startLevelW = math.Min(riseW, s.PeakImportCeilingW)
@@ -438,10 +519,20 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 		for _, a := range amps {
 			r.worstA = math.Max(r.worstA, a)
 		}
-		r.fuseW = math.Min(r.fuseW, (limitA-s.fuseHeat.levelA(amps, sent.phaseA))*s.SiteFuseVoltage*phases)
+		r.fuseW = math.Min(r.fuseW, (limitA-s.fuseHeat.levelA(amps, pending.phaseA))*s.SiteFuseVoltage*phases)
 		r.phaseRoomA, r.phaseRoomKnown = limitA-s.fuseHeat.levelA(amps, [3]float64{}), true
-		// The phases measure the fuse itself; total import stands in only without them.
-		r.fuseCutW = -s.fuseHeat.overA(amps, limitA, fuseInstantFactor*s.SiteFuseAmps) * s.SiteFuseVoltage * phases
+		// The phases measure the fuse itself; total import stands in only
+		// without them. A single-phase order may land on any phase, so the
+		// cut takes the most a rise adds to a phase and the least a cut on
+		// its way takes off one. Past the current a gG fuse carries for an
+		// hour, nothing on its way holds back a cut.
+		overA := s.fuseHeat.overA(amps, limitA, fuseInstantFactor*s.SiteFuseAmps)
+		coverA := min(cut.phaseA[0], cut.phaseA[1], cut.phaseA[2])
+		if s.fuseHeat.worstA() > fuseHourFactor*s.SiteFuseAmps {
+			coverA = 0
+		}
+		r.fuseOverW = overA * s.SiteFuseVoltage * phases
+		r.fuseCutW = (overA + max(rise.phaseA[0], rise.phaseA[1], rise.phaseA[2]) - coverA) * s.SiteFuseVoltage * phases
 	}
 	return r
 }
