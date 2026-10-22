@@ -59,6 +59,12 @@ test('expected limits stay calm and explain themselves', () => {
   assert.equal(car.title, 'Car is full');
   const limit = controlStatus(row({kind: 'ev', status: 'limited', reason: 'device_limit', severity: 'warning', device_limit_a: 8, requested_a: 16}));
   assert.equal(limit.text, 'The charger’s own limit is 8 A, below the 16 A FTW asked for.');
+  const onePhase = controlStatus(row({kind: 'ev', mode: 'plan', status: 'limited', reason: 'one_phase', severity: 'info',
+    sent_w: 3680, actual_w: 3650, charging_phase: 'L1', charging_phase_max_w: 3680}));
+  assert.equal(onePhase.title, 'Charging on one phase');
+  assert.equal(onePhase.text, 'The car charges on L1 only, at most 3.7 kW. FTW plans with what it takes.');
+  assert.equal(onePhase.next, '');
+  assert.equal(onePhase.tone, 'neutral');
 });
 
 test('the receipt walks from sent to confirmed without inventing proof', () => {

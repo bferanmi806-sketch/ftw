@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -56,9 +57,13 @@ type ControlFeedback struct {
 	OfferedA         *float64 `json:"offered_a"`
 	DeviceLimitA     *float64 `json:"device_limit_a"`
 	DeviceReason     string   `json:"device_reason,omitempty"`
-	SinceMs          int64    `json:"since_ms,omitempty"`
-	CommandAtMs      int64    `json:"command_at_ms,omitempty"`
-	ObservedAtMs     int64    `json:"observed_at_ms,omitempty"`
+	// ChargingPhase names the one phase (L1-L3) a one-phase car charges on
+	// under a three-phase order, and ChargingPhaseMaxW the most it takes.
+	ChargingPhase     string   `json:"charging_phase,omitempty"`
+	ChargingPhaseMaxW *float64 `json:"charging_phase_max_w,omitempty"`
+	SinceMs           int64    `json:"since_ms,omitempty"`
+	CommandAtMs       int64    `json:"command_at_ms,omitempty"`
+	ObservedAtMs      int64    `json:"observed_at_ms,omitempty"`
 }
 
 type feedbackReading struct {
@@ -103,8 +108,10 @@ func (s *Server) controlFeedback(now time.Time) []ControlFeedback {
 	}
 	observe, disabled := map[string]bool{}, map[string]bool{}
 	configuredBattery := map[string]bool{}
+	var site loadpoint.SiteFuse
 	if s.deps.Cfg != nil && s.deps.CfgMu != nil {
 		s.deps.CfgMu.RLock()
+		site = loadpoint.SiteFuse{MaxAmps: s.deps.Cfg.Fuse.MaxAmps, Voltage: s.deps.Cfg.Fuse.Voltage, PhaseCnt: s.deps.Cfg.Fuse.Phases}
 		observe = config.ObserveOnlyDriverSet(s.deps.Cfg)
 		for _, d := range s.deps.Cfg.Drivers {
 			disabled[d.Name] = d.Disabled
@@ -204,6 +211,18 @@ func (s *Server) controlFeedback(now time.Time) []ControlFeedback {
 				}
 				if f.RequestedW != nil && lp.Phases > 0 && lp.VoltageV > 0 {
 					f.RequestedA = watts(*f.RequestedW / float64(lp.Phases) / lp.VoltageV)
+				}
+				// A one-phase car takes a third of a three-phase order.
+				if lp.CarPhases == 1 && lp.CarPhase > 0 {
+					f.ChargingPhase = fmt.Sprintf("L%d", lp.CarPhase)
+					maxW := loadpoint.OnePhaseCarMaxW(loadpoint.Config{MaxChargeW: lp.MaxChargeW}, site)
+					if lp.CarMaxW > 0 {
+						maxW = math.Min(maxW, lp.CarMaxW)
+					}
+					f.ChargingPhaseMaxW = watts(maxW)
+					if f.RequestedW != nil && lp.Phases == 3 {
+						f.RequestedW = watts(*f.RequestedW / 3)
+					}
 				}
 				if lp.PowerUnavailable {
 					fresh = false
@@ -338,7 +357,7 @@ func setControlStatus(f *ControlFeedback) {
 		"vehicle_complete", "vehicle_limit_completion", "vehicle_not_requesting":
 		status = "following"
 	case "battery_full", "battery_nearly_full", "battery_nearly_empty", "core_limit",
-		"fuse_limit", "fuse_cooldown", "charger_limit":
+		"fuse_limit", "fuse_cooldown", "charger_limit", "one_phase":
 		status = "limited"
 	case "import_limit":
 		status = "limited"
@@ -482,6 +501,14 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	}
 	if cmd.Result == "pending" || (!settled && f.Response == "unconfirmed") || f.ObservedAtMs < cmd.Since.UnixMilli() {
 		set("waiting", "waiting_response", "info")
+		return
+	}
+	// A one-phase car drawing a third of a three-phase order does what it
+	// can: the order is its current per phase, on its one phase. A limit, a
+	// changed setpoint or a response still due says more, and comes first.
+	if f.ChargingPhase != "" && cmd.Result == "accepted" && f.SentW != nil && *f.SentW > 100 &&
+		f.ActualW != nil && math.Abs(*f.ActualW-*f.SentW) <= telemetry.ControlToleranceW(*f.SentW) {
+		set("limited", "one_phase", "info")
 		return
 	}
 	if f.SentW == nil || f.ActualW == nil {

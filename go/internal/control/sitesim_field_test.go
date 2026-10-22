@@ -402,6 +402,7 @@ type fieldRun struct {
 	deliveredWh   float64
 	orderW        float64 // the order last sent, and since when
 	orderAt       time.Time
+	expectW       float64   // the draw it asks for: expected_w for a one-phase car, else the order
 	mismatchSince time.Time // the car drawing against an order older than its response time
 	drawW         float64   // the car's draw, and when it last changed
 	drawChangedAt time.Time
@@ -470,11 +471,12 @@ func (f *fieldRun) limitA(s *simSite) float64 { return s.p.Fuse.RatingA - evPhas
 // send records the command as the driver registry does and checks a cut.
 func (f *fieldRun) send(ctx context.Context, s *simSite, driver string, payload []byte) error {
 	var cmd struct {
-		Action string  `json:"action"`
-		PowerW float64 `json:"power_w"`
+		Action    string   `json:"action"`
+		PowerW    float64  `json:"power_w"`
+		ExpectedW *float64 `json:"expected_w"`
 	}
-	if err := json.Unmarshal(payload, &cmd); err == nil && cmd.Action == "ev_set_current" && driver == s.lp.DriverName &&
-		cmd.PowerW < s.offerW-1 && !s.p.Offline("evse") {
+	ours := json.Unmarshal(payload, &cmd) == nil && cmd.Action == "ev_set_current" && driver == s.lp.DriverName
+	if ours && cmd.PowerW < s.offerW-1 && !s.p.Offline("evse") {
 		// Surplus follows the export, an outside step; its cuts are not judged.
 		if st, _ := s.mgr.State(s.lp.ID); st.CommandedReason == "fuse_limit" && !s.surplus {
 			f.checkCut(s, cmd.PowerW)
@@ -493,8 +495,15 @@ func (f *fieldRun) send(ctx context.Context, s *simSite, driver string, payload 
 		result = "failed"
 	}
 	s.store.CompleteCommand(evidence, result)
-	if s.offerW != f.orderW {
-		f.orderW, f.orderAt = s.offerW, s.p.Now
+	expectW := f.expectW
+	if ours && err == nil {
+		expectW = s.offerW
+		if cmd.ExpectedW != nil {
+			expectW = *cmd.ExpectedW
+		}
+	}
+	if s.offerW != f.orderW || expectW != f.expectW {
+		f.orderW, f.expectW, f.orderAt = s.offerW, expectW, s.p.Now
 	}
 	return err
 }
@@ -610,7 +619,7 @@ func (f *fieldRun) check(s *simSite) {
 		f.fail(s, failOnePhase, "%s put the three-phase charger on one phase at %.0f A", f.c.use, p.EVSE.OfferA)
 	}
 	up := s.downUntil.IsZero()
-	if up && p.Car.Plugged && now.Sub(f.orderAt) >= f.response() && math.Abs(p.EVSE.DrawW-f.orderW) > telemetry.ControlToleranceW(f.orderW) {
+	if up && p.Car.Plugged && now.Sub(f.orderAt) >= f.response() && math.Abs(p.EVSE.DrawW-f.expectW) > telemetry.ControlToleranceW(f.expectW) {
 		if f.mismatchSince.IsZero() {
 			f.mismatchSince = now
 		}
@@ -631,12 +640,13 @@ func (f *fieldRun) check(s *simSite) {
 		}
 	}
 	// Core waits its response time for an order to take hold, then two
-	// minutes of measured disagreement (srcfl/ftw#1795). A one-phase draw
-	// may read limited instead (srcfl/ftw#1796).
+	// minutes of measured disagreement (srcfl/ftw#1795). A car marked
+	// one-phase is judged against a third of a three-phase order, the
+	// expected_w Core sends with it (srcfl/ftw#1801).
 	if f.verdict != nil && !f.mismatchSince.IsZero() && now.Sub(f.mismatchSince) >= 2*time.Minute+30*time.Second {
 		if status, reason := f.verdict(); status != "not_following" && reason != "one_phase" {
-			f.fail(s, failVerdict, "the car draws %.0f W against a %.0f W order (%v), the verdict says %s/%s",
-				p.EVSE.DrawW, f.orderW, now.Sub(f.orderAt).Round(time.Second), status, reason)
+			f.fail(s, failVerdict, "the car draws %.0f W against an expected %.0f W (%v), the verdict says %s/%s",
+				p.EVSE.DrawW, f.expectW, now.Sub(f.orderAt).Round(time.Second), status, reason)
 		}
 	}
 }

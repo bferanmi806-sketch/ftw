@@ -66,6 +66,7 @@ const REASON_TITLES = {
   core_limit: 'Limited by FTW', fuse_limit: 'Limited by the main fuse', fuse_cooldown: 'Waiting after a site power limit',
   import_limit: 'Limited by the hourly import limit',
   charger_limit: 'Limited by FTW’s charger setting', device_limit: 'Charger limit', offered_current_lower: 'Charger offers less current',
+  one_phase: 'Charging on one phase',
   device_fault: 'Device fault', telemetry_stale: 'No fresh readings', readings_lost: 'Lost control',
   command_failed: 'Commands failing', command_unconfirmed: 'Command not confirmed', default_failed: 'Cannot hand back control',
   response_unknown: 'No power reading', observe_only: 'Monitoring only', disabled: 'Disabled', device_control: 'Own control',
@@ -99,6 +100,7 @@ function sentence(row) {
     case 'charger_limit': return 'The charger limit in FTW’s settings caps the rate.';
     case 'device_limit': return `The charger’s own limit is ${amps(row.device_limit_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
     case 'offered_current_lower': return `The charger offers ${amps(row.offered_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
+    case 'one_phase': return `The car charges on ${row.charging_phase || 'one phase'} only${num(row.charging_phase_max_w) ? `, at most ${controlPower(row.charging_phase_max_w)}` : ''}. FTW plans with what it takes.`;
     case 'power_below_target': case 'power_above_target': return `Asked for ${target(row)}, delivering ${controlPower(actual)}.`;
     case 'power_wrong_direction': return `Asked for ${target(row)}, but it is ${doing(row, actual)} ${controlPower(actual)}.`;
     case 'no_power_response': return `Asked for ${target(row)}, but it delivers no power.`;

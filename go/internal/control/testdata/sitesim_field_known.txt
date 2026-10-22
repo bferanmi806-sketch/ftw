@@ -3,14 +3,10 @@
 # and when a row fails that is not listed. FTW_FIELD_KNOWN=write rewrites
 # this file from a run, keeps each label and marks unlisted failures "new".
 #
-# A         srcfl/ftw#1799: room limits rises only; the split never cuts a
-#           running order.
 # B         srcfl/ftw#1799: planned charging and Charge now run on three
 #           phases; the planner gets steps a three-phase order can deliver.
 # #1795     srcfl/ftw#1795: a charger drawing against its order reads not
 #           following.
-# D         after beta.2: plan a one-phase car at the rate it takes
-#           (srcfl/ftw#1796, srcfl/ftw#1792).
 # export    srcfl/ftw#1782, draft: an exporting phase counts as import, so
 #           surplus never finds room to start.
 # readback  no fix yet: surplus raises again before the charger applied the
@@ -20,10 +16,6 @@
 # hold3p    no fix yet: the app sends Charge now as 3p for an auto
 #           loadpoint, and on a charger whose table stops below 4,140 W
 #           Core floors the order to 0 W (fuse_limit).
-help1022/20A/auto/own/cloud60s/car1p/2A/planned energy D
-help1022/20A/auto/own/easee120s/car1p/2A/planned energy A
-help1022/20A/auto/own/easee40s/car1p/2A/planned energy D
-help1022/20A/auto/own/fast2s/car1p/2A/planned energy D
 pr1763/25A/3p/3p-15A/cloud60s/car3p/6-2-2/chargenow+battery own-raise relief
 pr1763/25A/3p/3p-15A/cloud60s/car3p/6-2-2/pause+battery own-raise relief
 pr1763/25A/3p/3p-15A/easee120s/car3p/6-2-2/chargenow+battery own-raise relief
@@ -33,42 +25,6 @@ pr1763/25A/3p/3p-15A/fast2s/car3p/6-2-2/pause+battery own-raise relief
 probe/25A/auto/1p-3/easee40s/car3p/balanced/chargenow+charger1p32A idle hold3p
 probe/25A/auto/1p-3/fast2s/car3p/balanced/chargenow+charger1p32A idle hold3p
 probe/25A/auto/mixed/easee40s/car3p/balanced/surplus+goal+export2500W idle readback
-sweep/16A/3p/3p/easee40s/car1p/L1/planned energy D
-sweep/16A/3p/3p/easee40s/car1p/balanced/planned energy D
-sweep/16A/3p/mixed/easee40s/car1p/L1/planned energy D
-sweep/16A/3p/mixed/easee40s/car1p/balanced/planned energy D
-sweep/16A/3p/none/easee40s/car1p/L1/planned energy D
-sweep/16A/3p/none/easee40s/car1p/balanced/planned energy D
-sweep/16A/auto/3p/easee40s/car1p/L1/planned energy D
-sweep/16A/auto/3p/easee40s/car1p/balanced/planned energy D
-sweep/16A/auto/mixed/easee40s/car1p/L1/planned energy D
-sweep/16A/auto/mixed/easee40s/car1p/balanced/planned energy D
-sweep/16A/auto/none/easee40s/car1p/L1/planned energy D
-sweep/16A/auto/none/easee40s/car1p/balanced/planned energy D
-sweep/16A/empty/3p/easee40s/car1p/L1/planned energy D
-sweep/16A/empty/3p/easee40s/car1p/balanced/planned energy D
-sweep/16A/empty/mixed/easee40s/car1p/L1/planned energy D
-sweep/16A/empty/mixed/easee40s/car1p/balanced/planned energy D
-sweep/16A/empty/none/easee40s/car1p/L1/planned energy D
-sweep/16A/empty/none/easee40s/car1p/balanced/planned energy D
-sweep/25A/3p/3p/easee40s/car1p/L1/planned energy D
-sweep/25A/3p/3p/easee40s/car1p/balanced/planned energy D
-sweep/25A/3p/mixed/easee40s/car1p/L1/planned energy D
-sweep/25A/3p/mixed/easee40s/car1p/balanced/planned energy D
-sweep/25A/3p/none/easee40s/car1p/L1/planned energy D
-sweep/25A/3p/none/easee40s/car1p/balanced/planned energy D
-sweep/25A/auto/3p/easee40s/car1p/L1/planned energy D
-sweep/25A/auto/3p/easee40s/car1p/balanced/planned energy D
-sweep/25A/auto/mixed/easee40s/car1p/L1/planned energy D
-sweep/25A/auto/mixed/easee40s/car1p/balanced/planned energy D
-sweep/25A/auto/none/easee40s/car1p/L1/planned energy D
-sweep/25A/auto/none/easee40s/car1p/balanced/planned energy D
-sweep/25A/empty/3p/easee40s/car1p/L1/planned energy D
-sweep/25A/empty/3p/easee40s/car1p/balanced/planned energy D
-sweep/25A/empty/mixed/easee40s/car1p/L1/planned energy D
-sweep/25A/empty/mixed/easee40s/car1p/balanced/planned energy D
-sweep/25A/empty/none/easee40s/car1p/L1/planned energy D
-sweep/25A/empty/none/easee40s/car1p/balanced/planned energy D
 timing/16A/3p/3p/cloud60s/car3p/L1/surplus idle export
 timing/16A/3p/3p/easee120s/car3p/L1/surplus idle export
 timing/16A/3p/3p/easee40s/car3p/L1/surplus idle export

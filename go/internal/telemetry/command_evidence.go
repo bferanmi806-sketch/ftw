@@ -104,9 +104,15 @@ func (s *Store) BeginCommand(driver string, payload []byte, now time.Time) Comma
 	var request struct {
 		Action string   `json:"action"`
 		PowerW *float64 `json:"power_w"`
+		// ExpectedW is what the device should draw when it differs from
+		// the order: a one-phase car takes a third of a three-phase one.
+		ExpectedW *float64 `json:"expected_w"`
 	}
 	if json.Unmarshal(payload, &request) != nil {
 		return CommandEvidence{}
+	}
+	if request.ExpectedW != nil && finite(*request.ExpectedW) && *request.ExpectedW >= 0 {
+		request.PowerW = request.ExpectedW
 	}
 	// Resume changes permission to draw, not the current limit. Keep the
 	// accepted limit and its measured response while this optional call runs.
