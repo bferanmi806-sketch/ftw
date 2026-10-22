@@ -24,7 +24,7 @@ on:
 
 permissions:
   contents: write
-  checks: read
+  statuses: read
 
 concurrency:
   group: native-release-${{ inputs.tag }}
@@ -124,9 +124,11 @@ jobs:
           printf 'tag=%s\ncommit=%s\nschema=%s\n' "${TAG}" "${source_commit}" "${schema}" >> "${GITHUB_OUTPUT}"
         id: source
       # A beta publishes only a commit on which every site-test scenario
-      # passed (site.yml, go/test/site): the job "site full" of a nightly or
-      # dispatched run. A stable promotes a beta, which already passed.
-      - name: Require a full site test on the exact source
+      # passed, with known failures still failing: the commit status
+      # siterig/full that the site-test runner (go/test/site/runner) posts
+      # from its own machine. This step only reads it. Stable promotes a
+      # beta, whose commit already passed.
+      - name: Require siterig/full on the exact source
         if: ${{ inputs.channel == 'beta' }}
         env:
           SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
@@ -134,13 +136,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          passed=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_COMMIT}/check-runs?check_name=site%20full&filter=all&per_page=100" \
-            --jq '[.check_runs[] | select(.app.slug == "github-actions" and .conclusion == "success")] | length')
-          if [ "${passed}" -gt 0 ]; then
-            echo "Full site test passed on ${SOURCE_COMMIT}."
+          # Statuses come newest first; the latest siterig/full counts.
+          state=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SOURCE_COMMIT}/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "siterig/full")][0].state // "missing"')
+          if [ "${state}" = success ]; then
+            echo "siterig/full is success on ${SOURCE_COMMIT}."
             exit 0
           fi
-          msg="no passing full site test on ${SOURCE_COMMIT}. Run: gh workflow run site.yml --ref master -f set=full, and wait for its \"site full\" job"
+          msg="siterig/full is ${state} on ${SOURCE_COMMIT}; the site-test runner posts it after a full run of that commit (go/test/site/runner/README.md)"
           if [ "${DRY_RUN}" = true ]; then
             echo "::warning::${msg}"
             exit 0
