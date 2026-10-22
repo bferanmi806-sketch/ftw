@@ -46,6 +46,10 @@ func PlanningSteps(cfg Config, site SiteFuse) []float64 {
 	return steps
 }
 
+// ThreePhaseCapable reports whether a charger can run three phases at 6 A
+// each; see threePhaseCapable.
+func ThreePhaseCapable(cfg Config, site SiteFuse) bool { return threePhaseCapable(cfg, site) }
+
 // threePhaseCapable reports whether a charger can run three phases at 6 A
 // each: a three-phase site, no 1p pin, and a step table, or else a maximum,
 // that reaches 6 A on every phase. A table with nothing that high is a

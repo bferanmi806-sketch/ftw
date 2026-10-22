@@ -1293,10 +1293,13 @@ func (c *Controller) chooseTick(now time.Time, cfg Config, sample EVSample, disp
 // holdPhaseMode: a pinned hold or loadpoint mode wins. Otherwise Charge now
 // runs as planned charging does: three phases on a charger that can, one on
 // a charger that cannot. A hold below the 3Φ minimum goes out as auto, so a
-// sticky Start on a 1380 W surplus slot does not die at 3Φ's 6 A.
+// sticky Start on a 1380 W surplus slot does not die at 3Φ's 6 A. A
+// client's 3p on a charger that cannot run three phases is not a pin: the
+// app sends the phases the API reported, and a 3p order there is 0 W. The
+// loadpoint's own mode decides.
 func holdPhaseMode(hold ManualHold, cfg Config, site SiteFuse) string {
 	mode := hold.PhaseMode
-	if mode == "" {
+	if mode == "" || (mode == "3p" && !threePhaseCapable(cfg, site)) {
 		mode = cfg.PhaseMode
 	}
 	switch {
