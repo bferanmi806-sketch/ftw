@@ -17,8 +17,12 @@ import (
 // the charger's response time. One phase rising by about the order's change
 // while the other two stay put is a one-phase car; all three rising is not.
 // A house load does not follow FTW's orders, and the charger's own reading
-// must show the car drawing what that phase shows, so a kettle cannot mark
-// a car. A two-phase car moves two phases and is never marked.
+// must have changed by what the phases show, so a kettle cannot mark a car
+// and a heat pump cannot clear one. A two-phase car moves two phases and is
+// never marked. With no reading from before the car drew, as after a Core
+// restart, the charger's own draw is the reference: one phase carrying all
+// of it and the other two less than a third, which no three- or two-phase
+// car can show.
 
 const (
 	onePhaseStepA = 2.0              // the smallest order rise that is a test
@@ -41,6 +45,7 @@ type SitePhases struct {
 type phaseTest struct {
 	at, until time.Time
 	baseline  [3]float64 // the meter just before the order took effect
+	baseDrawA float64    // the charger's draw then, per one phase's voltage
 	fromA     float64    // the order per phase before the rise
 	verdict   int        // 1-3: one phase, that one; -1: three phases; 0: none
 	since     time.Time  // when the meter began to show the verdict
@@ -53,15 +58,23 @@ type carPhases struct {
 	// rising is set once the order has gone above orderA, and before is the
 	// meter read before that first raise went out: a fast charger has
 	// applied it by the next reading, and a fuse ramp climbs 1 A at a time.
-	rising bool
-	before [3]float64
-	last   [3]float64 // the meter read before this tick's command
-	test   *phaseTest
-	phase  int
+	rising      bool
+	before      [3]float64
+	beforeDrawA float64
+	// last and lastDrawA are the meter and the charger's draw read before
+	// this tick's command; seen is false until the session has one.
+	last      [3]float64
+	lastDrawA float64
+	seen      bool
+	test      *phaseTest
+	steady    int // the one phase the charger's whole draw shows on, 0 none
+	since     time.Time
+	phase     int
 }
 
 // phaseVerdict reads one meter reading against the baseline of a rise of
-// riseA a phase. drawA is the charger's own power over one phase's voltage.
+// riseA a phase. drawA is the change in the charger's own power since the
+// baseline, over one phase's voltage.
 func phaseVerdict(amps, baseline [3]float64, riseA, drawA float64) int {
 	var moved [3]float64
 	k, big := 0, math.Inf(-1)
@@ -88,11 +101,36 @@ func phaseVerdict(amps, baseline [3]float64, riseA, drawA float64) int {
 			rose++
 		}
 	}
+	sum := moved[0] + moved[1] + moved[2]
 	switch {
-	case rose == 2:
+	case !finite(drawA):
+		return 0
+	case rose == 2 && drawA >= 0.6*sum && drawA <= 1.5*sum:
 		return -1
-	case quiet == 2 && finite(drawA) && drawA >= 0.6*big && drawA <= 1.5*big:
+	case quiet == 2 && drawA >= 0.6*big && drawA <= 1.5*big:
 		return k + 1
+	}
+	return 0
+}
+
+// steadyVerdict is the check with no baseline: the phase (1-3) that carries
+// all of the charger's draw while the other two carry less than a third of
+// it, or 0. drawA is the charger's draw over one phase's voltage.
+func steadyVerdict(amps [3]float64, drawA float64) int {
+	if !finite(drawA) || drawA < 6 {
+		return 0
+	}
+	phase, quiet := 0, 0
+	for i, a := range amps {
+		switch {
+		case a >= drawA-1:
+			phase = i + 1
+		case a < drawA/3-1:
+			quiet++
+		}
+	}
+	if quiet == 2 {
+		return phase
 	}
 	return 0
 }
@@ -146,10 +184,10 @@ func (m *Manager) observePhases(id string, meter SitePhases, drawA, voltage floa
 		return
 	}
 	s := &lp.carPhases
-	previous := s.last
-	s.last = meter.A
+	previous, previousDrawA, seen := s.last, s.lastDrawA, s.seen
+	s.last, s.lastDrawA, s.seen = meter.A, drawA, true
 	if !lp.commandedKnown || lp.commandedPhases != 3 || !finite(lp.commandedW) {
-		s.test, s.rising = nil, false
+		s.test, s.rising, s.steady = nil, false, 0
 		return
 	}
 	orderA := math.Max(0, lp.commandedW) / (3 * voltage)
@@ -160,22 +198,25 @@ func (m *Manager) observePhases(id string, meter SitePhases, drawA, voltage floa
 		switch {
 		case orderA <= s.orderA:
 			s.orderA, s.rising = orderA, false // A cut is the base of the next rise.
-			return
+		case !seen:
+			s.orderA = orderA // The order was out before the first reading.
 		case !s.rising:
-			s.rising, s.before = true, previous
+			s.rising, s.before, s.beforeDrawA = true, previous, previousDrawA
 		}
-		if orderA-s.orderA < onePhaseStepA {
+		if !s.rising || orderA-s.orderA < onePhaseStepA {
+			m.observeSteadyPhase(s, meter.A, drawA, now)
 			return
 		}
-		s.test = &phaseTest{at: now, until: now.Add(settle + onePhaseHold), baseline: s.before, fromA: s.orderA}
-		s.orderA, s.rising = orderA, false
+		s.test = &phaseTest{at: now, until: now.Add(settle + onePhaseHold), baseline: s.before,
+			baseDrawA: s.beforeDrawA, fromA: s.orderA}
+		s.orderA, s.rising, s.steady = orderA, false, 0
 	}
 	t := s.test
 	s.orderA = max(s.orderA, orderA)
 	if meter.At.Before(t.at) {
 		return
 	}
-	if v := phaseVerdict(meter.A, t.baseline, orderA-t.fromA, drawA); v != t.verdict {
+	if v := phaseVerdict(meter.A, t.baseline, orderA-t.fromA, drawA-t.baseDrawA); v != t.verdict {
 		t.verdict, t.since = v, now
 	}
 	if t.verdict == 0 || now.Sub(t.since) < onePhaseHold {
@@ -183,6 +224,20 @@ func (m *Manager) observePhases(id string, meter SitePhases, drawA, voltage floa
 	}
 	s.phase = max(t.verdict, 0)
 	s.test = nil
+}
+
+// observeSteadyPhase marks an unmarked car whose charger's whole draw has
+// shown on one phase alone for onePhaseHold. Caller holds m.mu.
+func (m *Manager) observeSteadyPhase(s *carPhases, amps [3]float64, drawA float64, now time.Time) {
+	if s.phase != 0 {
+		return
+	}
+	if v := steadyVerdict(amps, drawA); v != s.steady {
+		s.steady, s.since = v, now
+	}
+	if s.steady != 0 && now.Sub(s.since) >= onePhaseHold {
+		s.phase = s.steady
+	}
 }
 
 // chargerPhaseMaxA is the most current a charger offers on each phase of a

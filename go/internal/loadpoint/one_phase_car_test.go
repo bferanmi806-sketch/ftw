@@ -69,15 +69,20 @@ func TestOnePhaseCarMarkedFromTheMeter(t *testing.T) {
 	if st := state(); st.CarPhases != 1 || st.CarPhase != 1 {
 		t.Fatalf("after 35 s on L1 alone: car phases %d on L%d", st.CarPhases, st.CarPhase)
 	}
-	// A later rise that shows on all three phases is a three-phase car.
+	// A rise that shows on all three phases, with the charger's draw rising
+	// by their sum, is a three-phase car: here one marked by mistake.
+	threePhase := func(a float64) func(time.Duration) [3]float64 {
+		return func(time.Duration) [3]float64 { return [3]float64{base[0] + a, base[1] + a, base[2] + a} }
+	}
+	run(95*time.Second, 120*time.Second, threePhase(7), 3*1610)
 	order(11040)
 	allThree := func(d time.Duration) [3]float64 {
-		if d < 140*time.Second {
-			return [3]float64{base[0] + 7, base[1], base[2]}
+		if d < 160*time.Second {
+			return threePhase(7)(d)
 		}
-		return [3]float64{base[0] + 16, base[1] + 9, base[2] + 9}
+		return threePhase(16)(d)
 	}
-	run(95*time.Second, 200*time.Second, allThree, 11040)
+	run(125*time.Second, 200*time.Second, allThree, 11040)
 	if st := state(); st.CarPhases != 0 {
 		t.Fatalf("a rise on all three phases left the mark on L%d", st.CarPhase)
 	}
@@ -129,5 +134,111 @@ func TestOnePhaseCarOrderNamesItsCurrent(t *testing.T) {
 	expected, _ := payload["expected_w"].(float64)
 	if payload["phase_mode"] != "3p" || power != 11100 || math.Abs(expected-3700) > 1 {
 		t.Fatalf("sent %v", payload)
+	}
+}
+
+// phaseRig feeds a session's meter and charger readings every 5 s.
+type phaseRig struct {
+	m     *Manager
+	start time.Time
+}
+
+func newPhaseRig() *phaseRig {
+	m := NewManager()
+	m.Load([]Config{{ID: "garage", DriverName: "easee", MinChargeW: 4140, MaxChargeW: 11040}})
+	m.Observe("garage", true, 0, 0, true)
+	return &phaseRig{m: m, start: time.Date(2026, 10, 22, 3, 0, 0, 0, time.UTC)}
+}
+
+func (r *phaseRig) order(w float64) {
+	r.m.SetCommanded("garage", w, "plan")
+	r.m.setCommandedPhases("garage", 3)
+}
+
+func (r *phaseRig) run(from, to time.Duration, amps func(time.Duration) [3]float64, drawW func(time.Duration) float64) {
+	for d := from; d <= to; d += 5 * time.Second {
+		at := r.start.Add(d)
+		r.m.observePhases("garage", SitePhases{A: amps(d), At: at}, drawW(d)/230, 230, time.Minute, at)
+	}
+}
+
+func (r *phaseRig) carPhases() int { st, _ := r.m.State("garage"); return st.CarPhases }
+
+// Review M1: the charger's draw is compared as a change. A first test spoilt
+// by 2 A on L2 leaves a car already drawing 6 A on L1; its next 2 A rise,
+// on L1 alone with the charger's draw up by 2 A, marks it.
+func TestOnePhaseCarMarkedOnALaterRise(t *testing.T) {
+	if v := phaseVerdict([3]float64{12, 2, 2}, [3]float64{8, 2, 2}, 4, 4); v != 1 {
+		t.Fatalf("a 4 A rise on L1 with the car up by 4 A: verdict %d", v)
+	}
+	r := newPhaseRig()
+	still := func(a [3]float64) func(time.Duration) [3]float64 { return func(time.Duration) [3]float64 { return a } }
+	draw := func(w float64) func(time.Duration) float64 { return func(time.Duration) float64 { return w } }
+	r.order(0)
+	r.run(0, 10*time.Second, still([3]float64{2, 2, 2}), draw(0))
+	r.order(4140)
+	r.run(15*time.Second, 35*time.Second, still([3]float64{2, 2, 2}), draw(0))
+	r.run(40*time.Second, 200*time.Second, still([3]float64{8, 4, 2}), draw(1380))
+	if r.carPhases() != 0 {
+		t.Fatal("marked through 2 A on L2")
+	}
+	r.order(8 * 690)
+	r.run(205*time.Second, 230*time.Second, still([3]float64{8, 4, 2}), draw(1380))
+	r.run(235*time.Second, 300*time.Second, still([3]float64{10, 4, 2}), draw(1840))
+	if r.carPhases() != 1 {
+		t.Fatal("a 2 A rise on L1 alone, followed by the charger, did not mark the car")
+	}
+}
+
+// Review M2: a heat pump starting at 2 A a phase during a 2 A rise moves all
+// three phases, but the charger's draw rose by 2 A, not 8: the mark stays.
+func TestHeatPumpDoesNotClearAOnePhaseCar(t *testing.T) {
+	r := newPhaseRig()
+	r.m.byID["garage"].carPhases = carPhases{orderA: 6, phase: 1}
+	r.order(6 * 690)
+	base := [3]float64{8, 2, 2}
+	r.run(0, 10*time.Second, func(time.Duration) [3]float64 { return base }, func(time.Duration) float64 { return 1380 })
+	r.order(8 * 690)
+	r.run(15*time.Second, 200*time.Second, func(d time.Duration) [3]float64 {
+		a := base
+		if d >= 20*time.Second {
+			a = [3]float64{a[0] + 2, a[1] + 2, a[2] + 2}
+		}
+		if d >= 60*time.Second {
+			a[0] += 2
+		}
+		return a
+	}, func(d time.Duration) float64 {
+		if d >= 60*time.Second {
+			return 8 * 230
+		}
+		return 6 * 230
+	})
+	if r.carPhases() != 1 {
+		t.Fatal("a heat pump starting during a rise cleared the one-phase car")
+	}
+}
+
+// Review M3: after a Core restart the order is out and the car draws before
+// the first reading. With no baseline, a one-phase car still shows its whole
+// draw on one phase and less than a third on the others; a three-phase car
+// never does.
+func TestOnePhaseCarMarkedAfterARestart(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		amps  [3]float64
+		drawW float64
+		want  int
+	}{
+		{"one-phase car at 16 A on L1, house 3/1/1 A", [3]float64{19, 1, 1}, 3680, 1},
+		{"three-phase car at 16 A, house 3/1/1 A", [3]float64{19, 17, 17}, 11040, 0},
+		{"two-phase car at 16 A, house 3/1/1 A", [3]float64{19, 17, 1}, 7360, 0},
+	} {
+		r := newPhaseRig()
+		r.order(11040)
+		r.run(0, 60*time.Second, func(time.Duration) [3]float64 { return c.amps }, func(time.Duration) float64 { return c.drawW })
+		if got := r.carPhases(); got != c.want {
+			t.Errorf("%s: car phases %d, want %d", c.name, got, c.want)
+		}
 	}
 }
