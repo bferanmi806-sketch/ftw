@@ -133,7 +133,10 @@ func TestSiteSimFieldMatrix(t *testing.T) {
 				results = append(results, fieldResult{name: c.name(), failed: failed})
 				mu.Unlock()
 				t.Logf("peak phase %.1f A, delivered %.1f kWh, car idle with room %v", s.peakA, f.deliveredWh/1000, s.idleWithRoom)
-				if len(problems) > 0 && !writeKnown {
+				switch {
+				case len(problems) > 0 && writeKnown:
+					t.Log(strings.Join(problems, "\n"))
+				case len(problems) > 0:
 					t.Fatal(strings.Join(problems, "\n"))
 				}
 			})
