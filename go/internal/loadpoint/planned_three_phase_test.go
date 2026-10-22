@@ -108,6 +108,10 @@ func TestChargeNowRunsOnThreePhases(t *testing.T) {
 		{"loadpoint pinned to 1p", "1p", "", 3680, 11100, "1p"},
 		{"hold auto, full power", "", "auto", 11100, 11100, "3p"},
 		{"one-phase charger, unset", "", "", 3680, 3680, "1p"},
+		// A client's 3p is not a pin on a charger that cannot run it.
+		{"one-phase charger, client sends 3p", "", "3p", 3680, 3680, "1p"},
+		{"one-phase charger on auto, client sends 3p", "auto", "3p", 3680, 3680, "1p"},
+		{"one-phase charger pinned 3p", "3p", "3p", 3680, 3680, "3p"},
 	} {
 		got := holdPhaseMode(ManualHold{PowerW: c.powerW, PhaseMode: c.holdMode}, Config{MinChargeW: 1380, MaxChargeW: c.maxW, PhaseMode: c.cfgMode}, site)
 		if got != c.want {
@@ -160,5 +164,26 @@ func TestSplitKeepsTheCurrentOrder(t *testing.T) {
 		if got := ctrl.tickFuseCaps[cfg.ID]; got < c.wantMin || got > c.wantMax {
 			t.Errorf("%s: cap %.0f W, want %.0f-%.0f W", c.name, got, c.wantMin, c.wantMax)
 		}
+	}
+}
+
+// Field matrix, hold3p: an app sends Charge now as 3p for an auto
+// loadpoint. On a 32 A one-phase charger whose table stops at 3,680 W, a
+// 3p order has no step and went out as 0 W. Core runs it on one phase.
+func TestChargeNowOnAOnePhaseChargerIgnoresAClients3p(t *testing.T) {
+	base := time.Date(2026, 10, 22, 20, 0, 0, 0, time.UTC)
+	cfg := Config{ID: "garage", DriverName: "easee", MinChargeW: 1380, MaxChargeW: 7360, PhaseMode: "auto",
+		AllowedStepsW: []float64{0, 1380, 2300, 3680}}
+	sender := &fakeSender{}
+	samples := map[string]EVSample{cfg.DriverName: {Connected: true, RequestActive: true}}
+	c := newTestController(t, []Config{cfg}, nil, samples, sender)
+	c.SetSiteFuse(SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
+	c.SetManualHold(cfg.ID, ManualHold{PowerW: cfg.MaxChargeW, PhaseMode: "3p", Persistent: true, StartedAt: base, UpdatedAt: base})
+	for i := range 3 {
+		c.Tick(context.Background(), base.Add(time.Duration(i)*5*time.Second))
+	}
+	cmd, ok := lastSetCurrent(sender.calls)
+	if !ok || cmd.power != 3680 || cmd.phaseMode != "1p" {
+		t.Fatalf("Charge now sent %.0f W %q, want 3680 W 1p", cmd.power, cmd.phaseMode)
 	}
 }
