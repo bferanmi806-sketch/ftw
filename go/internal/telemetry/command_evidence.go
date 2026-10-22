@@ -155,7 +155,9 @@ func (s *Store) BeginCommand(driver string, payload []byte, now time.Time) Comma
 			c.PowerObservedSince, c.LastObservation, c.LastGapW = old.PowerObservedSince, old.LastObservation, old.LastGapW
 		}
 	}
-	if c.PowerW != nil {
+	// A repeat of the last order is the same order: keeping it would push
+	// the earlier ones out of Recent long before their response time ends.
+	if n := len(c.Recent); c.PowerW != nil && (n == 0 || c.Recent[n-1].PowerW != *c.PowerW) {
 		c.Recent = append(c.Recent, CommandPoint{PowerW: *c.PowerW, At: now})
 	}
 	if len(c.Recent) > 8 {
