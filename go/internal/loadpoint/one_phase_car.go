@@ -23,8 +23,11 @@ import (
 const (
 	onePhaseStepA = 2.0              // the smallest order rise that is a test
 	onePhaseHold  = 30 * time.Second // a verdict holds this long on the meter
-	// onePhaseSettle is the least response time a test waits.
-	onePhaseSettle = time.Minute
+	// onePhaseSettle is the least response time a test waits, and
+	// onePhaseUnknownSettle the response time of a charger that declares
+	// none, as the fuse limit counts it.
+	onePhaseSettle        = time.Minute
+	onePhaseUnknownSettle = 3 * time.Minute
 )
 
 // SitePhases is the site meter's current on each phase and when it read
@@ -47,6 +50,12 @@ type phaseTest struct {
 // that phase alone.
 type carPhases struct {
 	orderA float64 // per phase, the order the next rise is measured from
+	// rising is set once the order has gone above orderA, and before is the
+	// meter read before that first raise went out: a fast charger has
+	// applied it by the next reading, and a fuse ramp climbs 1 A at a time.
+	rising bool
+	before [3]float64
+	last   [3]float64 // the meter read before this tick's command
 	test   *phaseTest
 	phase  int
 }
@@ -98,7 +107,7 @@ func (c *Controller) SetSitePhases(f func() (SitePhases, bool)) {
 
 // observePhases runs this tick's one-phase car check on a fresh meter
 // reading. The response time is the charger's declared power age, at least
-// onePhaseSettle.
+// onePhaseSettle, or onePhaseUnknownSettle when it declares none.
 func (c *Controller) observePhases(cfg Config, sample EVSample, now time.Time) {
 	site := c.siteFuse()
 	if c.sitePhases == nil || !sample.Connected || site.Phases() != 3 {
@@ -116,7 +125,11 @@ func (c *Controller) observePhases(cfg Config, sample EVSample, now time.Time) {
 	if !sample.PowerUnavailable && finite(sample.PowerW) {
 		drawA = sample.PowerW / voltage
 	}
-	c.manager.observePhases(cfg.ID, meter, drawA, voltage, max(onePhaseSettle, sample.PowerWindow()), now)
+	settle := onePhaseUnknownSettle
+	if sample.PowerMaxAge > 0 {
+		settle = max(onePhaseSettle, sample.PowerWindow())
+	}
+	c.manager.observePhases(cfg.ID, meter, drawA, voltage, settle, now)
 }
 
 // observePhases starts a test when the session's three-phase order rises
@@ -133,8 +146,10 @@ func (m *Manager) observePhases(id string, meter SitePhases, drawA, voltage floa
 		return
 	}
 	s := &lp.carPhases
+	previous := s.last
+	s.last = meter.A
 	if !lp.commandedKnown || lp.commandedPhases != 3 || !finite(lp.commandedW) {
-		s.test = nil
+		s.test, s.rising = nil, false
 		return
 	}
 	orderA := math.Max(0, lp.commandedW) / (3 * voltage)
@@ -143,15 +158,17 @@ func (m *Manager) observePhases(id string, meter SitePhases, drawA, voltage floa
 	}
 	if s.test == nil {
 		switch {
-		case orderA-s.orderA >= onePhaseStepA:
-			s.test = &phaseTest{at: now, until: now.Add(settle + onePhaseHold), baseline: meter.A, fromA: s.orderA}
-		case orderA < s.orderA:
-			s.orderA = orderA // A cut is the base of the next rise.
+		case orderA <= s.orderA:
+			s.orderA, s.rising = orderA, false // A cut is the base of the next rise.
+			return
+		case !s.rising:
+			s.rising, s.before = true, previous
 		}
-		if s.test == nil {
+		if orderA-s.orderA < onePhaseStepA {
 			return
 		}
-		s.orderA = orderA
+		s.test = &phaseTest{at: now, until: now.Add(settle + onePhaseHold), baseline: s.before, fromA: s.orderA}
+		s.orderA, s.rising = orderA, false
 	}
 	t := s.test
 	s.orderA = max(s.orderA, orderA)
