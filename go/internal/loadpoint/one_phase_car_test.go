@@ -246,8 +246,8 @@ func TestOnePhaseCarMarkedAfterARestart(t *testing.T) {
 // Device-simulator rig s14 on 2e847104: a three-phase charger with the
 // settings page's minimum, 4,140 W. Once the car was marked one-phase the
 // planner got its one-phase levels with that minimum, dropped every level
-// below it and planned nothing. The plan's minimum is a third of the
-// charger's, as the order is three times the plan.
+// below it and planned nothing. The car's levels are the charger's
+// three-phase steps divided by three, up to its one-phase maximum.
 func TestOnePhaseCarPlanningLimits(t *testing.T) {
 	site := SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3}
 	planned := func(minW, maxW float64, steps []float64) (n int) {
@@ -266,13 +266,14 @@ func TestOnePhaseCarPlanningLimits(t *testing.T) {
 		wantPlannedLevels int
 	}{
 		{"settings page's charger", Config{MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto"}, 0, 1380, 3450, 10},
-		{"three-phase table", Config{MinChargeW: 4140, MaxChargeW: 11040, PhaseMode: "3p", AllowedStepsW: []float64{0, 4140, 6900, 11040}}, 0, 1380, 3680, 11},
-		{"field table", Config{MinChargeW: 1600, MaxChargeW: 11100, PhaseMode: "auto", AllowedStepsW: easeeFieldSteps}, 0, 1380, 3680, 11},
+		{"three-phase table", Config{MinChargeW: 4140, MaxChargeW: 11040, PhaseMode: "3p", AllowedStepsW: []float64{0, 4140, 6900, 11040}}, 0, 1380, 3680, 3},
+		{"field table", Config{MinChargeW: 1600, MaxChargeW: 11100, PhaseMode: "auto", AllowedStepsW: easeeFieldSteps}, 0, 1600, 10400.0 / 3, 9},
+		{"minimum 4,800 W", Config{MinChargeW: 4800, MaxChargeW: 11000, PhaseMode: "auto"}, 0, 1610, 3450, 9},
 		{"car's own maximum", Config{MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto"}, 3000, 1380, 3000, 8},
 	} {
 		st := State{MinChargeW: c.cfg.MinChargeW, MaxChargeW: c.cfg.MaxChargeW, AllowedStepsW: c.cfg.AllowedStepsW, CarMaxW: c.carMaxW, CarPhases: 1}
 		minW, maxW, steps := PlanningLimits(st, c.cfg, site)
-		if minW != c.wantMin || maxW != c.wantMax || planned(minW, maxW, steps) != c.wantPlannedLevels {
+		if math.Abs(minW-c.wantMin) > .5 || math.Abs(maxW-c.wantMax) > .5 || planned(minW, maxW, steps) != c.wantPlannedLevels {
 			t.Errorf("%s: min %.0f max %.0f, %d levels the planner keeps (%v); want %.0f, %.0f, %d",
 				c.name, minW, maxW, planned(minW, maxW, steps), steps, c.wantMin, c.wantMax, c.wantPlannedLevels)
 		}
@@ -282,4 +283,68 @@ func TestOnePhaseCarPlanningLimits(t *testing.T) {
 	if minW, maxW, _ := PlanningLimits(State{MinChargeW: 4140, MaxChargeW: 11000}, cfg, site); minW != 4140 || maxW != 11000 {
 		t.Fatalf("unmarked car: %.0f-%.0f W", minW, maxW)
 	}
+}
+
+// Review of #1806: every level the planner keeps for a one-phase car is a
+// third of an order the charger's table has. A plan slot at that level goes
+// out as that order, within the charger and the fuse, and the car draws
+// what the plan counts. A third of the charger's minimum was not: on the
+// field table 1,380 W became 4,140 W, which the table lacks, and 0 W went
+// out; coarse tables drew up to 30 % less than the plan.
+func TestOnePhaseCarLevelsAreOrders(t *testing.T) {
+	for _, ch := range []struct {
+		name       string
+		minW, maxW float64
+		steps      []float64
+	}{
+		{"settings page", 4140, 11000, nil},
+		{"field table", 1600, 11100, easeeFieldSteps},
+		{"minimum 4,800 W", 4800, 11000, nil},
+		{"coarse table", 4800, 11000, []float64{0, 4800, 7200, 11000}},
+		{"three-phase table", 4140, 11040, []float64{0, 4140, 6900, 11040}},
+	} {
+		for _, fuseA := range []float64{16, 25} {
+			site := SiteFuse{MaxAmps: fuseA, Voltage: 230, PhaseCnt: 3}
+			cfg := Config{ID: "garage", DriverName: "easee", MinChargeW: ch.minW, MaxChargeW: ch.maxW, PhaseMode: "auto", AllowedStepsW: ch.steps}
+			st := State{MinChargeW: ch.minW, MaxChargeW: ch.maxW, AllowedStepsW: ch.steps, CarPhases: 1}
+			minW, maxW, steps := PlanningLimits(st, cfg, site)
+			kept := 0
+			for _, level := range steps {
+				if level <= 0 || level < minW || level > maxW {
+					continue // The planner drops it (mpc normalizedSteps).
+				}
+				kept++
+				power, expected := onePhaseCarOrder(cfg, site, level)
+				if power <= 0 || power > ch.maxW || power/690 > fuseA+1e-6 || math.Abs(expected-level) > level/100 {
+					t.Errorf("%s, %g A: a plan slot at %.0f W went out as %.0f W, the car drawing %.0f W",
+						ch.name, fuseA, level, power, expected)
+				}
+			}
+			if kept == 0 {
+				t.Errorf("%s, %g A: the planner keeps no level of %v (%.0f-%.0f W)", ch.name, fuseA, steps, minW, maxW)
+			}
+		}
+	}
+}
+
+// onePhaseCarOrder is the order a marked one-phase car's plan slot at
+// levelW goes out as, with the plan's peak, and the draw it names.
+func onePhaseCarOrder(cfg Config, site SiteFuse, levelW float64) (powerW, expectedW float64) {
+	slot := time.Now().Add(-time.Second)
+	dir := &Directive{SlotStart: slot, SlotEnd: slot.Add(15 * time.Minute),
+		LoadpointEnergyWh: map[string]float64{cfg.ID: levelW / 4}, LoadpointMaxPowerW: map[string]float64{cfg.ID: levelW}}
+	var payload map[string]any
+	send := func(_ context.Context, _ string, p []byte) error { return json.Unmarshal(p, &payload) }
+	samples := map[string]EVSample{cfg.DriverName: {Connected: true, RequestActive: true}}
+	c := NewController(NewManager(), PlanFunc(func(time.Time) (Directive, bool) { return *dir, true }),
+		TelemetryFunc(func(d string) (EVSample, bool) { s, ok := samples[d]; return s, ok }), send)
+	c.manager.Load([]Config{cfg})
+	c.SetSiteFuse(site)
+	c.manager.Observe(cfg.ID, true, 0, 0, true)
+	c.manager.SetSchedule(cfg.ID, Schedule{SoC: .8})
+	c.manager.byID[cfg.ID].carPhases.phase = 1
+	c.Tick(context.Background(), time.Now())
+	powerW, _ = payload["power_w"].(float64)
+	expectedW, _ = payload["expected_w"].(float64)
+	return powerW, expectedW
 }
