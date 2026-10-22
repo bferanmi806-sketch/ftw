@@ -1,6 +1,9 @@
 package loadpoint
 
-import "math"
+import (
+	"math"
+	"slices"
+)
 
 // PlanningSteps exposes legal whole-amp offers for a scheduled charge.
 // Scheduled charging runs on the car's phases, as resolvePhaseMode sends it:
@@ -44,6 +47,30 @@ func PlanningSteps(cfg Config, site SiteFuse) []float64 {
 		steps = append(steps, amps*step)
 	}
 	return steps
+}
+
+// PlanningLimits is the power range and the steps the planner gets for a
+// loadpoint's session, held to the car by LimitPower. A one-phase car on a
+// three-phase charger takes a third of each three-phase order, so its
+// levels are the charger's three-phase steps divided by three, up to its
+// one-phase maximum: each is a third of an order the charger's table and
+// minimum allow. The charger's own minimum would leave the planner no level.
+func PlanningLimits(st State, cfg Config, site SiteFuse) (minW, maxW float64, steps []float64) {
+	planning := PlanningSteps(cfg, site)
+	if st.CarPhases == 1 && threePhaseCapable(cfg, site) {
+		topW := OnePhaseCarMaxW(cfg, site)
+		levels := []float64{0}
+		for _, w := range planning {
+			if w > 0 && w/3 <= topW+1e-9 {
+				levels = append(levels, w/3)
+			}
+		}
+		if len(levels) > 1 {
+			st.MinChargeW, st.MaxChargeW = slices.Min(levels[1:]), slices.Max(levels)
+			return LimitPower(st, levels)
+		}
+	}
+	return LimitPower(st, planning)
 }
 
 // ThreePhaseCapable reports whether a charger can run three phases at 6 A

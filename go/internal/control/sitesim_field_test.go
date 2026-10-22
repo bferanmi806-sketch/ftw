@@ -75,6 +75,7 @@ type fieldCase struct {
 
 	charger   string        // the charger itself when not what the phase mode says: "1p32A"
 	planW     float64       // > 0: the plan asks this many W each slot, as Wh only
+	needW     float64       // > 0: the goal asks this many W on average
 	goal      bool          // surplus-only with a ready-by goal
 	exportW   []float64     // surplus: export each quarter hour
 	houseStep time.Duration // > 0: L1 +8 A for 10 min from this time into the run
@@ -94,7 +95,7 @@ func (c fieldCase) key() string {
 		on   bool
 		text string
 	}{
-		{c.battery, "battery"}, {c.charger != "", "charger" + c.charger}, {c.planW > 0, fmt.Sprintf("plan%gW", c.planW)},
+		{c.battery, "battery"}, {c.charger != "", "charger" + c.charger}, {c.planW > 0, fmt.Sprintf("plan%gW", c.planW)}, {c.needW > 0, fmt.Sprintf("need%gW", c.needW)},
 		{c.goal, "goal"}, {export != "", export}, {c.houseStep > 0, "L1step"},
 	} {
 		if v.on {
@@ -284,6 +285,13 @@ func probeCases() []fieldCase {
 			out = append(out, c)
 		}
 	}
+	for _, tm := range []fieldTiming{timingFast, timingEasee} {
+		// A small goal for the one-phase car: the plan picks its lowest
+		// level, which must be a third of an order the table has.
+		c := helpReport(usePlanned, tm)
+		c.carPhases, c.needW = 1, 1000
+		out = append(out, c)
+	}
 	c := helpReport(usePlanned, timingEasee)
 	c.houseStep = 30 * time.Minute
 	return append(out, c)
@@ -372,13 +380,14 @@ func (p *fieldPlan) directive(now time.Time) (loadpoint.Directive, bool) {
 	return d, true
 }
 
-// fieldPlanningSteps is what main.go gives the planner for the session:
-// planningStepsForLoadpoint's steps, held to the car by LimitPower.
+// fieldPlanningSteps is what the planner can choose for the session: the
+// steps main.go gives it (planningLimitsForLoadpoint), within the minimum
+// and maximum it gets with them, as mpc's normalizedSteps keeps them.
 func fieldPlanningSteps(s *simSite) []float64 {
 	st, _ := s.mgr.State(s.lp.ID)
 	cfg := loadpoint.Config{MinChargeW: st.MinChargeW, MaxChargeW: st.MaxChargeW, AllowedStepsW: st.AllowedStepsW, PhaseMode: s.lp.PhaseMode}
-	_, _, steps := loadpoint.LimitPower(st, loadpoint.PlanningSteps(cfg, loadpoint.SiteFuse{MaxAmps: s.p.Fuse.RatingA, Voltage: s.p.Voltage, PhaseCnt: 3}))
-	return steps
+	minW, maxW, steps := loadpoint.PlanningLimits(st, cfg, loadpoint.SiteFuse{MaxAmps: s.p.Fuse.RatingA, Voltage: s.p.Voltage, PhaseCnt: 3})
+	return slices.DeleteFunc(slices.Clone(steps), func(w float64) bool { return w > 0 && (w < minW || maxW > 0 && w > maxW) })
 }
 
 // asks reports whether the plan wants the car charging now: its slot has an
@@ -722,6 +731,9 @@ func runFieldCase(c fieldCase, trace func(string, ...any)) (*simSite, *fieldRun)
 		roomW, askW := fieldRoomW(c, p.EVSE, p.Car), 3300.0
 		if c.planW > 0 {
 			askW = c.planW
+		}
+		if c.needW > 0 {
+			askW = c.needW
 		}
 		f.plan = &fieldPlan{id: lp.ID, deadline: start.Add(run), run: f, planning: func() []float64 { return fieldPlanningSteps(s) },
 			fixedW: c.planW, needWh: math.Min(askW*run.Hours(), .8*roomW*run.Hours())}
