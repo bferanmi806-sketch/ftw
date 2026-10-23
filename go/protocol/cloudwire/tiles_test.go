@@ -193,6 +193,15 @@ func TestLayKeepsTheNewestWholeAndTheClosedTile(t *testing.T) {
 	if laid[0].Partial || laid[0].Etag != v[0].body.Etag {
 		t.Fatal("a piece reopened a closed tile")
 	}
+	// A closed tile sent again after the ledger changed replaces the first.
+	fixed := v[0].body
+	fixed.Data = slices.Clone(fixed.Data)
+	fixed.Data[0] ^= 1
+	fixed.Etag = protocol.EtagOf(fixed.Data)
+	laid = Lay([]Tiles{v[0].body, fixed, piece})
+	if laid[0].Partial || laid[0].Etag != fixed.Etag {
+		t.Fatal("a later closed tile did not replace the first")
+	}
 	// A body that fails Check is skipped.
 	bad := v[3].body
 	bad.Etag = "00000000"
