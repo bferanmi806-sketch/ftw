@@ -63,6 +63,9 @@ var Fields = map[string][]string{
 	// tun carries no header and no signature: d is Noise ciphertext its two
 	// ends authenticate, and the service reads only dev and sid.
 	MsgTun: {"dev", "sid", "d"},
+	// x is the same: d is a watch's exchange with the box, and the service
+	// reads only dev and id.
+	MsgX: {"dev", "id", "d"},
 }
 
 // Bodies maps each class the box sends to its body type. Classes the box does
@@ -86,4 +89,5 @@ var Bodies = map[string]any{
 // Unheaded are the box's messages without the common header.
 var Unheaded = map[string]any{
 	MsgTun: Tun{},
+	MsgX:   X{},
 }

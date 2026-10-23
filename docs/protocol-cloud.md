@@ -6,7 +6,9 @@ or the phone. The bytes live in `go/protocol/cloudwire`, with golden vectors
 in its `testdata`: `cloud-vectors.json` for the uplink,
 `cloud-app-vectors.json` for one whole app session, its
 [tunnel](#tunnel) messages and a pairing proof, and
-`cloud-once-vectors.json` for one [one-shot read](#one-shot-read), and
+`cloud-once-vectors.json` for one [one-shot read](#one-shot-read),
+`cloud-once-x-vectors.json` for one request of the [exchange](#exchange)
+through the service, and
 `cloud-shard-vectors.json` for which hosts a client may follow and how it
 reads a restart's spread ([Shards and restarts](#shards-and-restarts)).
 `srcfl/ftw-cloud`, the phone and the watch replay them. `cloudwire.View` is the phone's
@@ -43,7 +45,7 @@ for both live in `go/protocol`, under Apache-2.0
 |---|---|---|---|
 | Uplink | Box | `wss://cloud.ftw.energy/v1/box` | TLS 1.3, a handshake bound to the TLS session on both sides, every box message signed |
 | App session | Phone | `wss://cloud.ftw.energy/v1/app?home=<id>` | TLS 1.3, then Noise IK to the service's static key. Inside it, the phone's own Noise session with its box rides as [`tun`](#tunnel) |
-| One-shot read | Watch | `POST https://cloud.ftw.energy/v1/app/once?home=<id>` | TLS 1.3, then Noise IK to the service's static key, inside one request |
+| One-shot read | Watch | `POST https://cloud.ftw.energy/v1/app/once?home=<id>` | TLS 1.3, then Noise IK to the service's static key, inside one request. Inside it, a watch's [exchange](#exchange) with its box rides as `x` |
 | Extension read | Extension | `GET https://cloud.ftw.energy/v1/now` | TLS and an extension token; the data inside is box-signed |
 | Push | Service | APNs | Box-signed payloads where they carry data |
 
@@ -898,6 +900,9 @@ as it decides for the same session over the relay.
 - **Effective scope** of a device is its `scopes` intersected with
   `grant.scopes`. It is empty while the readable copy is off, and a device
   with `tun` still opens a session for its [tunnel](#tunnel).
+- A watch has `tun` whenever a phone may have it. For a watch it opens the
+  [exchange](#exchange) and nothing else: the box answers a watch's key on
+  the stream with silence.
 - A device that leaves the roster loses its sessions (4403), tokens and APNs
   registrations within a second of the service receiving the roster, which
   needs the uplink to be up. A device whose `epoch`, `role` or effective scope
@@ -1219,12 +1224,15 @@ exactly as `/v1/app` admits a phone and keeps nothing after the answer.
    one-shot handshake and an app session handshake never stand in for each
    other.
 2. Message 1 carries one unsigned envelope: `read`, `token.get`,
-   `push.register` or `push.unregister`. The service refuses any other type,
-   an owner's `suspend` among them, with 400 before message 2.
+   `push.register`, `push.unregister` or `x` (see [Exchange](#exchange)).
+   The service refuses any other type, an owner's `suspend` among them,
+   with 400 before message 2.
 3. The service admits the watch by the rules of the app session: its key in
    the home's roster, a roster that has not run out, no suspension, and a
-   non-empty effective scope, so the readable copy must be on. A refusal is 403 with an empty body, before message 2, and does
-   not say which check failed.
+   non-empty effective scope, so the readable copy must be on. For `x` the
+   roster entry's `tun` stands in for the effective scope, as it does for a
+   phone's tunnel, so commands work with the copy off. A refusal is 403 with
+   an empty body, before message 2, and does not say which check failed.
 4. The answer is 200 with `content-type: application/octet-stream`. Its body
    is message 2 and then, for a `read`, the envelopes that did not fit, as
    transport messages. Each message, message 2 included, comes after its
@@ -1249,8 +1257,71 @@ has stored the change.
 4 KiB; the whole answer within 10 s. Past a limit the service answers 429, a
 longer message 1 gets 400, and a service without a Noise key answers 501.
 
-When FTW Cloud is off, a watch on its own reads `now` on the box's exchange
-through the relay instead, and prices and the plan wait for the phone.
+With the readable copy off, a watch on its own shows what it holds and the
+age of it, and prices and the plan wait for the phone.
+
+## Exchange
+
+A watch's commands go to its box through the box's exchange
+([ADR 0009](adr/0009-watch-exchange.md), decisions 1 and 2): short Noise
+sessions, `ftw.exchange.v1`, IK to the box's static key, which live on the
+box and answer one request at a time. The relay that first carried them is
+gone (17 October 2026), so each request rides one
+[one-shot request](#one-shot-read) to the service, and the service hands it
+to the box on the uplink. It reads neither the request nor the answer.
+
+1. The watch posts a one-shot request whose message 1 carries `x {d}`. `d`
+   is one exchange message: handshake message 1 with the watch's `hello`
+   (608 bytes), or a request of one lane 0 frame, `cmd` or `now` (536).
+2. The service admits the watch as step 3 of the one-shot read says, with
+   `tun` in place of the effective scope.
+3. It sends `x {dev, id, d}` down the uplink: `dev` the roster id its own
+   handshake proved, `id` a number of its own for this request. It never
+   takes either from the watch.
+4. The box answers `x {dev, id, d}` with the same `dev` and `id`. `d` is the
+   exchange's answer: message 2 with `hello_ok` (1,072 bytes), or two lane
+   0 frames (1,072), `cmd.ack` and `cmd.result`, or `now` and a `tick`. An
+   empty `d` is the box's silence: a stranger, a key that is not the device
+   `dev` names, a spent session, or a message it could not read.
+5. The service answers 200 with message 2 carrying `x {d}`, the box's `d`
+   unchanged, and keeps nothing.
+
+**`x`**
+
+| Field | Type | Meaning |
+|---|---|---|
+| `dev` | text | The roster device id of the watch. On the uplink only; the service sets it |
+| `id` | uint | The service's number for one request, below 2³², which the box copies into its answer. On the uplink only |
+| `d` | bstr | One exchange message, or empty for no answer |
+
+- **No answer.** The service answers `x` with an empty `d` at once when the
+  box is not connected, did not say `x` in `hello.caps`, or has 8 requests
+  open; and after 5 s without the box's answer. The watch cannot tell
+  these apart, and does not need to: an exchange session that got no
+  answer is spent, and a command that got none is sent again under its
+  `cmdId`, which the box's command log answers with the stored outcome.
+- **The box checks it again.** It runs the handshake and admits the watch
+  by its key, exactly as ADR 0009 says, and answers only if the key the
+  handshake proved is the device `dev` names. A request is tried only
+  against that device's sessions.
+- **What the service can do.** Drop, delay or replay a request. It cannot
+  read or forge `d`. A replayed message 1 opens a session nobody can use; a
+  replayed request fails in its session's transport, and a replayed `cmd`
+  in a new session meets the command log. Every `cmd` carries its own
+  expiry, in box uptime.
+- **What the service learns.** That a watch of this home sent a request
+  and when, and when the answer came. Every request and every answer after
+  the handshake has one length, and the box answers a `cmd` no sooner than
+  400 ms after it arrived, applied or refused, so the service cannot tell a
+  read from a command, or a refusal from a success.
+- **Limits.** The one-shot read's: one request at a time per device and 30
+  a minute. A command takes two (the handshake and the `cmd`) and a third
+  when its result had not settled. `d` is at most 2,048 bytes either way.
+- **Enrolment.** An owner's phone adds a watch over its own box session,
+  with a passkey step-up, by the watch's public key:
+  `POST /api/app-link/pairing {"role": "watch", "key": "<base64url>"}`. The
+  box lists it in the next roster, so its first request is admitted like
+  any other. No code crosses the service.
 
 ## Extension token
 
@@ -1665,6 +1736,7 @@ constants, so `srcfl/ftw-cloud` need not spell them by hand.
 | Phone messages | 20 in a burst, then 2 a second |
 | App session message 1 | Within 10 s |
 | One-shot reads | One at a time per device, 30 a minute; message 1 at most 4 KiB; answered within 10 s |
+| Exchange through the service | Answered within 5 s or with an empty `d`; 8 open per box; `d` at most 2,048 bytes |
 | Roster `ttlS`, renewal | 24 hours, every 6 hours |
 | Extension token | 7 days |
 | Alert age for buttons | 10 minutes |
