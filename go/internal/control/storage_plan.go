@@ -14,9 +14,10 @@ type storageSlotDelivery struct {
 
 // Keep each physical battery's share after Core has computed a live site
 // target. A blocked battery's energy is not reassigned to another battery.
-// Manual control and missing plans retain the existing local controller.
+// Manual control, missing plans and interchangeable batteries retain the
+// existing local controller, which splits the live target by capacity.
 func distributePlannedStorages(state *State, bats []batteryInfo, desired float64, manual bool) ([]DispatchTarget, bool) {
-	if manual || !state.Mode.IsPlannerMode() || state.PlanStale {
+	if manual || !state.Mode.IsPlannerMode() || state.PlanStale || interchangeableStorages(bats) {
 		state.storageDelivery = storageSlotDelivery{}
 		return nil, false
 	}
@@ -106,4 +107,31 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 		out = append(out, DispatchTarget{Driver: b.driver, TargetW: targets[i] * scale, Clamped: true})
 	}
 	return out, true
+}
+
+// Batteries with the same charge and discharge power per Wh of capacity are
+// one pool to the planner. Core gives every storage the site's efficiencies,
+// so each Wh costs the same on either battery, and a split by capacity can
+// carry any total the plan can. Which battery the plan names is then
+// arbitrary: Energyplan often puts a whole slot on one and the next on the
+// other. A 5 % spread costs a capacity split at most about 1.3 % of the
+// fleet's full power.
+const interchangeablePowerSpread = 0.05
+
+func interchangeableStorages(bats []batteryInfo) bool {
+	if len(bats) == 0 {
+		return false
+	}
+	lowC, highC := math.Inf(1), math.Inf(-1)
+	lowD, highD := math.Inf(1), math.Inf(-1)
+	for _, b := range bats {
+		if b.capacityWh <= 0 {
+			return false
+		}
+		c, d := b.chargeCap()/b.capacityWh, b.dischargeCap()/b.capacityWh
+		lowC, highC = math.Min(lowC, c), math.Max(highC, c)
+		lowD, highD = math.Min(lowD, d), math.Max(highD, d)
+	}
+	return highC-lowC <= interchangeablePowerSpread*highC &&
+		highD-lowD <= interchangeablePowerSpread*highD
 }
