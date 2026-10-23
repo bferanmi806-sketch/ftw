@@ -34,6 +34,12 @@ const (
 	// holding a session open all day at 1 Hz sends about 50 MB; this is five
 	// of them, and stops a runaway before it eats a household's uplink.
 	tunBudgetBytes = 250_000_000
+	// xBudgetBytes is the watches' share of it: their exchange answers, a
+	// tenth. An answer is about a kilobyte, so this is some twenty thousand
+	// a day. xStopsAt is the share of the tunnel's budget past which x
+	// stops, so the phones keep the last of it.
+	xBudgetBytes = tunBudgetBytes / 10
+	xStopsAt     = 0.9
 )
 
 // sentFrame is the last frame of a class that left the house, exactly.

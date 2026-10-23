@@ -6,11 +6,12 @@
 //
 // FTW Cloud never chooses an action. This package holds that line in its
 // build: it reaches the box only through the read-only ports below and the
-// Tunnel port, and may import nothing from the box (CI checks it with go list
-// -deps). What the service may send back is a closed set of six messages.
-// Five ask the box for nothing but to send sooner, send again or forget a
-// key. The sixth, tun, carries a phone's Noise session, which this package
-// hands to the Tunnel unread.
+// Tunnel and Exchange ports, and may import nothing from the box (CI checks
+// it with go list -deps). What the service may send back is a closed set of
+// seven messages. Five ask the box for nothing but to send sooner, send again
+// or forget a key. tun carries a phone's Noise session, which this package
+// hands to the Tunnel unread, and x a watch's exchange with the box, which it
+// hands to the Exchange unread.
 //
 // The box links when it first shows a pairing code, has a phone that may
 // open a tunnel, or an owner grants the readable copy. A link record or a
@@ -210,6 +211,15 @@ type Tunnel interface {
 	Drop()
 }
 
+// Exchange answers the watches' requests that FTW Cloud carries (ADR 0009).
+// The box's exchange table implements it; the link hands it each x from the
+// service unread.
+type Exchange interface {
+	// Deliver takes one x from the service. It must not block: the link
+	// reads the service on the same goroutine.
+	Deliver(x cloudwire.X)
+}
+
 // WebPushSource renders and encrypts the notices the service may send when the box is away.
 type WebPushSource interface {
 	WebPushRows() ([]cloudwire.WebPushRow, error)
@@ -234,6 +244,9 @@ type Options struct {
 	// Tunnel serves the phones' sessions. Nil takes no tun: the box does not
 	// list tun in hello.caps, and the service sends it none.
 	Tunnel Tunnel
+	// Exchange answers the watches. Nil, or no Tunnel, takes no x: the box
+	// does not list x in hello.caps, and the service sends it none.
+	Exchange Exchange
 	// Arrivals hears each finished driver poll (telemetry.Store.Arrivals).
 	// While a phone watches, live goes when a poll lands rather than on the
 	// next check. Nil leaves live on its checks alone.
@@ -296,9 +309,12 @@ type Link struct {
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
 	// the connection's tun writer. Nil while no uplink is up. tunBudget counts what left, apart from
 	// the readable copy's budget, and tunDropped what never did.
-	tunOut     chan []byte
-	tunBulk    chan []byte
-	tunBudget  budget
+	tunOut    chan []byte
+	tunBulk   chan []byte
+	tunBudget budget
+	// xBudget counts the watches' exchange answers apart, as well as in
+	// tunBudget once they leave.
+	xBudget    budget
 	tunDropped int64
 	sent       map[string]sentFrame
 	srcRev     uint64
@@ -1037,6 +1053,11 @@ func (l *Link) TakesTun() bool {
 	return l.Available() && l.opts.Tunnel != nil && !l.disabled && !l.grant.statisticsOnly()
 }
 
+// TakesX reports whether the link carries the watches' exchange as x, which
+// it does only beside the tunnel: a watch's roster entry opens its door
+// through tun.
+func (l *Link) TakesX() bool { return l.TakesTun() && l.opts.Exchange != nil }
+
 // SessionInfo is what a phone needs, over its Noise session with the box, to
 // reach this home through FTW Cloud: the home id, the key that signs the
 // readable copy, the boot that anchors its times and names for the opaque
@@ -1205,6 +1226,9 @@ func (l *Link) caps(snap grantSnapshot) []string {
 	out = append(out, cloudwire.MsgRoster, cloudwire.MsgNotice)
 	if l.opts.Tunnel != nil {
 		out = append(out, cloudwire.CapTun)
+		if l.opts.Exchange != nil {
+			out = append(out, cloudwire.CapX)
+		}
 	}
 	return append(out, cloudwire.CapShard)
 }
