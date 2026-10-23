@@ -142,6 +142,32 @@ func TestInterchangeableStoragesShareThePlanTotal(t *testing.T) {
 	}
 }
 
+// A battery that cannot charge hands its share to its twin instead of
+// sending it to the grid. The plan named the blocked battery.
+func TestInterchangeableStoragesHandOverABlockedShare(t *testing.T) {
+	now := time.Now()
+	dir := SlotDirective{DecisionID: "p", SlotStart: now, SlotEnd: now.Add(15 * time.Minute), BatteryEnergyWh: 500,
+		StorageEnergyWh: map[string]float64{"a": 500, "b": 0}}
+	store := seedStore(0, []struct {
+		name          string
+		currentW, soc float64
+	}{{"a", 0, .5}, {"b", 0, .5}})
+	soc := .5
+	store.Update("a", telemetry.DerBattery, 0, &soc, json.RawMessage(`{"charge_capable":false}`))
+	s := newStateWithEnergyDispatch(dir, "ferroamp")
+	s.clock = func() time.Time { return now }
+	out := ComputeDispatch(store, s, caps(map[string]float64{"a": 10000, "b": 10000}), 11040)
+	want := map[string]float64{"a": 0, "b": 2000}
+	if len(out) != 2 {
+		t.Fatalf("targets=%+v", out)
+	}
+	for _, v := range out {
+		if math.Abs(v.TargetW-want[v.Driver]) > 1e-6 {
+			t.Fatalf("targets=%+v, want %v", out, want)
+		}
+	}
+}
+
 // The same two batteries on a cover-load slot: the plan put −564 W on one,
 // the house drew 3 kW. Both batteries must cover the load, not one battery
 // at its planned rate with the rest from the grid.

@@ -115,7 +115,9 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 // carry any total the plan can. Which battery the plan names is then
 // arbitrary: Energyplan often puts a whole slot on one and the next on the
 // other. A 5 % spread costs a capacity split at most about 1.3 % of the
-// fleet's full power.
+// fleet's full power. The split does not keep each battery inside the
+// plan's SoC band: as in 2.x, the battery with less energy reaches its
+// floor first and relies on its driver or the 5 % clamp.
 const interchangeablePowerSpread = 0.05
 
 func interchangeableStorages(bats []batteryInfo) bool {
