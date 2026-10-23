@@ -174,12 +174,13 @@ func Piece(c protocol.HistChunk, from, to int) Tiles {
 		Series: slices.Clone(c.Series), Data: data, Partial: true}
 }
 
-// Lay puts tiles back together, in the order the box sent them: a closed tile
-// as it is; the trailing tile from its newest whole piece, with each later
-// append laid over it. A piece of a tile already closed changes nothing, and
-// neither does a body that fails Check. The result has one chunk per tile,
-// oldest first, each with every point; a trailing tile stays partial, its
-// etag that of the data as laid, never one to offer as held.
+// Lay puts tiles back together, in the order the box sent them, by wallMs
+// and then seq, which starts again with the box: a closed tile as it is; the
+// trailing tile from its newest whole piece, with each later append laid
+// over it. A piece of a tile already closed changes nothing, and neither does
+// a body that fails Check. The result has one chunk per tile, oldest first,
+// each with every point; a trailing tile stays partial, its etag that of the
+// data as laid, never one to offer as held.
 func Lay(bodies []Tiles) []protocol.HistChunk {
 	byID := map[string]*protocol.HistChunk{}
 	for _, t := range bodies {

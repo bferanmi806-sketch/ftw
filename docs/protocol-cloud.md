@@ -668,8 +668,9 @@ count against the byte budget: about 100 KB a day.
 
 `cloudwire.Lay` puts what a receiver holds back together: a closed tile as
 it is, and the trailing tile from its newest whole piece with each later
-append laid over it, in `seq` order. The trailing tile stays partial, and
-its etag is never offered as held.
+append laid over it, in the order the box sent them, by `wallMs` and then
+`seq`, since `seq` starts again when the box does. The trailing tile stays
+partial, and its etag is never offered as held.
 
 ### `hb`: every device in the roster
 
@@ -1002,7 +1003,7 @@ the table.
 |---|---|---|
 | `watch` | Any device | `{hz}`: 1 when the phone looks at the home, 0 when it looks away. It holds until the next `watch` or the end of the session |
 | `tun` | A device with `tun` | `{sid, d}`. The phone's session with its box. See [Tunnel](#tunnel). The service answers `tun` the same way |
-| `tiles.get` | Devices with `ftw.history.read` | `{have}`, tile id to etag of the closed tiles the phone holds. The service answers with the `tiles` envelopes the phone lacks: each closed tile it holds that `have` does not name at that etag, and every piece of the trailing tile, oldest tile first and each tile's pieces in `seq` order. Then `tiles.end {n}`, where `n` counts them. It answers this while the box is away too, and a device without the scope gets `tiles.end {n: 0}` |
+| `tiles.get` | Devices with `ftw.history.read` | `{have}`, tile id to etag of the closed tiles the phone holds. The service answers with the `tiles` envelopes the phone lacks: each closed tile it holds that `have` does not name at that etag, and every piece of the trailing tile, oldest tile first and each tile's pieces in the order the box sent them. Then `tiles.end {n}`, where `n` counts them. It answers this while the box is away too, and a device without the scope gets `tiles.end {n: 0}` |
 | `token.get` | Any device | Answered with `token {token, expiresInS}`. A new token replaces the device's old one |
 | `push.register` | Any device | `{apnsToken, environment, kind, activityId, app}`. One registration per APNs token; a Live Activity and its push-to-start each register their own. `app` is `iphone`, the default when absent, or `watch`, and picks the APNs topic |
 | `push.unregister` | Any device | `{apnsToken}` |
