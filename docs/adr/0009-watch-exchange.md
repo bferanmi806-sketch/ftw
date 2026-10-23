@@ -207,13 +207,23 @@ phone's.
    Instead the owner's phone sends the watch's public key over its own
    session, with the same step-up: `POST /api/app-link/pairing
    {"role": "watch", "key": …}`. The box lists the watch in its next
-   roster. The code path stays for now and no client uses it.
+   roster. The code path is gone: a request for a watch without a key is
+   refused, and a hello with a code is answered with silence.
 3. **A watch has `tun`.** The roster gives a watch `tun` whenever it gives
    a phone `tun`, so the service admits its exchange with the readable copy
    off. The box answers a watch's key on the exchange alone.
 4. **Reads stay as decision 7 says**, with one change: with the copy off a
    watch on its own shows what it holds and its age. Reading `now` through
    the exchange is not built.
+5. **The exchange takes the charger's hold alone.** Decision B said a
+   watch reads and charges. The watch role's `ftw.dispatch.write` reaches
+   further, so the exchange answers any op but `loadpoint.hold` with
+   `E_OP_NOT_GRANTED`.
+6. **Replays end nothing, and a restart forgets.** A session proves itself
+   with its first transport message before it writes anything, and a
+   watch holds two. The command log lives in memory, so a box that
+   restarted between a command and its retry would act again; the watch
+   sees the uptime in `hello_ok` go back and does not resend.
 
 The service learns that a watch of the home sent a request and when, and
 when the box answered; the relay learned the same. One `cmdId` sent by the

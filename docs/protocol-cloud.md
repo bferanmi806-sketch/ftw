@@ -1274,7 +1274,8 @@ to the box on the uplink. It reads neither the request nor the answer.
    is one exchange message: handshake message 1 with the watch's `hello`
    (608 bytes), or a request of one lane 0 frame, `cmd` or `now` (536).
 2. The service admits the watch as step 3 of the one-shot read says, with
-   `tun` in place of the effective scope.
+   `tun` in place of the effective scope, and only a roster entry with role
+   `watch`.
 3. It sends `x {dev, id, d}` down the uplink: `dev` the roster id its own
    handshake proved, `id` a number of its own for this request. It never
    takes either from the watch.
@@ -1299,16 +1300,38 @@ to the box on the uplink. It reads neither the request nor the answer.
   open; and after 5 s without the box's answer. The watch cannot tell
   these apart, and does not need to: an exchange session that got no
   answer is spent, and a command that got none is sent again under its
-  `cmdId`, which the box's command log answers with the stored outcome.
-- **The box checks it again.** It runs the handshake and admits the watch
-  by its key, exactly as ADR 0009 says, and answers only if the key the
-  handshake proved is the device `dev` names. A request is tried only
-  against that device's sessions.
+  `cmdId`, which the box's command log answers with the stored outcome,
+  unless the box restarted meanwhile (below).
+- **A restart forgets.** The command log lives in the box's memory. A box
+  that restarted between a command and its retry no longer knows the
+  `cmdId`, and would act again. `hello_ok.clock.uptimeMs` says so: a new
+  session's uptime below the one the command was sent in means a restart.
+  The watch then sends the command no more, and says no answer came, which
+  may mean it ran.
+- **The box checks it again.** `dev` must name a watch of this box; one
+  that does not costs the box nothing, not even a Diffie-Hellman. The box
+  runs the handshake and admits the watch by its key, exactly as ADR 0009
+  says, and answers only if the key the handshake proved is the device
+  `dev` names. A request is tried only against that device's sessions.
+- **Replays end nothing.** A new session stamps nothing and writes nothing
+  until its first transport message decrypts. A watch holds at most 2
+  sessions and the box 8; past either, the oldest session that has not
+  proved itself goes first, never the newcomer. The box takes 12 handshakes
+  a minute from one watch and 60 in all.
 - **What the service can do.** Drop, delay or replay a request. It cannot
-  read or forge `d`. A replayed message 1 opens a session nobody can use; a
-  replayed request fails in its session's transport, and a replayed `cmd`
-  in a new session meets the command log. Every `cmd` carries its own
-  expiry, in box uptime.
+  read or forge `d`. A replayed message 1 opens a session nobody can use
+  and ends no working one; a replayed request fails in its session's
+  transport, and a replayed `cmd` in a new session meets the command log.
+  Every `cmd` carries its own expiry, in box uptime.
+- **What a watch may do.** The exchange takes `cmd` with `loadpoint.hold`
+  alone, which Charge now, Pause and Back to the plan send, and `now`. Any
+  other op is answered `E_OP_NOT_GRANTED` before it runs, whatever the
+  watch role's scopes reach (ADR 0009, decision B).
+- **The box's share.** `x` answers count against the tunnel's 24-hour
+  budget and against their own tenth of it, and stop once the tunnel has
+  spent nine tenths, so phones keep the last of it. The box takes 120
+  requests a minute. A request whose answer could not leave is dropped
+  unanswered and runs nothing.
 - **What the service learns.** That a watch of this home sent a request
   and when, and when the answer came. Every request and every answer after
   the handshake has one length, and the box answers a `cmd` no sooner than
@@ -1321,7 +1344,8 @@ to the box on the uplink. It reads neither the request nor the answer.
   with a passkey step-up, by the watch's public key:
   `POST /api/app-link/pairing {"role": "watch", "key": "<base64url>"}`. The
   box lists it in the next roster, so its first request is admitted like
-  any other. No code crosses the service.
+  any other. No code crosses the service, and a request for a watch
+  without a key is refused.
 
 ## Extension token
 
@@ -1737,6 +1761,7 @@ constants, so `srcfl/ftw-cloud` need not spell them by hand.
 | App session message 1 | Within 10 s |
 | One-shot reads | One at a time per device, 30 a minute; message 1 at most 4 KiB; answered within 10 s |
 | Exchange through the service | Answered within 5 s or with an empty `d`; 8 open per box; `d` at most 2,048 bytes |
+| Exchange at the box | 8 sessions, 2 per watch; 12 handshakes a minute per watch, 60 in all; 120 requests a minute; `x` a tenth of the tunnel budget, stopped at nine tenths |
 | Roster `ttlS`, renewal | 24 hours, every 6 hours |
 | Extension token | 7 days |
 | Alert age for buttons | 10 minutes |
