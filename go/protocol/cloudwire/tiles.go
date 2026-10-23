@@ -51,13 +51,21 @@ const (
 	TilePiecesMax = 16
 	// TilesClosedMax is how many closed tiles 48 hours can touch.
 	TilesClosedMax = 5
-	// TileSeriesMax caps the columns of one tile, as hist.query does.
-	TileSeriesMax = 16
+	// TileEnvelopeMax bounds one tiles envelope. A tile of the four series
+	// is about 2.6 KB, so FTW Cloud drops anything larger, padding with keys
+	// it ignores included.
+	TileEnvelopeMax = 4 << 10
 )
 
-// TileSeries are the columns the box sends, in this order. They are what the
-// app asks for over Noise, so a closed tile is the same bytes either way.
-var TileSeries = []string{"grid_w", "pv_w", "battery_w", "load_w"}
+// TileSeries are the columns the box sends, in this order, and the only ones
+// a tile may carry. They are what the app asks for over Noise, so a closed
+// tile is the same bytes either way.
+var TileSeries = []string{
+	protocol.FieldNames[protocol.FidGridW],
+	protocol.FieldNames[protocol.FidPvW],
+	protocol.FieldNames[protocol.FidBatteryW],
+	protocol.FieldNames[protocol.FidLoadW],
+}
 
 // Tiles is one tile, or one piece of the trailing tile.
 type Tiles struct {
@@ -127,15 +135,8 @@ func (t Tiles) Check() error {
 	if t.TileID != protocol.TileIDFor(t.Res, 1, t.TileStart()) {
 		return bad("tile id does not name the tile its start is in")
 	}
-	if len(t.Series) == 0 || len(t.Series) > TileSeriesMax {
-		return bad("series count")
-	}
-	seen := map[string]bool{}
-	for _, s := range t.Series {
-		if s == "" || len(s) > 64 || seen[s] {
-			return bad("series names")
-		}
-		seen[s] = true
+	if !slices.Equal(t.Series, TileSeries) {
+		return bad("series are not TileSeries")
 	}
 	n := t.Points()
 	if n < 1 || len(t.Data) != n*4*len(t.Series) {

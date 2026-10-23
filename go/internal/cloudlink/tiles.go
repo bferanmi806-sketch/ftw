@@ -47,8 +47,12 @@ type tileState struct {
 	// tiles a resync named.
 	all, force bool
 	named      []string
-	recheckAt  time.Time
-	retryAt    time.Time
+	// passing says a pass over the closed tiles of the window is under way,
+	// and passAt is the start of the next one it looks at, newest first.
+	passing   bool
+	passAt    int64
+	recheckAt time.Time
+	retryAt   time.Time
 }
 
 func newTileState(have map[string]string) tileState {
@@ -60,9 +64,9 @@ func newTileState(have map[string]string) tileState {
 }
 
 // resync takes the service's resync of tiles: the tiles it names, or every
-// one of the window when it names none.
+// one of the window when it names none. A pass under way starts again.
 func (ts *tileState) resync(named []string) {
-	ts.force = true
+	ts.force, ts.passing = true, false
 	if len(named) == 0 || len(named) > tilesNamedMax {
 		ts.all, ts.named = true, nil
 		return
@@ -73,12 +77,19 @@ func (ts *tileState) resync(named []string) {
 // tiles sends what the tiles class owes: the trailing tile as its buckets
 // close, a tile that closed, and at connect or a resync the tiles of the
 // last 48 hours the service lacks (docs/protocol-cloud.md, tiles). It reads
-// the ledger only when a bucket closed or a pass is due.
+// the ledger at most once a tick, and only when a bucket closed or a pass is
+// under way, so a reading never waits long behind it.
 func (w *writer) tiles(snap grantSnapshot, st *cadence, now time.Time) error {
 	l := w.link
 	hs, ok := l.opts.Site.(HistorySite)
 	// Tiles are dated by wall time, so a box without NTP sends none.
-	if !ok || !snap.allowed(cloudwire.MsgTiles) || !l.clockSynced() {
+	if !ok || !l.clockSynced() {
+		return nil
+	}
+	if !snap.allowed(cloudwire.MsgTiles) {
+		// Without history in the grant the service drops what it held, so
+		// when history comes back every tile goes again, as at connect.
+		st.tiles = newTileState(nil)
 		return nil
 	}
 	ts := &st.tiles
@@ -92,17 +103,22 @@ func (w *writer) tiles(snap grantSnapshot, st *cadence, now time.Time) error {
 	open := protocol.TileStartFor(res, closedThrough)
 	oldest := wall - cloudwire.TileKeepMs
 
-	pass := ts.all || len(ts.named) > 0 || !now.Before(ts.recheckAt)
-	if pass && (ts.all || slices.Contains(ts.named, protocol.TileIDFor(res, 1, open))) {
-		// The trailing tile goes whole again.
-		ts.trail, ts.through = open, open
+	// A pass over the closed tiles: at connect, after a resync, and once an
+	// hour. The trailing tile goes whole again with every tile.
+	if !ts.passing && (ts.all || len(ts.named) > 0 || !now.Before(ts.recheckAt)) {
+		ts.passing, ts.passAt = true, open-span
+		if ts.all || slices.Contains(ts.named, protocol.TileIDFor(res, 1, open)) {
+			ts.trail, ts.through = open, open
+		}
 	}
 	if ts.trail != open {
 		// The trailing tile closed since its last piece: it goes closed.
 		if prev := ts.trail; prev != 0 && prev < open && prev+span > oldest {
-			if sent, err := w.closedTile(snap, hs, ts, prev, closedThrough, false); err != nil || !sent {
-				return err
+			sent, err := w.closedTile(hs, ts, prev, closedThrough, false)
+			if sent {
+				ts.trail, ts.through, ts.appends = open, open, 0
 			}
+			return err
 		}
 		ts.trail, ts.through, ts.appends = open, open, 0
 	}
@@ -116,76 +132,74 @@ func (w *writer) tiles(snap grantSnapshot, st *cadence, now time.Time) error {
 		if err != nil {
 			return nil
 		}
-		first := int((from - open) / step)
-		piece := cloudwire.Piece(c, first, int((closedThrough-open)/step))
+		piece := cloudwire.Piece(c, int((from-open)/step), int((closedThrough-open)/step))
 		if whole {
 			piece = cloudwire.Piece(c, 0, int(protocol.PointsPerTile(res)))
 		}
-		if sent, err := w.sendTile(snap, ts, &piece); err != nil || !sent {
-			return err
+		sent, err := w.sendTile(ts, &piece)
+		if sent {
+			ts.through = closedThrough
+			if whole {
+				ts.appends = 0
+			} else {
+				ts.appends++
+			}
 		}
-		ts.through = closedThrough
-		if whole {
-			ts.appends = 0
-		} else {
-			ts.appends++
-		}
+		return err
 	}
-
-	if !pass {
+	if !ts.passing {
 		return nil
 	}
-	// Every closed tile of the window, newest first, that the service does
-	// not hold at this etag, or every one named.
-	for start := open - span; start+span > oldest; start -= span {
-		id := protocol.TileIDFor(res, 1, start)
-		if !ts.all && len(ts.named) > 0 && !slices.Contains(ts.named, id) {
+	// One closed tile of the window a tick, newest first, unless the service
+	// holds it at this etag; or each one a resync named.
+	for ; ts.passAt+span > oldest; ts.passAt -= span {
+		if !ts.all && len(ts.named) > 0 && !slices.Contains(ts.named, protocol.TileIDFor(res, 1, ts.passAt)) {
 			continue
 		}
-		if sent, err := w.closedTile(snap, hs, ts, start, closedThrough, ts.force); err != nil || !sent {
-			return err
+		sent, err := w.closedTile(hs, ts, ts.passAt, closedThrough, ts.force)
+		if sent {
+			ts.passAt -= span
 		}
+		return err
 	}
-	ts.all, ts.force, ts.named = false, false, nil
+	ts.passing, ts.all, ts.force, ts.named = false, false, false, nil
 	ts.recheckAt = now.Add(tilesRecheckEvery)
 	return nil
 }
 
 // closedTile packs the tile at start whole and sends it unless the service
 // holds it at that etag and force is false. sent is false when nothing could
-// go and the caller should stop for now; a tile that needs no sending counts
-// as sent.
-func (w *writer) closedTile(snap grantSnapshot, hs HistorySite, ts *tileState, start, closedThrough int64, force bool) (bool, error) {
+// go and the caller should try again later; a tile that needs no sending
+// counts as sent.
+func (w *writer) closedTile(hs HistorySite, ts *tileState, start, closedThrough int64, force bool) (bool, error) {
 	span := protocol.ResolutionTileSpanMs[cloudwire.TileRes]
+	if start+span > closedThrough {
+		return true, nil
+	}
 	c, err := w.pack(hs, ts, start, start, start+span)
 	if err != nil {
 		return false, nil
 	}
-	c.Partial = start+span > closedThrough
-	if c.Partial || (!force && ts.have[c.TileID] == c.Etag) {
+	if !force && ts.have[c.TileID] == c.Etag {
 		return true, nil
 	}
 	body := cloudwire.Tiles{TileID: c.TileID, Etag: c.Etag, Res: c.Res, StartMs: c.StartMs, StepMs: c.StepMs,
 		Series: c.Series, Data: c.Data}
-	sent, err := w.sendTile(snap, ts, &body)
+	sent, err := w.sendTile(ts, &body)
 	if sent {
 		ts.have[c.TileID] = c.Etag
 	}
 	return sent, err
 }
 
-// pack reads [from, to) of the tile at start from the ledger and packs the
-// tile as the app protocol does, so a closed tile is the same bytes as over
-// Noise. Buckets from to on are left out: they have not closed.
-func (w *writer) pack(hs HistorySite, ts *tileState, start, from, to int64) (protocol.HistChunk, error) {
-	l := w.link
+// PackTile reads [from, to) of the tile at start through hs and packs the
+// tile as the app protocol does, so a closed tile is the same bytes as the
+// box serves over Noise. Buckets from to on are left out: they have not
+// closed.
+func PackTile(ctx context.Context, hs HistorySite, start, from, to int64) (protocol.HistChunk, error) {
 	res := cloudwire.TileRes
-	ctx, cancel := context.WithTimeout(context.Background(), tilesReadTimeout)
-	defer cancel()
 	windows, err := hs.HistoryWindow(ctx, cloudwire.TileSeries, protocol.ResolutionStepMs[res], from, to)
 	if err != nil {
-		l.log.Debug("FTW Cloud tiles: the ledger did not answer", "err", err)
-		ts.retryAt = time.Now().Add(tilesRetryAfter)
 		return protocol.HistChunk{}, err
 	}
 	for name, samples := range windows {
@@ -196,9 +210,27 @@ func (w *writer) pack(hs HistorySite, ts *tileState, start, from, to int64) (pro
 	return protocol.PackTile(res, 1, start, cloudwire.TileSeries, windows, to), nil
 }
 
-// sendTile sends one tile under the byte budget. Past it, tiles wait a
-// minute and go again from where they were.
-func (w *writer) sendTile(snap grantSnapshot, ts *tileState, body *cloudwire.Tiles) (bool, error) {
+// pack is PackTile under the read timeout. A ledger that does not answer
+// holds tiles back a minute.
+func (w *writer) pack(hs HistorySite, ts *tileState, start, from, to int64) (protocol.HistChunk, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tilesReadTimeout)
+	defer cancel()
+	c, err := PackTile(ctx, hs, start, from, to)
+	if err != nil {
+		w.link.log.Debug("FTW Cloud tiles: the ledger did not answer", "err", err)
+		ts.retryAt = time.Now().Add(tilesRetryAfter)
+	}
+	return c, err
+}
+
+// sendTile sends one tile under the byte budget, if the grant in force
+// still allows tiles: a revoke may land while the ledger is read. Past the
+// budget, tiles wait a minute and go again from where they were.
+func (w *writer) sendTile(ts *tileState, body *cloudwire.Tiles) (bool, error) {
+	snap := w.link.current()
+	if !snap.allowed(cloudwire.MsgTiles) {
+		return false, nil
+	}
 	sent, err := w.sendBody(snap, cloudwire.MsgTiles, body, false)
 	if err == nil && !sent {
 		ts.retryAt = time.Now().Add(tilesRetryAfter)

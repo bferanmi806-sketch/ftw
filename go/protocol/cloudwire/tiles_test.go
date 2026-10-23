@@ -109,6 +109,23 @@ func TestTheThreeShapesCheck(t *testing.T) {
 
 // A closed tile is what the box serves over Noise for the same series: the
 // same id, etag and bytes.
+// The series are the registry's names, and a whole tile fits the bound
+// FTW Cloud holds a tiles envelope to.
+func TestTileSeriesAreTheRegistrysAndATileFitsItsBound(t *testing.T) {
+	if !slices.Equal(TileSeries, []string{"grid_w", "pv_w", "battery_w", "load_w"}) {
+		t.Fatalf("TileSeries %v", TileSeries)
+	}
+	b := vectorTiles()[0].body
+	env, err := Seal(nil, "home", MsgTiles, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := env.Encode()
+	if len(raw)+64+6 > TileEnvelopeMax {
+		t.Fatalf("a closed tile with its signature is %d bytes", len(raw)+64)
+	}
+}
+
 func TestAClosedTileIsTheNoiseTile(t *testing.T) {
 	noise := protocol.PackTile(TileRes, 1, vectorTilePrev, TileSeries, vectorWindows(), vectorTileStart+3_600_000)
 	got := vectorTiles()[0].body.Chunk()
@@ -131,6 +148,14 @@ func TestCheckRefusesWhatIsNotATile(t *testing.T) {
 			b.Etag = protocol.EtagOf(b.Data)
 		},
 		"no series": func(b *Tiles) { b.Series = nil },
+		"another series": func(b *Tiles) {
+			b.Series = []string{"grid_w", "pv_w", "battery_w", "ev_w"}
+		},
+		"one series less": func(b *Tiles) {
+			b.Series = b.Series[:3]
+			b.Data = b.Data[:3*b.Points()*4]
+			b.Etag = protocol.EtagOf(b.Data)
+		},
 		"twice the same series": func(b *Tiles) {
 			b.Series = []string{"grid_w", "grid_w", "pv_w", "load_w"}
 		},

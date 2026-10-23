@@ -408,3 +408,27 @@ func TestALedgerThatFailsHoldsTilesBackAndNothingElse(t *testing.T) {
 		t.Fatalf("a failing ledger was read %d times within its retry", reads)
 	}
 }
+
+// History taken out of the grant and put back: the service dropped what it
+// held, so every tile goes again, as at connect, on the same link.
+func TestHistoryTakenOutAndPutBackSendsEveryTileAgain(t *testing.T) {
+	svc := newFakeService(t)
+	h, _ := newTileHarness(t, svc, nil)
+	grantHistory(t, h)
+	waitTiles(t, svc, 5)
+	conns := svc.conns
+
+	h.grant(t, protocol.ScopeLiveRead)
+	time.Sleep(300 * time.Millisecond)
+	if n := len(tilesSent(t, svc)); n != 5 {
+		t.Fatalf("%d tiles went without history in the grant", n)
+	}
+	grantHistory(t, h)
+	got := waitTiles(t, svc, 10)
+	if svc.conns != conns {
+		t.Fatalf("the link dialled again: %d connections", svc.conns)
+	}
+	if !got[5].Whole() || !got[5].Partial || got[6].Partial || got[9].TileID != tileID(trailStart-4*tileSpan) {
+		t.Fatalf("after history came back: %v", tileNames(got[5:]))
+	}
+}

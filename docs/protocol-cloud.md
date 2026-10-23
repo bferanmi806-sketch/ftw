@@ -620,7 +620,7 @@ when its own rules (enabled, cooldown) allow. Delivery is best effort.
 
 ### `tiles`: `ftw.history.read`
 
-The last 48 hours of the box's 5-minute history, so a phone can draw it while
+The box's 5-minute history of the last 48 hours, so a phone can draw it while
 the box cannot answer. The body is the app protocol's `hist.chunk` body:
 
 | Field | Type | Meaning |
@@ -630,12 +630,13 @@ the box cannot answer. The body is the app protocol's `hist.chunk` body:
 | `res` | text | `5m` |
 | `startMs` | int | Wall time of the first point. The tile's start, except in an append |
 | `stepMs` | uint | 300,000 |
-| `series` | [text] | `grid_w`, `pv_w`, `battery_w` and `load_w`, in that order: the series the app asks for over Noise |
+| `series` | [text] | `grid_w`, `pv_w`, `battery_w` and `load_w`, in that order and no other: the series the app asks for over Noise |
 | `data` | bstr | int32 LE, one block per series, the app protocol's missing value where the box has no record |
 | `partial` | bool | The tile is still filling |
 
 A body is one of three shapes. `cloudwire.Tiles.Check` holds them, and
-`cloud-tile-vectors.json` has one of each.
+`cloud-tile-vectors.json` has one of each. A tiles envelope is at most 4 KiB
+(`TileEnvelopeMax`); a whole tile is about 2.6 KB.
 
 - **Closed:** `partial` false, `startMs` the tile's start, all 144 points.
   It has the same tile id, etag and bytes as the box serves over Noise for a
@@ -661,15 +662,28 @@ has committed it. Then:
   and every closed tile of the last 48 hours that `hello_ok.have` lacks at
   that etag, newest first. `resync {what: [tiles]}` sends the tiles it names,
   or all of them when it names none, whatever `have` says.
+- When `ftw.history.read` leaves the grant it forgets what it sent, since the
+  service drops what it held; when it comes back, the box sends every tile
+  again, as at connect.
 
-The box sends tiles only while NTP has synced its clock, since tiles are
-dated by wall time, and only under a grant with `ftw.history.read`. They
-count against the byte budget: about 100 KB a day.
+The box reads its ledger at most once per tick, one tile at a time, so a
+reading never waits long behind a pass. It sends tiles only while NTP has
+synced its clock, since tiles are dated by wall time, and only under a grant
+with `ftw.history.read`, which it checks again before each one. They count
+against the byte budget: about 100 KB a day.
+
+The service keeps each tile until 48 hours after it ends, so up to 60 hours
+of history, and drops them all when the roster runs out. A phone reads them
+only while the roster is in force, so with the box away that is 18 to 24
+hours after the box was last heard. The service sends the box
+`resync {what: [tiles]}`, at most once per 5 minutes, when a roster gives
+history back and when room frees after it dropped a tile for lack of it.
 
 `cloudwire.Lay` puts what a receiver holds back together: a closed tile as
 it is, and the trailing tile from its newest whole piece with each later
 append laid over it, in the order the box sent them, by `wallMs` and then
-`seq`, since `seq` starts again when the box does. The trailing tile stays
+`seq`, since `seq` starts again when the box does. A later closed tile
+replaces an earlier one, never an older one a later. The trailing tile stays
 partial, and its etag is never offered as held.
 
 ### `hb`: every device in the roster
@@ -894,7 +908,7 @@ a lane 0 frame closes the uplink. A fuzz test covers it.
 | `challenge` | `{v, nonce}` | First message. Unsigned |
 | `hello_ok` | See Handshake | Signed by the service key |
 | `watch` | `{hz: 1}` | Raises the period to 1 s for 60 s. While any phone of the home looks, the service sends it at once, every 50 s after that, and again when the box connects. Without it the box returns to 5 s. The box ignores any other `hz` |
-| `resync` | `{what, tiles}` | `what` holds `full`, `tiles` or `roster`; `tiles` lists tile ids, and none means every tile of the last 48 hours. The box honours at most one per 5 minutes and ignores the rest |
+| `resync` | `{what, tiles}` | `what` holds `full`, `tiles` or `roster`; `tiles` lists tile ids, and none means every tile of the last 48 hours. The box honours at most one per 5 minutes and ignores the rest. The service sends one for tiles when a roster gives history back, and when room frees after it dropped a tile |
 | `purged` | `{atMs, what, grantId, statsId}` | Signed by the service key. `what` is `home`, `copy` or `stats`. Sent once every deletion it names is done |
 | `tun` | `{dev, sid, d}` | A phone's own session with the box. See [Tunnel](#tunnel). Only to a box that lists `tun` in `hello.caps` |
 
@@ -1540,7 +1554,8 @@ writes do not gain access. CGNAT is not a private network for this choice.
   the box is offline, this happens on reconnect.
 - **Silence:** after an hour without the box's socket, the service serves only
   `lastSeenMs`, no readings, and the tiles, each until 48 hours after its
-  end. A tile is dated history and never reads as now. When the roster runs out, it closes sessions
+  end or until the roster runs out. A tile is dated history and never reads
+  as now. When the roster runs out, it closes sessions
   and refuses reads. After 30 days it drops tokens and APNs registrations.
   After 90 days without a valid roster it deletes the home as in a purge.
 - **A new home** that sends no roster within 24 hours is deleted.
@@ -1622,10 +1637,11 @@ applied.
 Per home, the service keeps in memory the newest envelope of each class, the
 newest `live` that carried `sources`, 48 hours of tiles and a one-hour ring of
 events. For tiles that is at most five closed tiles and 16 pieces of the
-trailing tile, each as the box signed it; a tile that fails
-`cloudwire.Tiles.Check` is dropped and counted. All homes together hold at
-most a fixed number of tile bytes, past which new tiles are dropped and
-counted. `have` in `hello_ok` names the closed tiles held. It writes no live readings to disk; the statistics files hold the
+trailing tile, each as the box signed it, and at most 64 KiB per home; a
+tile that fails `cloudwire.Tiles.Check` or is over 4 KiB is dropped and
+counted. All homes together hold at most a fixed number of tile bytes, past
+which new tiles are dropped and counted. `have` in `hello_ok` names the
+closed tiles held. It writes no live readings to disk; the statistics files hold the
 only readings it stores. Its registry holds the home id, the box key, the
 roster, suspensions, the current and deleted `statsId`s, APNs registrations
 and token hashes.
@@ -1718,8 +1734,8 @@ constants, so `srcfl/ftw-cloud` need not spell them by hand.
 | Extension token | 7 days |
 | Alert age for buttons | 10 minutes |
 | `box.unreachable` after | 600 s |
-| Readings served after silence | 1 hour; tiles until 48 hours after their end |
-| Tiles | `5m`, 12-hour tiles, the last 48 hours: at most 5 closed and 16 pieces of the trailing one per home |
+| Readings served after silence | 1 hour; tiles until 48 hours after their end, or until the roster runs out |
+| Tiles | `5m`, 12-hour tiles, the last 48 hours: at most 5 closed and 16 pieces of the trailing one, 64 KiB, per home; 4 KiB an envelope |
 | Bucket counted closed | 30 s after it ends |
 | Trailing tile sent whole | At each connect, after 11 appends, and when its first bucket closes |
 | Closed tiles packed again | Every hour, sent when the etag changed |
