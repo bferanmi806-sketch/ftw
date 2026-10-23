@@ -61,6 +61,11 @@ func (e *realEnroller) MintWatchCode(parentID string) ([]byte, time.Time, error)
 	return code, expires, enrollError(err)
 }
 
+func (e *realEnroller) AddWatch(parentID string, key []byte) (string, error) {
+	grant, err := e.id.AddWatch(parentID, key)
+	return grant.DeviceID, enrollError(err)
+}
+
 func (e *realEnroller) EnrollmentURL(code []byte, lanHint string) (string, error) {
 	return e.id.EnrollmentURL(code, lanHint)
 }
@@ -101,6 +106,8 @@ func enrollError(err error) error {
 		return ErrWatchAppRole
 	case errors.Is(err, appenroll.ErrWatchNeedsOwner):
 		return ErrWatchNeedsOwner
+	case errors.Is(err, appenroll.ErrWatchKey):
+		return ErrWatchAppKey
 	default:
 		return err
 	}

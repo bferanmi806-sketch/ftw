@@ -69,6 +69,15 @@ func (s *stubEnroller) MintSpokenCode(role string) (string, time.Time, error) {
 	return "ABCD-EFGH", time.Now().Add(5 * time.Minute), nil
 }
 
+func (s *stubEnroller) AddWatch(parentID string, key []byte) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	s.watch++
+	s.watchParent = parentID
+	return "wAtCh123", nil
+}
+
 func (s *stubEnroller) MintWatchCode(parentID string) ([]byte, time.Time, error) {
 	if s.err != nil {
 		return nil, time.Time{}, s.err

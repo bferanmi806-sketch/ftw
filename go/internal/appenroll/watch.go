@@ -3,6 +3,7 @@ package appenroll
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"time"
 
@@ -100,6 +101,58 @@ func (i *Identity) AuthoriseWatch(watchStatic, code []byte) (Grant, error) {
 	}
 	i.authorised[key] = meta
 	i.watchPairing = nil
+	grant := i.grantLocked(key, meta)
+	i.mu.Unlock()
+
+	err := i.save()
+	i.changed()
+	return grant, err
+}
+
+// WatchKeyBytes is the length of a watch's Noise static key.
+const WatchKeyBytes = 32
+
+// ErrWatchKey is a watch key that is not one: the wrong length, or a key the
+// box already knows as a phone or an agent.
+var ErrWatchKey = errors.New("appenroll: that is not a watch key this box can add")
+
+// AddWatch stores a watch's key with role watch and the owner phone named by
+// parentID as its parent, with no code (ADR 0009, decision 4, as FTW Cloud
+// carries it). The phone vouches for the key over its own session, with a
+// passkey step-up the API checks; the watch proves it holds the key in every
+// handshake after. No code crosses FTW Cloud, and the next roster lists the
+// watch, so its first request is admitted like any other.
+//
+// Adding the same watch again changes nothing. The parent must be an owner
+// now, as for a watch code.
+func (i *Identity) AddWatch(parentID string, watchStatic []byte) (Grant, error) {
+	if len(watchStatic) != WatchKeyBytes {
+		return Grant{}, ErrWatchKey
+	}
+	key := base64.RawURLEncoding.EncodeToString(watchStatic)
+
+	i.mu.Lock()
+	parentKey, parent := i.findLocked(parentID)
+	switch {
+	case parent == nil:
+		i.mu.Unlock()
+		return Grant{}, ErrUnknownDevice
+	case parent.role != apiauth.RoleOwner:
+		i.mu.Unlock()
+		return Grant{}, ErrWatchNeedsOwner
+	}
+	if meta := i.authorised[key]; meta != nil {
+		if meta.role != apiauth.RoleWatch || meta.parent != parentKey {
+			i.mu.Unlock()
+			return Grant{}, ErrWatchKey
+		}
+		grant := i.grantLocked(key, meta)
+		i.mu.Unlock()
+		return grant, nil
+	}
+	now := i.now().UnixMilli()
+	meta := &appMeta{addedAtMs: now, role: apiauth.RoleWatch, epoch: firstEpoch, parent: parentKey}
+	i.authorised[key] = meta
 	grant := i.grantLocked(key, meta)
 	i.mu.Unlock()
 

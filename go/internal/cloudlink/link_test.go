@@ -368,10 +368,10 @@ func (s *fakeService) serve(conn uplinkConn, ekm []byte) {
 		case err != nil:
 			s.t.Errorf("box frame: %v", err)
 			return
-		case env.T == cloudwire.MsgTun:
-			// d is Noise ciphertext; the box signs no tun.
+		case env.T == cloudwire.MsgTun, env.T == cloudwire.MsgX:
+			// d is Noise ciphertext; the box signs no tun and no x.
 			if len(env.Sig) != 0 {
-				s.t.Errorf("the box signed a tun")
+				s.t.Errorf("the box signed a %s", env.T)
 			}
 		case cloudwire.Verify(pub, home, env) != nil:
 			s.t.Errorf("box envelope %q does not verify", env.T)

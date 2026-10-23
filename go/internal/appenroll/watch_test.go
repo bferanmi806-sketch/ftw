@@ -387,3 +387,51 @@ func TestAWatchWithoutItsPhoneIsDroppedAtLoad(t *testing.T) {
 		t.Fatalf("%d enrolments after loading an orphan", n)
 	}
 }
+
+// A watch added by its key is the same watch a code adds: the owner phone is
+// its parent, it opens with no code, a viewer cannot add one, and it goes
+// with its phone.
+func TestAWatchAddedByItsKey(t *testing.T) {
+	id, _ := newIdentity(t)
+	phone := pair(t, id, apiauth.RoleOwner)
+	viewer := pair(t, id, apiauth.RoleViewer)
+	key := appKey(t)
+
+	if _, err := id.AddWatch(viewer.DeviceID, key); !errors.Is(err, ErrWatchNeedsOwner) {
+		t.Fatalf("a viewer added a watch: %v", err)
+	}
+	if _, err := id.AddWatch("nobody00", key); !errors.Is(err, ErrUnknownDevice) {
+		t.Fatalf("an unknown phone added a watch: %v", err)
+	}
+	if _, err := id.AddWatch(phone.DeviceID, key[:31]); !errors.Is(err, ErrWatchKey) {
+		t.Fatalf("a short key was taken: %v", err)
+	}
+
+	watch, err := id.AddWatch(phone.DeviceID, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if watch.Role != apiauth.RoleWatch || watch.Parent != phone.DeviceID || watch.ParentRole != apiauth.RoleOwner {
+		t.Fatalf("the box wrote down %+v", watch)
+	}
+	opened, err := id.AuthoriseWatch(key, nil)
+	if err != nil || opened.DeviceID != watch.DeviceID {
+		t.Fatalf("the watch could not open with its key alone: %+v %v", opened, err)
+	}
+	if again, err := id.AddWatch(phone.DeviceID, key); err != nil || again.DeviceID != watch.DeviceID {
+		t.Fatalf("adding it again gave %+v %v", again, err)
+	}
+
+	// Under another phone, or as a phone's key, it is no watch to add.
+	other := pair(t, id, apiauth.RoleOwner)
+	if _, err := id.AddWatch(other.DeviceID, key); !errors.Is(err, ErrWatchKey) {
+		t.Fatalf("another phone took the watch: %v", err)
+	}
+
+	if _, err := id.Revoke(phone.DeviceID, OverASession); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := id.AuthoriseWatch(key, nil); err == nil {
+		t.Fatal("the watch outlived its phone")
+	}
+}

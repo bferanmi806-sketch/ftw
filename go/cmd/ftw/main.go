@@ -2473,11 +2473,13 @@ func main() {
 	// signed, readable copy of the house, off until an owner turns it on.
 	// Both use the one FTW Cloud connection.
 	var appTunnel *appuplink.Tunnel
+	var appExchange *appuplink.Exchange
 	if appUplink != nil {
 		appTunnel = appUplink.Tunnel()
+		appExchange = appUplink.Exchange()
 	}
 	cloudLink := startCloudLink(ctx, statePath, Version, st, appEnroll,
-		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, liveMeasurementOptions, priceSvc, appAPI, cloudNotify, appTunnel, carsRT, webPush)
+		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, liveMeasurementOptions, priceSvc, appAPI, cloudNotify, appTunnel, appExchange, carsRT, webPush)
 	appCloud.bind(cloudLink)
 	if cloudLink != nil {
 		agents.home = cloudLink.Home

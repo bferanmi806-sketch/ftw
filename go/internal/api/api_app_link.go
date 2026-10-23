@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
@@ -44,6 +45,11 @@ type AppEnroller interface {
 	// pending phone code alone. Returns ErrWatchNeedsOwner when that phone is
 	// not an owner now.
 	MintWatchCode(parentID string) ([]byte, time.Time, error)
+	// AddWatch stores a watch's Noise key under the owner phone named by
+	// parentID, and returns the watch's device id. Returns
+	// ErrWatchNeedsOwner when that phone is not an owner now, and
+	// ErrWatchAppKey for a key that cannot be a watch's.
+	AddWatch(parentID string, key []byte) (string, error)
 	// EnrollmentURL is what goes in the QR.
 	EnrollmentURL(code []byte, lanHint string) (string, error)
 	// AuthorisedCount is how many phones may currently connect. Watches
@@ -100,6 +106,9 @@ var (
 	// ErrWatchNeedsOwner is a watch code asked for by a phone that is not an
 	// owner.
 	ErrWatchNeedsOwner = errors.New("api: only an owner phone can add a watch")
+	// ErrWatchAppKey is a watch key the box cannot add: not 32 bytes, or a
+	// key it knows as something else.
+	ErrWatchAppKey = errors.New("api: that is not a watch's key")
 )
 
 type appLinkStatus struct {
@@ -126,8 +135,11 @@ type appLinkPairing struct {
 	// gets read to the wrong person.
 	Role string `json:"role"`
 	// ExpiresAtMs is when the code stops working, so the UI can say so rather
-	// than leaving a stale square on screen.
+	// than leaving a stale square on screen. Zero for a watch added by its
+	// key, which needs no code.
 	ExpiresAtMs int64 `json:"expires_at_ms"`
+	// DeviceID is the watch a key added, by the id the box lists it under.
+	DeviceID string `json:"device_id,omitempty"`
 }
 
 // appLinkPairingRequest is what a page or an app asks for.
@@ -142,6 +154,9 @@ type appLinkPairingRequest struct {
 	// Kind is "qr", "spoken", or "claim" for a code entered on the LAN.
 	Kind string `json:"kind"`
 	Code string `json:"code,omitempty"`
+	// Key is a watch's Noise static key, base64url without padding. With
+	// role watch it adds that watch at once, with no code.
+	Key string `json:"key,omitempty"`
 }
 
 // appLinkRoleRequest changes what one paired phone may do.
@@ -285,6 +300,10 @@ func (s *Server) handleWatchPairing(w http.ResponseWriter, r *http.Request, req 
 			"a watch code goes from the phone to the watch, never read aloud.")
 		return
 	}
+	if req.Key != "" {
+		s.addWatchByKey(w, r, req.Key)
+		return
+	}
 
 	code, expiresAt, err := s.deps.AppEnroll.MintWatchCode(callerDeviceID(r))
 	switch {
@@ -309,6 +328,35 @@ func (s *Server) handleWatchPairing(w http.ResponseWriter, r *http.Request, req 
 		Role:        apiauth.RoleWatch,
 		ExpiresAtMs: expiresAt.UnixMilli(),
 	})
+}
+
+// addWatchByKey adds the watch whose key the phone names, under the same
+// three rules as a watch code (handleWatchPairing has checked them). The
+// watch reaches the box through FTW Cloud, which admits only what the roster
+// lists, so a code it would have to carry through the service has no place:
+// the phone's own session vouches for the key, and the watch proves it holds
+// the key in every handshake after.
+func (s *Server) addWatchByKey(w http.ResponseWriter, r *http.Request, encoded string) {
+	key, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		writeAppLinkError(w, http.StatusBadRequest, "that is not a watch's key.")
+		return
+	}
+	id, err := s.deps.AppEnroll.AddWatch(callerDeviceID(r), key)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrWatchNeedsOwner), errors.Is(err, ErrUnknownAppDevice):
+		writeAppLinkError(w, http.StatusForbidden,
+			"only an owner's phone can add a watch.")
+		return
+	case errors.Is(err, ErrWatchAppKey):
+		writeAppLinkError(w, http.StatusBadRequest, "that is not a watch's key.")
+		return
+	default:
+		writeAppLinkError(w, http.StatusInternalServerError, "could not add the watch")
+		return
+	}
+	writeJSON(w, http.StatusOK, appLinkPairing{Role: apiauth.RoleWatch, DeviceID: id})
 }
 
 func (s *Server) writeAppLinkMintError(w http.ResponseWriter, err error) {
