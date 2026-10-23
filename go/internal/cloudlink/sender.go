@@ -101,6 +101,9 @@ type cadence struct {
 	// arrived says a driver finished a poll since live was last composed,
 	// while a phone watches.
 	arrived bool
+
+	// tiles is what this connection sent of the tiles class.
+	tiles tileState
 }
 
 // liveCheckEvery is how often the source table is looked at, so a table
@@ -115,7 +118,7 @@ func (w *writer) run(ctx context.Context, events <-chan cloudwire.Envelope) erro
 	connHome := l.current().home
 	// A roster goes at every connect, which also renews its ttlS: the
 	// service counts that from when it received the last one.
-	st := &cadence{full: true}
+	st := &cadence{full: true, tiles: newTileState(w.have)}
 	var purgeSince time.Time
 	// slot fires when an arrival waits for the watched live's period.
 	var slot <-chan time.Time
@@ -207,6 +210,9 @@ func (w *writer) downlink(snap grantSnapshot, st *cadence, env cloudwire.Envelop
 		}
 		if slices.Contains(b.What, cloudwire.ResyncRoster) {
 			st.rosterAt = time.Time{}
+		}
+		if slices.Contains(b.What, cloudwire.ResyncTiles) {
+			st.tiles.resync(b.Tiles)
 		}
 	}
 	return nil
@@ -385,7 +391,8 @@ func (w *writer) tick(snap grantSnapshot, st *cadence, now time.Time) error {
 			st.anyAt = now
 		}
 	}
-	return nil
+	// Tiles go last: a reading never waits for the ledger.
+	return w.tiles(snap, st, now)
 }
 
 // takeRoster says whether a roster is due, and builds it from the link as it

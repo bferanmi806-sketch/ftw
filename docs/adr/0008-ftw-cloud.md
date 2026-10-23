@@ -212,6 +212,7 @@ The privacy notice says so.
 | Store | Kept |
 |---|---|
 | Live state | Memory only; readings dropped an hour after the box goes quiet |
+| History tiles | Memory only; each 12-hour tile of 5-minute history until 48 hours after it ends, box online or not |
 | Registry | Until purge, or 90 days without a roster |
 | APNs registrations | Until purge, or 30 days without the box |
 | Events | A one-hour ring in memory |

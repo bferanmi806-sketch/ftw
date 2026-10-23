@@ -217,6 +217,8 @@ type fakeService struct {
 	// dials again.
 	kick        int
 	statsPolicy string
+	// have is the closed tiles hello_ok names as held.
+	have map[string]string
 	// usedEarly says, per QUIC connection, whether it took early data.
 	usedEarly []bool
 }
@@ -326,8 +328,14 @@ func (s *fakeService) serve(conn uplinkConn, ekm []byte) {
 	if s.wrongKey {
 		signer, _ = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	}
+	have := map[string]string{}
+	s.mu.Lock()
+	for id, etag := range s.have {
+		have[id] = etag
+	}
+	s.mu.Unlock()
 	s.write(conn, signer, home, cloudwire.MsgHelloOK, cloudwire.HelloOK{
-		BoxNonce: hello.BoxNonce, EKM: okEKM, Have: map[string]string{}, RosterSeq: s.rosterSeqOK, StatsPolicy: s.statsPolicy})
+		BoxNonce: hello.BoxNonce, EKM: okEKM, Have: have, RosterSeq: s.rosterSeqOK, StatsPolicy: s.statsPolicy})
 	if s.afterHello != nil {
 		go s.afterHello(conn, home)
 	}
