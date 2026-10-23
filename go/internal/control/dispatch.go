@@ -1143,6 +1143,7 @@ type batteryInfo struct {
 	// batteryDirectionBlocks + distributeProportional.
 	dischargeBlocked bool
 	chargeBlocked    bool
+	socMissing       bool // no fresh SoC reading; soc is 0
 }
 
 // chargeCap returns the effective per-battery charge ceiling, falling
@@ -1477,7 +1478,8 @@ func ComputeDispatch(
 		soc := 0.0
 		lim := state.DriverLimits[name]
 		dischargeBlocked, chargeBlocked := batteryDirectionBlocks(r.Data)
-		if r.SoC != nil {
+		socMissing := r.SoC == nil
+		if !socMissing {
 			soc = *r.SoC
 		} else {
 			// Never reported SoC: do not discharge a pack we cannot
@@ -1502,6 +1504,7 @@ func ComputeDispatch(
 			maxDischargeWSet: lim.MaxDischargeWSet,
 			dischargeBlocked: dischargeBlocked,
 			chargeBlocked:    chargeBlocked,
+			socMissing:       socMissing,
 		})
 	}
 	onlineBats := make([]batteryInfo, 0, len(batteries))
@@ -3527,6 +3530,9 @@ func clampTargetsToPowerLimits(targets []DispatchTarget, limits map[string]Power
 	return targets
 }
 
+// dischargeFloorSoC is where Core stops a battery's discharge on its own.
+const dischargeFloorSoC = 0.05
+
 // clampWithSoC applies the hard safety clamps for one battery command:
 //   - don't discharge below SoC 5 % (site: don't make target < 0 when SoC < 0.05);
 //     BMS handles fine-grained SoC but we never ask it to pull an empty pack.
@@ -3540,7 +3546,7 @@ func clampWithSoC(target float64, b batteryInfo) (float64, bool) {
 	clamped := target
 	wasClamped := false
 	// Block discharge when the battery is empty.
-	if b.soc < 0.05 && target < 0 {
+	if b.soc < dischargeFloorSoC && target < 0 {
 		clamped = 0
 		wasClamped = true
 	}
@@ -4091,7 +4097,7 @@ func fuseTargetBounds(r *telemetry.DerReading, lim PowerLimits) (lower, upper fl
 	lower = -lim.dischargeCap()
 	upper = lim.chargeCap()
 	dischargeBlocked, chargeBlocked := batteryDirectionBlocks(r.Data)
-	if r.SoC == nil || *r.SoC < 0.05 || dischargeBlocked {
+	if r.SoC == nil || *r.SoC < dischargeFloorSoC || dischargeBlocked {
 		lower = 0
 	}
 	if chargeBlocked {
