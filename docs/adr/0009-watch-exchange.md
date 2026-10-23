@@ -4,8 +4,8 @@
   command log on the box, the registry names, the watch role with its
   enrolment, the exchange sessions, and the wire for FTW Cloud's one-shot
   read. The relay stopped on 17 October 2026, and its exchange socket went
-  with it. [Through FTW Cloud](#through-ftw-cloud) (23 October 2026,
-  proposed) moves the exchange onto FTW Cloud's one-shot request, where the
+  with it. [Through FTW Cloud](#through-ftw-cloud) (accepted by Fredrik on
+  23 October 2026) moves the exchange onto FTW Cloud's one-shot request, where the
   box says `cmd.exchange` again.
 - Date: 2026-10-14
 - Decided by: Fredrik on 14 October 2026. Before the design: a watch controls
@@ -189,7 +189,7 @@ to remove it.**
 
 ## Through FTW Cloud
 
-Proposed on 23 October 2026, after Fredrik asked to finish FTW Cloud. The
+Accepted by Fredrik on 23 October 2026, after he asked to finish FTW Cloud. The
 relay was stopped on 17 October 2026, and since the one-door decision of 15
 October every phone reaches its box through FTW Cloud's tunnel. FTW Cloud
 carries ciphertext and never chooses an action; that is the line this ADR
