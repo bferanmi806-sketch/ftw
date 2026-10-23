@@ -3087,8 +3087,10 @@ func distributeProportional(bats []batteryInfo, totalCorrection float64, groupPV
 // same split over a subset of batteries.
 func splitByCapacityAndPV(bats []batteryInfo, desiredTotal float64, groupPV map[string]float64) []DispatchTarget {
 	var totalCap float64
+	capByGroup := map[string]float64{}
 	for _, b := range bats {
 		totalCap += b.capacityWh
+		capByGroup[b.group] += b.capacityWh
 	}
 	if totalCap <= 0 {
 		return nil
@@ -3097,9 +3099,15 @@ func splitByCapacityAndPV(bats []batteryInfo, desiredTotal float64, groupPV map[
 	// Discharge, idle, or no PV locality info → capacity-only split.
 	// Discharge energy flows to the AC bus regardless of where it
 	// originated, so DC-locality has no win for the negative branch.
+	// PV in a group with no battery here (offline, faulted or unable to
+	// charge) is not DC-local to any of them; it reaches them over the
+	// AC bus, so it stays out of the local pool. Counting it would hand
+	// its share of the total to no battery.
 	var totalPV float64
-	for _, w := range groupPV {
-		totalPV += w
+	for g, w := range groupPV {
+		if capByGroup[g] > 0 {
+			totalPV += w
+		}
 	}
 	if desiredTotal <= 0 || totalPV <= 0 {
 		return distributeByCapacity(bats, desiredTotal, totalCap)
@@ -3117,11 +3125,6 @@ func splitByCapacityAndPV(bats []batteryInfo, desiredTotal float64, groupPV map[
 	// by capacity (same rule as the fleet-wide split).
 	localCap := math.Min(desiredTotal, totalPV)
 	overflow := desiredTotal - localCap
-
-	capByGroup := map[string]float64{}
-	for _, b := range bats {
-		capByGroup[b.group] += b.capacityWh
-	}
 
 	out := make([]DispatchTarget, 0, len(bats))
 	for _, b := range bats {
