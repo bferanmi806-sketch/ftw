@@ -552,8 +552,9 @@ func (l *Link) SendTun(t cloudwire.Tun, bulk bool) error {
 }
 
 // SendX queues a watch's exchange answer for the uplink. It is small and goes
-// with the tun lane 0 frames, first and never held, under the tun budget. It
-// never blocks. nil means the message is queued.
+// with the tun lane 0 frames, first and never held, under the tun budget and
+// a share of its own (xAllowedLocked). It never blocks. nil means the message
+// is queued.
 func (l *Link) SendX(x cloudwire.X) error {
 	frame, err := xFrame(x)
 	l.mu.Lock()
@@ -562,17 +563,35 @@ func (l *Link) SendX(x cloudwire.X) error {
 	case l.tunOut == nil:
 		l.tunDropped++
 		return ErrNoUplink
-	case err != nil || l.tunBudget.total(l.uptimeMs()) >= tunBudgetBytes:
+	case err != nil || !l.xAllowedLocked():
 		l.tunDropped++
 		return ErrTunDropped
 	}
 	select {
 	case l.tunOut <- frame:
+		l.xBudget.add(l.uptimeMs(), int64(len(frame)))
 		return nil
 	default:
 		l.tunDropped++
 		return ErrTunDropped
 	}
+}
+
+// XAllowed reports whether a watch's exchange answer may leave now. The
+// exchange asks before it runs a request, so a command never acts when its
+// answer could not go.
+func (l *Link) XAllowed() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.tunOut != nil && l.xAllowedLocked()
+}
+
+// xAllowedLocked keeps x to xBudgetBytes over a rolling 24 hours, and stops
+// it once the tunnel has spent xStopsAt of its own budget, so the phones keep
+// the rest for their handshakes, commands and ends. The caller holds l.mu.
+func (l *Link) xAllowedLocked() bool {
+	up := l.uptimeMs()
+	return l.xBudget.total(up) < xBudgetBytes && l.tunBudget.total(up) < int64(xStopsAt*tunBudgetBytes)
 }
 
 func xFrame(x cloudwire.X) ([]byte, error) {

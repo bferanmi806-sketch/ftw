@@ -12,6 +12,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/apiauth"
 	"github.com/srcfl/ftw/go/internal/appenroll"
 	"github.com/srcfl/ftw/go/internal/appproto"
+	"github.com/srcfl/ftw/go/protocol"
 	"github.com/srcfl/ftw/go/protocol/appwire"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
@@ -101,19 +102,25 @@ func (r *xrig) advance(d time.Duration) {
 	r.now = r.now.Add(d)
 }
 
-// addWatch pairs a watch with a code its phone minted and opens its first
+// addWatch adds a watch by its key, as its phone does, and opens its first
 // session.
 func (r *xrig) addWatch(t *testing.T) (*watchClient, appproto.ExchangeHelloOK) {
 	t.Helper()
-	code, _, err := r.enroll.MintWatchCode(r.phone.DeviceID, appenroll.WatchTTL)
-	if err != nil {
-		t.Fatal(err)
-	}
+	w := r.newWatch(t)
+	return w, r.open(t, w, nil)
+}
+
+// newWatch adds a watch by its key and opens nothing.
+func (r *xrig) newWatch(t *testing.T) *watchClient {
+	t.Helper()
 	w, err := newWatchClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return w, r.open(t, w, code)
+	if _, err := r.enroll.AddWatch(r.phone.DeviceID, w.static.Public()); err != nil {
+		t.Fatal(err)
+	}
+	return w
 }
 
 // open runs X1 for a watch and fails unless the box answered.
@@ -267,9 +274,10 @@ func TestTheExchangeTakesCmdAndNowAndNothingElse(t *testing.T) {
 		CmdID: "watch-mode", Op: appproto.OpSetMode, Args: map[string]any{"mode": "charge"},
 		NotValidAfterMs: 10 * 60 * 1000, Expect: appproto.Expect{Rev: 1},
 	})
-	res := decodeAs[appproto.CmdResult](t, frames[0])
-	if res.State != appproto.CmdRejected || res.Error == nil || res.Error.Code != appproto.ErrScopeDenied {
-		t.Fatalf("site.mode.set from a watch = %+v", res)
+	// The exchange takes the charger's hold alone (ADR 0009, decision B):
+	// the mode is refused before the command runs.
+	if e := decodeAs[appproto.ErrorBody](t, frames[0]); frames[0].Envelope.T != appproto.MsgError || e.Code != protocol.ErrOpNotGranted {
+		t.Fatalf("site.mode.set from a watch answered %v %+v", types(frames), e)
 	}
 }
 
@@ -285,7 +293,7 @@ func TestEveryExchangeHasOneLength(t *testing.T) {
 	}{
 		{"applied", appproto.MsgCmd, chargeNow("shape-1")},
 		{"asked again", appproto.MsgCmd, chargeNow("shape-1")},
-		{"scope denied", appproto.MsgCmd, appproto.Cmd{CmdID: "shape-2", Op: appproto.OpSetMode,
+		{"not granted", appproto.MsgCmd, appproto.Cmd{CmdID: "shape-2", Op: appproto.OpSetMode,
 			Args: map[string]any{"mode": "charge"}, NotValidAfterMs: 600_000, Expect: appproto.Expect{Rev: 1}}},
 		{"expired", appproto.MsgCmd, appproto.Cmd{CmdID: "shape-3", Op: appproto.OpLoadpointHold,
 			Args: map[string]any{"id": "lp1"}, NotValidAfterMs: 1, Expect: appproto.Expect{Rev: 1}}},
@@ -344,15 +352,8 @@ func TestAnUnsettledResultIsAskedForAgain(t *testing.T) {
 // outcome.
 func TestReplayGetsNothingNew(t *testing.T) {
 	r := newXRig(t)
-	code, _, err := r.enroll.MintWatchCode(r.phone.DeviceID, appenroll.WatchTTL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w, err := newWatchClient()
-	if err != nil {
-		t.Fatal(err)
-	}
-	message1, err := w.open(r.enroll.StaticKey().Public(), code)
+	w := r.newWatch(t)
+	message1, err := w.open(r.enroll.StaticKey().Public(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,32 +598,153 @@ func TestASessionIsShort(t *testing.T) {
 	}
 }
 
-// At most sixty handshakes a minute; the rest are dropped unanswered.
+// At most twelve handshakes a minute from one watch and sixty in all; the
+// rest are dropped unanswered. A device FTW Cloud names that is no watch of
+// this box spends nothing, not even a Diffie-Hellman, and one watch's opens
+// never spend another's.
 func TestHandshakesAreRationed(t *testing.T) {
 	r := newXRig(t)
 	junk := make([]byte, exchangeOpenBytes)
-	for i := 0; i < exchangeOpensPerMinute; i++ {
+	for i := 0; i < 2*exchangeOpensPerMinute; i++ {
 		junk[0] = byte(i)
-		r.x.answer(context.Background(), "", junk)
+		r.x.answer(context.Background(), "nobody00", junk)
 	}
-	code, _, err := r.enroll.MintWatchCode(r.phone.DeviceID, appenroll.WatchTTL)
+
+	w := r.newWatch(t)
+	message1, err := w.open(r.enroll.StaticKey().Public(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := newWatchClient()
-	if err != nil {
-		t.Fatal(err)
-	}
-	message1, err := w.open(r.enroll.StaticKey().Public(), code)
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; i < exchangeOpensPerWatch; i++ {
+		if r.x.answer(context.Background(), w.dev(), message1) == nil {
+			t.Fatalf("open %d of a watch's twelve was not answered after a stranger's junk", i+1)
+		}
 	}
 	if r.x.answer(context.Background(), w.dev(), message1) != nil {
-		t.Fatal("the sixty-first handshake in a minute was answered")
+		t.Fatal("a watch's thirteenth handshake in a minute was answered")
+	}
+	// Another watch has a share of its own.
+	r.addWatch(t)
+
+	// Sixty in all: four more watches spend their twelve each.
+	for k := 0; k < 3; k++ {
+		other := r.newWatch(t)
+		m1, err := other.open(r.enroll.StaticKey().Public(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < exchangeOpensPerWatch; i++ {
+			r.x.answer(context.Background(), other.dev(), m1)
+		}
+	}
+	late := r.newWatch(t)
+	m1, err := late.open(r.enroll.StaticKey().Public(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < exchangeOpensPerWatch; i++ {
+		r.x.answer(context.Background(), late.dev(), m1)
+	}
+	if r.x.answer(context.Background(), late.dev(), m1) != nil {
+		t.Fatal("a handshake past sixty in a minute was answered")
 	}
 	r.advance(time.Minute)
 	if r.x.answer(context.Background(), w.dev(), message1) == nil {
 		t.Fatal("a handshake a minute later was not answered")
+	}
+}
+
+// A replayed message 1 opens a session that never proves itself: it stamps
+// no visit, and replays end only one another, never the watch's working
+// session and never another watch's.
+func TestReplaysEndNoWorkingSession(t *testing.T) {
+	r := newXRig(t)
+	other, _ := r.addWatch(t)
+	if r.ask(t, other, appproto.MsgNow, struct{}{}) == nil {
+		t.Fatal("the other watch was not answered")
+	}
+
+	w := r.newWatch(t)
+	message1, err := w.open(r.enroll.StaticKey().Public(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message2 := r.x.answer(context.Background(), w.dev(), message1)
+	if _, _, err := w.opened(message2); err != nil {
+		t.Fatal(err)
+	}
+	if r.ask(t, w, appproto.MsgNow, struct{}{}) == nil {
+		t.Fatal("the watch's own session was not answered")
+	}
+	seen := func(dev string) int64 {
+		for _, d := range r.enroll.Devices() {
+			if d.ID == dev {
+				return d.LastSeenMs
+			}
+		}
+		return -1
+	}
+	stamped := seen(w.dev())
+
+	r.advance(time.Second)
+	for i := 0; i < MaxExchangeSessions; i++ {
+		if r.x.answer(context.Background(), w.dev(), message1) == nil {
+			t.Fatalf("replay %d drew no answer", i+1)
+		}
+	}
+	if got := seen(w.dev()); got != stamped {
+		t.Fatalf("replays stamped the watch's visit: %d, was %d", got, stamped)
+	}
+	if n := count(r.x.live, func(s *exchangeSession) bool { return s.dev == w.dev() }); n != MaxExchangeSessionsPerWatch {
+		t.Fatalf("the watch holds %d sessions, want %d", n, MaxExchangeSessionsPerWatch)
+	}
+	if r.ask(t, w, appproto.MsgNow, struct{}{}) == nil {
+		t.Fatal("replays ended the watch's working session")
+	}
+	if r.ask(t, other, appproto.MsgNow, struct{}{}) == nil {
+		t.Fatal("one watch's replays ended another watch's session")
+	}
+}
+
+// Removed mid-session, a watch's next command is refused and reaches no
+// charger, even before anything ends its session.
+func TestARevokeMidSessionRefusesTheNextCommand(t *testing.T) {
+	r := newXRig(t)
+	w, _ := r.addWatch(t)
+	if _, err := r.enroll.Revoke(w.dev(), appenroll.AtTheBox); err != nil {
+		t.Fatal(err)
+	}
+	frames := r.ask(t, w, appproto.MsgCmd, chargeNow("after-revoke"))
+	if frames != nil {
+		for _, f := range frames {
+			if f.Envelope.T == appproto.MsgCmdResult && decodeAs[appproto.CmdResult](t, f).State == appproto.CmdApplied {
+				t.Fatal("a removed watch's command was applied")
+			}
+		}
+	}
+	if r.charger.count() != 0 {
+		t.Fatalf("a removed watch's command reached the charger %d times", r.charger.count())
+	}
+}
+
+// A box that restarted has forgotten the commands it answered (protocol-cloud
+// .md, "Exchange"). Its hello_ok says so: the uptime starts over, so the watch
+// can tell a retry would reach a box that would act again.
+func TestARestartedBoxSaysSoInItsClock(t *testing.T) {
+	r := newXRig(t)
+	_, before := r.addWatch(t)
+	restarted := newXRigOn(t, r.enroll)
+	restarted.x.build = func(sn appproto.Sender, caller apiauth.Caller, grants appproto.GrantReader) (*appproto.Handler, error) {
+		return appproto.New(appproto.Config{
+			Clock: appproto.SystemClock{StartedAt: time.Now(), Source: "ntp"}, Site: stubSite{}, Info: stubInfo{},
+			Modes: stubModes{}, Plans: stubPlans{}, Loadpoints: restarted.charger, Codec: codec{}, Sender: sn,
+			Caller: caller, Grants: grants, Commands: appproto.NewCmdLog(), Exchange: true,
+			SrcGrid: "meter", SrcPV: "meter", SrcBattery: "meter", Logger: slog.New(slog.DiscardHandler),
+		})
+	}
+	_, after := restarted.addWatch(t)
+	if after.Clock.UptimeMs >= before.Clock.UptimeMs {
+		t.Fatalf("a restarted box's hello_ok says uptime %d, the first said %d", after.Clock.UptimeMs, before.Clock.UptimeMs)
 	}
 }
 
@@ -694,9 +816,13 @@ func TestAnotherDevicesNameGetsSilence(t *testing.T) {
 // --------------------------------------------------------------------------
 
 // capturedX is the box's link to FTW Cloud, as the exchange sees it.
+// closed says the link's share for x is spent.
 type capturedX struct {
-	ch chan cloudwire.X
+	ch     chan cloudwire.X
+	closed bool
 }
+
+func (c *capturedX) XAllowed() bool { return !c.closed }
 
 func (c *capturedX) SendX(m cloudwire.X) error {
 	select {
@@ -888,5 +1014,52 @@ func TestACommandAnswersNoSoonerThanTheFloor(t *testing.T) {
 	_, slow := r.timed(t, w, appproto.MsgCmd, chargeNow("floor-slow"))
 	if slow < 600*time.Millisecond || slow > 600*time.Millisecond+slack {
 		t.Fatalf("a charge with a 600 ms save answered after %s; the floor must not add to it", slow)
+	}
+}
+
+// With the link's share for x spent, a request runs nothing: no answer
+// could tell the watch what happened, so the command does not happen.
+func TestNoAnswerMeansNoCommand(t *testing.T) {
+	r := newXRig(t)
+	w, _ := r.addWatch(t)
+	e := newExchange(r.x, slog.New(slog.DiscardHandler))
+	out := &capturedX{ch: make(chan cloudwire.X, 4), closed: true}
+	e.Attach(out)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go e.Run(ctx)
+
+	request, err := w.request(appproto.MsgCmd, chargeNow("budget-spent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Deliver(cloudwire.X{Dev: w.dev(), ID: 1, D: request})
+	select {
+	case got := <-out.ch:
+		t.Fatalf("the box answered %+v with its share spent", got)
+	case <-time.After(1500 * time.Millisecond):
+	}
+	if r.charger.count() != 0 {
+		t.Fatal("a command ran whose answer could not leave")
+	}
+}
+
+// Past the minute's requests the box drops the rest unanswered and runs
+// none of them.
+func TestTheExchangeTakesAMinutesRequestsAndNoMore(t *testing.T) {
+	r := newXRig(t)
+	e := newExchange(r.x, slog.New(slog.DiscardHandler))
+	e.Attach(&capturedX{ch: make(chan cloudwire.X, 1)})
+	for i := 0; i < exchangeRequestsPerMinute; i++ {
+		if !e.take() {
+			t.Fatalf("request %d of the minute was refused", i+1)
+		}
+	}
+	if e.take() {
+		t.Fatal("a request past the minute's was taken")
+	}
+	r.advance(time.Minute)
+	if !e.take() {
+		t.Fatal("a request a minute later was refused")
 	}
 }

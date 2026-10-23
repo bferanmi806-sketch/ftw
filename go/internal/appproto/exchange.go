@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"github.com/srcfl/ftw/go/protocol"
+	"slices"
 	"sort"
 
 	"github.com/srcfl/ftw/go/internal/units"
@@ -18,11 +19,21 @@ import (
 // outcome, so the service cannot tell a read from a command or a refusal from
 // a success by length. appuplink pads an answer to two frames with Pad.
 
+// ExchangeOps are the commands a watch's exchange takes: the charger's hold,
+// which Charge now, Pause and Back to the plan send. A watch reads and
+// charges and does nothing else (ADR 0009, decision B); its role's
+// ftw.dispatch.write reaches further, and the exchange does not.
+var ExchangeOps = []string{OpLoadpointHold}
+
 func (h *Handler) dispatchExchange(ctx context.Context, env Envelope) error {
 	switch env.T {
 	case MsgHello:
 		return h.onExchangeHello(env)
 	case MsgCmd:
+		var cmd Cmd
+		if err := Unmarshal(env.B, &cmd); err == nil && !slices.Contains(ExchangeOps, cmd.Op) {
+			return h.sendError(env.ID, ErrorBody{Code: protocol.ErrOpNotGranted, Args: map[string]any{"op": cmd.Op}})
+		}
 		return h.onCmd(ctx, env, "")
 	case MsgNow:
 		return h.onNow()

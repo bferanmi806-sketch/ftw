@@ -28,7 +28,7 @@ type stubEnroller struct {
 	spoken  int
 	watch   int
 	revoked int
-	// watchParent is the phone the last watch code was bound to.
+	// watchParent is the phone the last watch was added under.
 	watchParent string
 	mintedRole  string
 	roleSet     string
@@ -76,15 +76,6 @@ func (s *stubEnroller) AddWatch(parentID string, key []byte) (string, error) {
 	s.watch++
 	s.watchParent = parentID
 	return "wAtCh123", nil
-}
-
-func (s *stubEnroller) MintWatchCode(parentID string) ([]byte, time.Time, error) {
-	if s.err != nil {
-		return nil, time.Time{}, s.err
-	}
-	s.watch++
-	s.watchParent = parentID
-	return make([]byte, 16), time.Now().Add(10 * time.Minute), nil
 }
 
 func (s *stubEnroller) EnrollmentURL(code []byte, lanHint string) (string, error) {

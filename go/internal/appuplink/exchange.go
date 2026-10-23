@@ -35,8 +35,10 @@ import (
 // or the planner.
 
 const (
-	// MaxExchangeSessions is how many watch sessions the box holds at once.
-	MaxExchangeSessions = 8
+	// MaxExchangeSessions is how many watch sessions the box holds at once,
+	// and MaxExchangeSessionsPerWatch how many of them one watch may hold.
+	MaxExchangeSessions         = 8
+	MaxExchangeSessionsPerWatch = 2
 
 	// exchangeFrameBytes is the one size every frame takes but hello_ok:
 	// lane 0's 512 B bucket.
@@ -57,8 +59,16 @@ const (
 	exchangeLifetime = 3 * time.Minute
 
 	// exchangeOpensPerMinute bounds handshakes, each of which costs the box
-	// up to four X25519 operations. The rest are dropped unanswered.
+	// up to four X25519 operations, and exchangeOpensPerWatch one watch's
+	// share, so one watch's replays never spend another's. The rest are
+	// dropped unanswered.
 	exchangeOpensPerMinute = 60
+	exchangeOpensPerWatch  = 12
+
+	// exchangeRequestsPerMinute bounds what the box takes off its link in
+	// all, handshakes, requests and junk alike. Past it a request is
+	// dropped unanswered and runs nothing.
+	exchangeRequestsPerMinute = 120
 
 	// exchangeSettle is how long the box holds an answer for a command's
 	// result. Core settles a charger's result in the pass that takes the
@@ -89,7 +99,11 @@ func exchangePrologue(boxStatic []byte) []byte {
 	return append([]byte("ftw.exchange.v1:"), boxStatic...)
 }
 
-var errExchangeRate = errors.New("appuplink: too many exchange handshakes this minute")
+var (
+	errExchangeRate     = errors.New("appuplink: too many exchange handshakes this minute")
+	errExchangeStranger = errors.New("appuplink: FTW Cloud named a device that is no watch of this box")
+	errExchangeCode     = errors.New("appuplink: a watch's hello carried a code; watches are added by key")
+)
 
 // exchangeSession is one watch's short conversation with the box.
 type exchangeSession struct {
@@ -99,6 +113,11 @@ type exchangeSession struct {
 	// dev the device id FTW Cloud named it by.
 	appStatic []byte
 	dev       string
+	// proved is set by the first transport message that decrypts, which
+	// commit then stamps. Until then the session may be a replayed message
+	// 1: it has written nothing, and it goes first when room is needed.
+	proved bool
+	commit func() (appenroll.Grant, error)
 	openedAt  time.Time
 
 	// run lets one request at a time through the handler. A command whose
@@ -189,9 +208,10 @@ type exchanges struct {
 	// which only a test that builds the table by hand gets.
 	cmdFloor time.Duration
 
-	mu    sync.Mutex
-	live  []*exchangeSession
-	opens []time.Time
+	mu       sync.Mutex
+	live     []*exchangeSession
+	opens    []time.Time
+	devOpens map[string][]time.Time
 }
 
 // answer takes one request for the watch FTW Cloud names dev and returns the
@@ -222,7 +242,12 @@ var errExchangeNotDev = errors.New("appuplink: the exchange handshake proved ano
 // rides in message 1 and its hello_ok in message 2, so a session costs one
 // round trip.
 func (x *exchanges) open(ctx context.Context, dev string, message1 []byte) ([]byte, error) {
-	if !x.allowOpen() {
+	// A device that is no watch of this box costs nothing: no token, no
+	// Diffie-Hellman. Its opens are counted apart from every other watch's.
+	if !x.enroll.HasWatch(dev) {
+		return nil, errExchangeStranger
+	}
+	if !x.allowOpen(dev) {
 		return nil, errExchangeRate
 	}
 	handshake, err := appwire.NewResponder(appwire.HandshakeOptions{
@@ -254,15 +279,20 @@ func (x *exchanges) open(ctx context.Context, dev string, message1 []byte) ([]by
 	if cloudwire.DeviceID(handshake.RemoteStatic()) != dev {
 		return nil, errExchangeNotDev
 	}
-	// Checked before anything is written: answering a stranger would hand
-	// them a fresh ephemeral key for nothing.
-	grant, err := x.enroll.AuthoriseWatch(handshake.RemoteStatic(), hello.Code)
+	// A watch is added by its key, so a hello with a code is no watch of
+	// this build's.
+	if len(hello.Code) > 0 {
+		return nil, errExchangeCode
+	}
+	// Checked before anything is written, and written only once the
+	// session proves itself (route).
+	grant, commit, err := x.enroll.CheckWatch(handshake.RemoteStatic())
 	if err != nil {
 		return nil, err
 	}
 
 	now := x.now()
-	sess := &exchangeSession{appStatic: handshake.RemoteStatic(), dev: dev, openedAt: now, lastAt: now}
+	sess := &exchangeSession{appStatic: handshake.RemoteStatic(), dev: dev, openedAt: now, lastAt: now, commit: commit}
 	handler, err := x.build(sess, apiauth.Caller{
 		Subject: subjectOf(grant.DeviceID),
 		Kind:    apiauth.KindApp,
@@ -311,6 +341,9 @@ func (x *exchanges) route(ctx context.Context, dev string, message []byte, arriv
 		frame, err := sess.transport.Decrypt(message)
 		if err != nil {
 			continue
+		}
+		if !x.prove(sess) {
+			return nil
 		}
 		reply := x.exchange(ctx, sess, frame)
 		if reply != nil && x.cmdFloor > 0 && isCmd(frame) {
@@ -392,29 +425,102 @@ func (x *exchanges) exchange(ctx context.Context, sess *exchangeSession, frame [
 	return reply
 }
 
-// allowOpen counts a handshake against the minute's budget.
-func (x *exchanges) allowOpen() bool {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	now := x.now()
-	x.opens = slices.DeleteFunc(x.opens, func(at time.Time) bool { return now.Sub(at) >= time.Minute })
-	if len(x.opens) >= exchangeOpensPerMinute {
+// prove marks a session whose first transport message decrypted, and stamps
+// the watch then. False when the watch was removed meanwhile; the session
+// goes.
+func (x *exchanges) prove(sess *exchangeSession) bool {
+	sess.mu.Lock()
+	proved := sess.proved
+	sess.proved = true
+	sess.mu.Unlock()
+	if proved || sess.commit == nil {
+		return true
+	}
+	if _, err := sess.commit(); err != nil {
+		x.drop(sess)
 		return false
 	}
-	x.opens = append(x.opens, now)
 	return true
 }
 
-// admit keeps a new session, ending the oldest when the table is full. The
-// newcomer is the watch somebody is holding now.
+// allowOpen counts a handshake against the minute's budget and the watch's
+// own share of it.
+func (x *exchanges) allowOpen(dev string) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	now := x.now()
+	recent := func(at time.Time) bool { return now.Sub(at) >= time.Minute }
+	x.opens = slices.DeleteFunc(x.opens, recent)
+	if x.devOpens == nil {
+		x.devOpens = map[string][]time.Time{}
+	}
+	mine := slices.DeleteFunc(x.devOpens[dev], recent)
+	if len(x.opens) >= exchangeOpensPerMinute || len(mine) >= exchangeOpensPerWatch {
+		x.devOpens[dev] = mine
+		return false
+	}
+	x.opens = append(x.opens, now)
+	x.devOpens[dev] = append(mine, now)
+	for d, at := range x.devOpens {
+		if len(slices.DeleteFunc(at, recent)) == 0 {
+			delete(x.devOpens, d)
+		}
+	}
+	return true
+}
+
+// admit keeps a new session. A watch holds at most two, and the table eight.
+// Past either, the oldest session goes that has not proved itself, then the
+// oldest; never the newcomer, which is the watch somebody holds now. A
+// replayed message 1 opens a session that never proves itself, so replays
+// end only one another, never a working session or another watch's.
 func (x *exchanges) admit(sess *exchangeSession) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	x.live = append(x.live, sess)
-	for len(x.live) > MaxExchangeSessions {
-		x.live[0].close()
-		x.live = x.live[1:]
+	mine := func(s *exchangeSession) bool { return s.dev == sess.dev }
+	for count(x.live, mine) > MaxExchangeSessionsPerWatch {
+		x.evictLocked(sess, mine)
 	}
+	for len(x.live) > MaxExchangeSessions {
+		x.evictLocked(sess, func(*exchangeSession) bool { return true })
+	}
+}
+
+// evictLocked ends the oldest session among those that match, an unproved
+// one before a proved one, and never keep. The caller holds x.mu.
+func (x *exchanges) evictLocked(keep *exchangeSession, match func(*exchangeSession) bool) {
+	victim := -1
+	for i, s := range x.live {
+		if s == keep || !match(s) {
+			continue
+		}
+		s.mu.Lock()
+		proved := s.proved
+		s.mu.Unlock()
+		if !proved {
+			victim = i
+			break
+		}
+		if victim < 0 {
+			victim = i
+		}
+	}
+	if victim < 0 {
+		return
+	}
+	x.live[victim].close()
+	x.live = slices.Delete(x.live, victim, victim+1)
+}
+
+func count(live []*exchangeSession, match func(*exchangeSession) bool) int {
+	n := 0
+	for _, s := range live {
+		if match(s) {
+			n++
+		}
+	}
+	return n
 }
 
 // prune ends every session that has run its course.
@@ -444,7 +550,7 @@ func (x *exchanges) drop(sess *exchangeSession) {
 }
 
 // dropByAppKey ends every session a removed key holds. Its next message 1
-// meets AuthoriseWatch and gets silence.
+// meets HasWatch and gets silence.
 func (x *exchanges) dropByAppKey(pub []byte) int {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -471,10 +577,13 @@ func (x *exchanges) count() int {
 // --------------------------------------------------------------------------
 
 // XSender sends one x up the box's link to FTW Cloud. cloudlink.Link is one.
-// It never blocks; an error means the answer did not leave, and the watch
-// asks again.
+// SendX never blocks; an error means the answer did not leave, and the watch
+// asks again. XAllowed says whether an answer may leave now: the link keeps
+// x to a share of the tunnel's budget, and the phones' last share for
+// themselves.
 type XSender interface {
 	SendX(m cloudwire.X) error
+	XAllowed() bool
 }
 
 // Exchange is the box's door for watches through FTW Cloud: the service
@@ -487,6 +596,7 @@ type Exchange struct {
 
 	mu     sync.Mutex
 	sender XSender
+	taken  []time.Time
 }
 
 func newExchange(table *exchanges, log *slog.Logger) *Exchange {
@@ -518,6 +628,11 @@ func (e *Exchange) Deliver(m cloudwire.X) {
 // Run answers requests until ctx ends, exchangeInFlight at a time. A
 // command holds its slot for the floor and its result, up to a few seconds,
 // so requests run beside each other.
+//
+// A request whose answer could not leave is not run: past the minute's
+// requests, or with the link's share for x spent, it is dropped unanswered,
+// so a command never acts with nobody told. The service answers the watch
+// that no answer came, and the watch asks again under its cmdId.
 func (e *Exchange) Run(ctx context.Context) {
 	slots := make(chan struct{}, exchangeInFlight)
 	for {
@@ -525,6 +640,9 @@ func (e *Exchange) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case m := <-e.inbox:
+			if !e.take() {
+				continue
+			}
 			select {
 			case slots <- struct{}{}:
 			default:
@@ -537,6 +655,23 @@ func (e *Exchange) Run(ctx context.Context) {
 			}()
 		}
 	}
+}
+
+// take counts one request against the minute and asks the link whether an
+// answer may leave.
+func (e *Exchange) take() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.sender == nil || !e.sender.XAllowed() {
+		return false
+	}
+	now := e.table.now()
+	e.taken = slices.DeleteFunc(e.taken, func(at time.Time) bool { return now.Sub(at) >= time.Minute })
+	if len(e.taken) >= exchangeRequestsPerMinute {
+		return false
+	}
+	e.taken = append(e.taken, now)
+	return true
 }
 
 // reply sends the answer under the request's dev and id. Silence is an

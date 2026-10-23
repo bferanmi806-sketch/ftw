@@ -942,12 +942,6 @@ func (a *appLinkAPI) MintPairingCode(role string) ([]byte, time.Time, error) {
 	return code, expires, appLinkError(err)
 }
 
-// MintWatchCode issues a watch code bound to the owner phone that asked.
-func (a *appLinkAPI) MintWatchCode(parentID string) ([]byte, time.Time, error) {
-	code, expires, err := a.enroll.MintWatchCode(parentID, appenroll.WatchTTL)
-	return code, expires, appLinkError(err)
-}
-
 // AddWatch adds a watch by its key under the owner phone that asked.
 func (a *appLinkAPI) AddWatch(parentID string, key []byte) (string, error) {
 	grant, err := a.enroll.AddWatch(parentID, key)

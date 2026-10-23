@@ -309,9 +309,12 @@ type Link struct {
 	// tunOut and tunBulk carry framed tun messages, lane 0 and bulk, to
 	// the connection's tun writer. Nil while no uplink is up. tunBudget counts what left, apart from
 	// the readable copy's budget, and tunDropped what never did.
-	tunOut     chan []byte
-	tunBulk    chan []byte
-	tunBudget  budget
+	tunOut    chan []byte
+	tunBulk   chan []byte
+	tunBudget budget
+	// xBudget counts the watches' exchange answers apart, as well as in
+	// tunBudget once they leave.
+	xBudget    budget
 	tunDropped int64
 	sent       map[string]sentFrame
 	srcRev     uint64

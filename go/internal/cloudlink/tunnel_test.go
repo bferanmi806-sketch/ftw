@@ -692,3 +692,36 @@ func TestXGoesBothWaysAndIsSaidOnlyWithAnExchange(t *testing.T) {
 		t.Fatalf("a box with no Exchange says x: %v", hello.Caps)
 	}
 }
+
+// x keeps to its share: a tenth of the tunnel's budget, and nothing once the
+// tunnel has spent nine tenths, so the phones keep the last of it. Past
+// either, an answer may not leave, and the exchange runs nothing.
+func TestXKeepsToItsShareOfTheTunnelBudget(t *testing.T) {
+	svc := newFakeService(t)
+	exchange := &fakeExchange{ch: make(chan cloudwire.X, 4)}
+	h := newHarnessWith(t, svc, []*ecdsa.PublicKey{&svc.key.PublicKey}, nil, func(o *Options) { o.Exchange = exchange })
+	h.setRoster(func(r *fakeRosterState) { r.tun = true })
+	h.nextRoster(t)
+	if !h.link.XAllowed() || h.link.SendX(cloudwire.X{Dev: "w", ID: 1}) != nil {
+		t.Fatal("x refused with its share unspent")
+	}
+
+	h.link.mu.Lock()
+	h.link.xBudget.add(h.link.uptimeMs(), xBudgetBytes)
+	h.link.mu.Unlock()
+	if h.link.XAllowed() || h.link.SendX(cloudwire.X{Dev: "w", ID: 2}) == nil {
+		t.Fatal("x left past its own share")
+	}
+
+	h.link.mu.Lock()
+	h.link.xBudget = budget{}
+	h.link.tunBudget.add(h.link.uptimeMs(), int64(xStopsAt*tunBudgetBytes))
+	h.link.mu.Unlock()
+	if h.link.XAllowed() {
+		t.Fatal("x left with the phones' last share of the tunnel")
+	}
+	// The phones still have theirs.
+	if h.link.SendTun(cloudwire.Tun{Dev: "p", Sid: 1, D: []byte{1}}, false) != nil {
+		t.Fatal("a phone's tun was refused at nine tenths")
+	}
+}
