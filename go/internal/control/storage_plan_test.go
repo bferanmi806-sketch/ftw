@@ -171,9 +171,9 @@ func TestInterchangeableStoragesHandOverABlockedShare(t *testing.T) {
 }
 
 // The same two batteries on a cover-load slot: the plan put −564 W on one,
-// the house drew 3 kW. Both batteries must cover the load, not one battery
-// at its planned rate with the rest from the grid. The fuller one gives
-// more: 69 % above the floor against 55 %.
+// the house drew 3 kW. Both batteries discharge, more than the planned
+// 564 W in total, instead of one battery at its planned rate with the rest
+// from the grid. The fuller one gives more: 69 % above the floor against 55 %.
 func TestInterchangeableStoragesShareALargeLoad(t *testing.T) {
 	now := time.Now()
 	dir := SlotDirective{DecisionID: "p", SlotStart: now, SlotEnd: now.Add(15 * time.Minute), BatteryEnergyWh: -141,
@@ -197,9 +197,9 @@ func TestInterchangeableStoragesShareALargeLoad(t *testing.T) {
 	}
 }
 
-// Two equal batteries follow their targets for an hour of discharge and an
-// hour of charge. The SoC gap shrinks on every tick, and neither battery
-// passes the floor while the other still has energy.
+// Two equal batteries follow their targets for five hours of discharge, and
+// five of charge. The SoC gap shrinks on every tick, neither battery passes
+// the floor or full, and both end there together.
 func TestInterchangeableStoragesConverge(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -273,6 +273,48 @@ func TestShareByAvailableEnergyStaysWithinLimits(t *testing.T) {
 	out = shareByAvailableEnergy(bats, 3000)
 	if out[0].TargetW != 0 || out[1].TargetW != 0 {
 		t.Fatalf("targets=%+v", out)
+	}
+}
+
+func TestShareByAvailableEnergyCharge(t *testing.T) {
+	// Three batteries charging. c is blocked, a nearly full; b would take
+	// 6.4 kW of 8 kW by energy, stops at 5 kW, and a takes the rest.
+	bats := []batteryInfo{
+		{driver: "a", capacityWh: 10000, soc: .80},
+		{driver: "b", capacityWh: 10000, soc: .20},
+		{driver: "c", capacityWh: 10000, soc: .10, chargeBlocked: true},
+	}
+	out := shareByAvailableEnergy(bats, 8000)
+	want := []DispatchTarget{{Driver: "a", TargetW: 3000}, {Driver: "b", TargetW: 5000, Clamped: true}, {Driver: "c", Clamped: true}}
+	for i := range want {
+		if math.Abs(out[i].TargetW-want[i].TargetW) > 1e-6 || out[i].Clamped != want[i].Clamped {
+			t.Fatalf("targets=%+v, want %+v", out, want)
+		}
+	}
+	// Nothing limits a small charge, so nothing reads as clamped.
+	out = shareByAvailableEnergy(bats, 1000)
+	if math.Abs(out[0].TargetW-200) > 1e-6 || math.Abs(out[1].TargetW-800) > 1e-6 || out[0].Clamped || out[1].Clamped || !out[2].Clamped {
+		t.Fatalf("targets=%+v", out)
+	}
+}
+
+// An idle slot keeps the local controller, with its inverter-group routing.
+// So do batteries whose SoC Core does not know: room cannot be weighed.
+func TestInterchangeableStoragesKeepTheLocalControllerWhenIdleOrBlind(t *testing.T) {
+	now := time.Now()
+	dir := SlotDirective{DecisionID: "p", SlotStart: now, SlotEnd: now.Add(15 * time.Minute), StorageEnergyWh: map[string]float64{"a": 0, "b": 0}}
+	s := newStateWithEnergyDispatch(dir, "site")
+	s.Mode = ModePlannerSelf
+	s.clock = func() time.Time { return now }
+	bats := []batteryInfo{{driver: "a", capacityWh: 10000, soc: .5}, {driver: "b", capacityWh: 10000, soc: .5}}
+	if _, ok := distributePlannedStorages(s, bats, 3000, false); ok {
+		t.Fatal("idle slot left the local controller")
+	}
+	dir.StorageEnergyWh = map[string]float64{"a": 500, "b": 0}
+	s.SlotDirective = func(time.Time) (SlotDirective, bool) { return dir, true }
+	bats[1].socMissing, bats[1].soc, bats[1].dischargeBlocked = true, 0, true
+	if _, ok := distributePlannedStorages(s, bats, 2000, false); ok {
+		t.Fatal("a battery without SoC was weighed as empty")
 	}
 }
 

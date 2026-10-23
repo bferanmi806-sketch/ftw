@@ -1143,6 +1143,7 @@ type batteryInfo struct {
 	// batteryDirectionBlocks + distributeProportional.
 	dischargeBlocked bool
 	chargeBlocked    bool
+	socMissing       bool // no fresh SoC reading; soc is 0
 }
 
 // chargeCap returns the effective per-battery charge ceiling, falling
@@ -1477,7 +1478,8 @@ func ComputeDispatch(
 		soc := 0.0
 		lim := state.DriverLimits[name]
 		dischargeBlocked, chargeBlocked := batteryDirectionBlocks(r.Data)
-		if r.SoC != nil {
+		socMissing := r.SoC == nil
+		if !socMissing {
 			soc = *r.SoC
 		} else {
 			// Never reported SoC: do not discharge a pack we cannot
@@ -1502,6 +1504,7 @@ func ComputeDispatch(
 			maxDischargeWSet: lim.MaxDischargeWSet,
 			dischargeBlocked: dischargeBlocked,
 			chargeBlocked:    chargeBlocked,
+			socMissing:       socMissing,
 		})
 	}
 	onlineBats := make([]batteryInfo, 0, len(batteries))
@@ -4094,7 +4097,7 @@ func fuseTargetBounds(r *telemetry.DerReading, lim PowerLimits) (lower, upper fl
 	lower = -lim.dischargeCap()
 	upper = lim.chargeCap()
 	dischargeBlocked, chargeBlocked := batteryDirectionBlocks(r.Data)
-	if r.SoC == nil || *r.SoC < 0.05 || dischargeBlocked {
+	if r.SoC == nil || *r.SoC < dischargeFloorSoC || dischargeBlocked {
 		lower = 0
 	}
 	if chargeBlocked {

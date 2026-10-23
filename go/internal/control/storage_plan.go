@@ -3,6 +3,7 @@ package control
 import (
 	"maps"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -15,8 +16,9 @@ type storageSlotDelivery struct {
 // Keep each physical battery's share after Core has computed a live site
 // target. A blocked battery's energy is not reassigned to another battery.
 // Interchangeable batteries share the live target by available energy
-// instead. Manual control, a plan without per-battery energy and a single
-// battery retain the existing local controller, which splits by capacity.
+// instead. Manual control, a plan without per-battery energy, an idle slot,
+// a single online battery and interchangeable batteries without a known SoC
+// retain the existing local controller, which splits by capacity.
 func distributePlannedStorages(state *State, bats []batteryInfo, desired float64, manual bool) ([]DispatchTarget, bool) {
 	if manual || !state.Mode.IsPlannerMode() || state.PlanStale || len(bats) < 2 {
 		state.storageDelivery = storageSlotDelivery{}
@@ -28,10 +30,6 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 		state.storageDelivery = storageSlotDelivery{}
 		return nil, false
 	}
-	if interchangeableStorages(bats) {
-		state.storageDelivery = storageSlotDelivery{}
-		return shareByAvailableEnergy(bats, desired), true
-	}
 	allIdle := true
 	for _, wh := range dir.StorageEnergyWh {
 		allIdle = allIdle && math.Abs(wh) < 1e-6
@@ -39,6 +37,13 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 	if allIdle {
 		state.storageDelivery = storageSlotDelivery{}
 		return nil, false
+	}
+	if interchangeableStorages(bats) {
+		state.storageDelivery = storageSlotDelivery{}
+		if slices.ContainsFunc(bats, func(b batteryInfo) bool { return b.socMissing }) {
+			return nil, false
+		}
+		return shareByAvailableEnergy(bats, desired), true
 	}
 	d := &state.storageDelivery
 	slotS := dir.SlotEnd.Sub(dir.SlotStart).Seconds()
@@ -144,19 +149,20 @@ func interchangeableStorages(bats []batteryInfo) bool {
 // Split desired across interchangeable batteries by the energy each can still
 // give (above the discharge floor) or take (below full). The fuller battery
 // discharges faster and the emptier one charges faster, so a SoC gap shrinks
-// and the batteries reach the floor or full together. A blocked battery gets
-// nothing; a battery at its power limit stays there and the others take the
-// rest.
+// while they work. A blocked battery gets nothing; a battery at its power
+// limit stays there and the others take the rest.
 func shareByAvailableEnergy(bats []batteryInfo, desired float64) []DispatchTarget {
 	out := make([]DispatchTarget, len(bats))
 	room := make([]float64, len(bats))
 	for i, b := range bats {
-		out[i] = DispatchTarget{Driver: b.driver, Clamped: true}
+		out[i].Driver = b.driver
 		if desired < 0 && !b.dischargeBlocked {
 			room[i] = b.capacityWh * math.Max(0, b.soc-dischargeFloorSoC)
 		} else if desired > 0 && !b.chargeBlocked {
 			room[i] = b.capacityWh * math.Max(0, 1-b.soc)
 		}
+		// Blocked, empty or full: this battery cannot take part.
+		out[i].Clamped = desired != 0 && room[i] <= 0
 	}
 	left := math.Abs(desired)
 	for left > 0 {
@@ -167,6 +173,7 @@ func shareByAvailableEnergy(bats []batteryInfo, desired float64) []DispatchTarge
 		if total <= 0 {
 			break
 		}
+		pinned := false
 		for i, b := range bats {
 			limit := b.chargeCap()
 			if desired < 0 {
@@ -174,11 +181,13 @@ func shareByAvailableEnergy(bats []batteryInfo, desired float64) []DispatchTarge
 			}
 			if room[i] > 0 && left*room[i]/total > limit {
 				out[i].TargetW = math.Copysign(limit, desired)
+				out[i].Clamped = true
 				pinnedW += limit
 				room[i] = 0
+				pinned = true
 			}
 		}
-		if pinnedW == 0 {
+		if !pinned {
 			for i := range bats {
 				if room[i] > 0 {
 					out[i].TargetW = math.Copysign(left*room[i]/total, desired)
@@ -189,7 +198,9 @@ func shareByAvailableEnergy(bats []batteryInfo, desired float64) []DispatchTarge
 		left -= pinnedW
 	}
 	for i, b := range bats {
-		out[i].TargetW, _ = clampWithSoC(out[i].TargetW, b)
+		var clamped bool
+		out[i].TargetW, clamped = clampWithSoC(out[i].TargetW, b)
+		out[i].Clamped = out[i].Clamped || clamped
 	}
 	return out
 }
