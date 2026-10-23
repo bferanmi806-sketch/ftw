@@ -1196,8 +1196,9 @@ func (snap grantSnapshot) allowed(class string) bool {
 func (l *Link) caps(snap grantSnapshot) []string {
 	var out []string
 	_, cars := l.opts.Site.(CarSite)
-	for _, c := range []string{cloudwire.MsgLive, cloudwire.MsgLP, cloudwire.MsgCar, cloudwire.MsgPrices, cloudwire.MsgHB, cloudwire.MsgEvent} {
-		if snap.allowed(c) && (c != cloudwire.MsgCar || cars) {
+	_, history := l.opts.Site.(HistorySite)
+	for _, c := range []string{cloudwire.MsgLive, cloudwire.MsgLP, cloudwire.MsgCar, cloudwire.MsgPrices, cloudwire.MsgHB, cloudwire.MsgEvent, cloudwire.MsgTiles} {
+		if snap.allowed(c) && (c != cloudwire.MsgCar || cars) && (c != cloudwire.MsgTiles || history) {
 			out = append(out, c)
 		}
 	}

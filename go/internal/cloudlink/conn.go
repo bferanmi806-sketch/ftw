@@ -300,6 +300,7 @@ func (l *Link) serve(ctx context.Context, conn uplinkConn, snap grantSnapshot) e
 		// so revokes made since then still arrive.
 		l.bumpRoster(ok.RosterSeq)
 	}
+	w.have = ok.Have
 
 	tunOut, tunBulk := make(chan []byte, tunQueue), make(chan []byte, tunBulkQueue)
 	l.mu.Lock()
@@ -454,6 +455,8 @@ type writer struct {
 	conn uplinkConn
 	link *Link
 	mu   sync.Mutex
+	// have is the closed tiles hello_ok said the service holds.
+	have map[string]string
 }
 
 // send seals body as type t, frames it and writes it. The byte budget is
