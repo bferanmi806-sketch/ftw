@@ -278,9 +278,13 @@ func TestAWatchKeyMeetsTheSameRules(t *testing.T) {
 func TestAKeyThatIsNoWatchIsRefused(t *testing.T) {
 	enrol := newWatchEnrolment(t)
 	rig := newAppSession(t, apiauth.RoleOwner, withEnrolment(enrol))
-	for name, key := range map[string][]byte{"short": appKey(9)[:16], "the phone's own": sessionPhoneKey(t)} {
-		if status, _, body := rig.call(t, 1, watchByKey(key, true)); status != http.StatusBadRequest {
-			t.Fatalf("%s key answered %d %s", name, status, body)
+	// Each request on the session has its own id.
+	for i, c := range []struct {
+		name string
+		key  []byte
+	}{{"short", appKey(9)[:16]}, {"the phone's own", sessionPhoneKey(t)}} {
+		if status, _, body := rig.call(t, uint32(i+1), watchByKey(c.key, true)); status != http.StatusBadRequest {
+			t.Fatalf("%s key answered %d %s", c.name, status, body)
 		}
 	}
 }
