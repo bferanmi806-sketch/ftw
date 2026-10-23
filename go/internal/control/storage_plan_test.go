@@ -113,7 +113,8 @@ func TestPhysicalStorageDeliveryAndSiteClamp(t *testing.T) {
 // Field report, 23 Oct 2026: two identical Pixii batteries took turns. The
 // planner is indifferent between them, so Energyplan put a whole slot on one
 // battery and the next slot on the other; Core followed each battery's
-// share and the SoCs drifted apart (74 % against 60 %).
+// share and the SoCs drifted apart (74 % against 60 %). Now both charge in
+// every slot, the emptier one faster (room 26 % against 40 %).
 func TestInterchangeableStoragesShareThePlanTotal(t *testing.T) {
 	start := time.Now()
 	now := start
@@ -133,9 +134,10 @@ func TestInterchangeableStoragesShareThePlanTotal(t *testing.T) {
 		if len(out) != 2 {
 			t.Fatalf("slot %d targets=%+v", slot, out)
 		}
+		want := map[string]float64{"a": 2000 * 26. / 66, "b": 2000 * 40. / 66}
 		for _, v := range out {
-			if math.Abs(v.TargetW-1000) > 1e-6 {
-				t.Fatalf("slot %d: each battery should carry half of 2000 W, got %+v", slot, out)
+			if math.Abs(v.TargetW-want[v.Driver]) > 1e-6 {
+				t.Fatalf("slot %d: targets=%+v, want %v", slot, out, want)
 			}
 		}
 		now = now.Add(15 * time.Minute)
@@ -170,7 +172,8 @@ func TestInterchangeableStoragesHandOverABlockedShare(t *testing.T) {
 
 // The same two batteries on a cover-load slot: the plan put −564 W on one,
 // the house drew 3 kW. Both batteries must cover the load, not one battery
-// at its planned rate with the rest from the grid.
+// at its planned rate with the rest from the grid. The fuller one gives
+// more: 69 % above the floor against 55 %.
 func TestInterchangeableStoragesShareALargeLoad(t *testing.T) {
 	now := time.Now()
 	dir := SlotDirective{DecisionID: "p", SlotStart: now, SlotEnd: now.Add(15 * time.Minute), BatteryEnergyWh: -141,
@@ -185,8 +188,91 @@ func TestInterchangeableStoragesShareALargeLoad(t *testing.T) {
 	if len(out) != 2 {
 		t.Fatalf("targets=%+v", out)
 	}
-	if math.Abs(out[0].TargetW-out[1].TargetW) > 1e-6 || out[0].TargetW+out[1].TargetW > -564-1e-6 {
+	w := map[string]float64{}
+	for _, v := range out {
+		w[v.Driver] = v.TargetW
+	}
+	if w["b"] >= 0 || math.Abs(w["a"]/w["b"]-69./55) > 1e-6 || w["a"]+w["b"] > -564-1e-6 {
 		t.Fatalf("both batteries should share more than the planned 564 W, got %+v", out)
+	}
+}
+
+// Two equal batteries follow their targets for an hour of discharge and an
+// hour of charge. The SoC gap shrinks on every tick, and neither battery
+// passes the floor while the other still has energy.
+func TestInterchangeableStoragesConverge(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		socA, socB, end float64
+		desiredW        float64
+	}{
+		{"discharge from 74 % and 60 %", .74, .60, dischargeFloorSoC, -3000},
+		{"charge from 30 % and 50 %", .30, .50, 1, 3000},
+	} {
+		now := time.Now()
+		s := NewState(0, 0, "site")
+		s.Mode = ModePlannerArbitrage
+		s.clock = func() time.Time { return now }
+		// The plan puts every slot on a; Core still shares it.
+		wh := tc.desiredW / 4
+		s.SlotDirective = func(at time.Time) (SlotDirective, bool) {
+			return SlotDirective{DecisionID: "p", SlotStart: at, SlotEnd: at.Add(15 * time.Minute), BatteryEnergyWh: wh,
+				StorageEnergyWh: map[string]float64{"a": wh, "b": 0}}, true
+		}
+		bats := []batteryInfo{{driver: "a", capacityWh: 10000, soc: tc.socA}, {driver: "b", capacityWh: 10000, soc: tc.socB}}
+		gap := math.Abs(tc.socA - tc.socB)
+		for tick := 0; tick < 3600; tick++ {
+			out, ok := distributePlannedStorages(s, bats, tc.desiredW, false)
+			if !ok || len(out) != 2 {
+				t.Fatalf("%s tick %d: targets=%+v", tc.name, tick, out)
+			}
+			for i := range bats {
+				bats[i].soc += out[i].TargetW * 5 / 3600 / bats[i].capacityWh
+				bats[i].currentW = out[i].TargetW
+			}
+			now = now.Add(5 * time.Second)
+			next := math.Abs(bats[0].soc - bats[1].soc)
+			if next > gap+1e-12 || (next >= gap && next > 1e-9) {
+				t.Fatalf("%s tick %d: gap %.4f did not shrink from %.4f", tc.name, tick, next, gap)
+			}
+			gap = next
+			// One 5 s tick at 3 kW moves a 10 kWh battery 0.04 %.
+			const tickSoC = 3000. * 5 / 3600 / 10000
+			for _, b := range bats {
+				if b.soc < dischargeFloorSoC-tickSoC || b.soc > 1+tickSoC {
+					t.Fatalf("%s tick %d: %s at %.4f", tc.name, tick, b.driver, b.soc)
+				}
+			}
+		}
+		if math.Abs(bats[0].soc-tc.end) > .002 || math.Abs(bats[1].soc-tc.end) > .002 {
+			t.Fatalf("%s: ended at %.4f and %.4f", tc.name, bats[0].soc, bats[1].soc)
+		}
+	}
+}
+
+func TestShareByAvailableEnergyStaysWithinLimits(t *testing.T) {
+	bats := []batteryInfo{{driver: "a", capacityWh: 10000, soc: .80}, {driver: "b", capacityWh: 10000, soc: .10}}
+	// By energy a would give 5,625 W of 6 kW; it stops at 5 kW and b gives the rest.
+	out := shareByAvailableEnergy(bats, -6000)
+	if out[0].TargetW != -5000 || math.Abs(out[1].TargetW+1000) > 1e-6 {
+		t.Fatalf("targets=%+v", out)
+	}
+	// More than the fleet can give: both at their limits.
+	out = shareByAvailableEnergy(bats, -12000)
+	if out[0].TargetW != -5000 || out[1].TargetW != -5000 {
+		t.Fatalf("targets=%+v", out)
+	}
+	// A battery at the floor gives nothing.
+	bats[1].soc = dischargeFloorSoC
+	out = shareByAvailableEnergy(bats, -3000)
+	if out[0].TargetW != -3000 || out[1].TargetW != 0 {
+		t.Fatalf("targets=%+v", out)
+	}
+	// Full batteries take nothing.
+	bats[0].soc, bats[1].soc = 1, 1
+	out = shareByAvailableEnergy(bats, 3000)
+	if out[0].TargetW != 0 || out[1].TargetW != 0 {
+		t.Fatalf("targets=%+v", out)
 	}
 }
 

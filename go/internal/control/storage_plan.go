@@ -14,10 +14,11 @@ type storageSlotDelivery struct {
 
 // Keep each physical battery's share after Core has computed a live site
 // target. A blocked battery's energy is not reassigned to another battery.
-// Manual control, missing plans and interchangeable batteries retain the
-// existing local controller, which splits the live target by capacity.
+// Interchangeable batteries share the live target by available energy
+// instead. Manual control, a plan without per-battery energy and a single
+// battery retain the existing local controller, which splits by capacity.
 func distributePlannedStorages(state *State, bats []batteryInfo, desired float64, manual bool) ([]DispatchTarget, bool) {
-	if manual || !state.Mode.IsPlannerMode() || state.PlanStale || interchangeableStorages(bats) {
+	if manual || !state.Mode.IsPlannerMode() || state.PlanStale || len(bats) < 2 {
 		state.storageDelivery = storageSlotDelivery{}
 		return nil, false
 	}
@@ -26,6 +27,10 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 	if !ok || len(dir.StorageEnergyWh) < 2 {
 		state.storageDelivery = storageSlotDelivery{}
 		return nil, false
+	}
+	if interchangeableStorages(bats) {
+		state.storageDelivery = storageSlotDelivery{}
+		return shareByAvailableEnergy(bats, desired), true
 	}
 	allIdle := true
 	for _, wh := range dir.StorageEnergyWh {
@@ -115,9 +120,7 @@ func distributePlannedStorages(state *State, bats []batteryInfo, desired float64
 // carry any total the plan can. Which battery the plan names is then
 // arbitrary: Energyplan often puts a whole slot on one and the next on the
 // other. A 5 % spread costs a capacity split at most about 1.3 % of the
-// fleet's full power. The split does not keep each battery inside the
-// plan's SoC band: as in 2.x, the battery with less energy reaches its
-// floor first and relies on its driver or the 5 % clamp.
+// fleet's full power.
 const interchangeablePowerSpread = 0.05
 
 func interchangeableStorages(bats []batteryInfo) bool {
@@ -136,4 +139,57 @@ func interchangeableStorages(bats []batteryInfo) bool {
 	}
 	return highC-lowC <= interchangeablePowerSpread*highC &&
 		highD-lowD <= interchangeablePowerSpread*highD
+}
+
+// Split desired across interchangeable batteries by the energy each can still
+// give (above the discharge floor) or take (below full). The fuller battery
+// discharges faster and the emptier one charges faster, so a SoC gap shrinks
+// and the batteries reach the floor or full together. A blocked battery gets
+// nothing; a battery at its power limit stays there and the others take the
+// rest.
+func shareByAvailableEnergy(bats []batteryInfo, desired float64) []DispatchTarget {
+	out := make([]DispatchTarget, len(bats))
+	room := make([]float64, len(bats))
+	for i, b := range bats {
+		out[i] = DispatchTarget{Driver: b.driver, Clamped: true}
+		if desired < 0 && !b.dischargeBlocked {
+			room[i] = b.capacityWh * math.Max(0, b.soc-dischargeFloorSoC)
+		} else if desired > 0 && !b.chargeBlocked {
+			room[i] = b.capacityWh * math.Max(0, 1-b.soc)
+		}
+	}
+	left := math.Abs(desired)
+	for left > 0 {
+		var total, pinnedW float64
+		for _, r := range room {
+			total += r
+		}
+		if total <= 0 {
+			break
+		}
+		for i, b := range bats {
+			limit := b.chargeCap()
+			if desired < 0 {
+				limit = b.dischargeCap()
+			}
+			if room[i] > 0 && left*room[i]/total > limit {
+				out[i].TargetW = math.Copysign(limit, desired)
+				pinnedW += limit
+				room[i] = 0
+			}
+		}
+		if pinnedW == 0 {
+			for i := range bats {
+				if room[i] > 0 {
+					out[i].TargetW = math.Copysign(left*room[i]/total, desired)
+				}
+			}
+			break
+		}
+		left -= pinnedW
+	}
+	for i, b := range bats {
+		out[i].TargetW, _ = clampWithSoC(out[i].TargetW, b)
+	}
+	return out
 }
