@@ -236,10 +236,12 @@ function driver_poll() return 60000 end
 	}
 }
 
-// A driver that streams from a vendor host declares it in DRIVER.ws_hosts.
-// The declaration grants the WebSocket for those hosts, so a saved config
-// without capabilities.websocket still streams. Hosts a config lists are
-// kept, and a driver that declares none gets no WebSocket from this.
+// A cloud driver that streams from a vendor host declares it in
+// DRIVER.ws_hosts. For a driver whose config grants HTTP, the declaration
+// grants the WebSocket for those hosts, so a saved config without
+// capabilities.websocket still streams. Hosts a config lists are kept, an
+// any-host entry narrows to the declared hosts as for http_hosts, and a
+// driver without HTTP, or one that declares nothing, gets no WebSocket.
 func TestRegistryGrantsWebSocketFromDriverMetadata(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, src string) string {
@@ -249,6 +251,19 @@ func TestRegistryGrantsWebSocketFromDriverMetadata(t *testing.T) {
 		}
 		return path
 	}
+	const initCheck = `
+function driver_init(config)
+  local ok, err = host.ws_open("wss://not-declared.invalid/hub")
+  if config and config.expect == "none" then
+    assert(ok == nil and err == "ws: capability not granted",
+      "got a WebSocket it should not have: " .. tostring(err))
+  else
+    assert(ok == nil and err and err:find("not in allowed_hosts", 1, true),
+      "driver-declared WebSocket allowlist was not installed: " .. tostring(err))
+  end
+end
+function driver_poll() return 60000 end
+`
 	declaring := write("stream.lua", `DRIVER = {
   id = "stream",
   name = "Stream",
@@ -256,52 +271,40 @@ func TestRegistryGrantsWebSocketFromDriverMetadata(t *testing.T) {
   capabilities = { "ev" },
   http_hosts = { "api.example.test" },
   ws_hosts = { "streams.example.test", " streams.example.test " },
-}
-function driver_init(config)
-  local ok, err = host.ws_open("wss://not-declared.invalid/hub")
-  assert(ok == nil and err and err:find("not in allowed_hosts", 1, true),
-    "driver-declared WebSocket allowlist was not installed: " .. tostring(err))
-end
-function driver_poll() return 60000 end
-`)
+}`+initCheck)
 	silent := write("rest.lua", `DRIVER = {
   id = "rest",
   name = "Rest",
   protocols = { "http" },
   capabilities = { "ev" },
   http_hosts = { "api.example.test" },
-}
-function driver_init(config)
-  local ok, err = host.ws_open("wss://streams.example.test/hub")
-  assert(ok == nil and err == "ws: capability not granted",
-    "a driver that declares no ws_hosts got a WebSocket: " .. tostring(err))
-end
-function driver_poll() return 60000 end
-`)
+}`+initCheck)
 
+	httpOnly := config.Capabilities{HTTP: &config.HTTPCapability{}}
 	for _, tc := range []struct {
 		name  string
 		lua   string
-		ws    *config.WSCapability
+		caps  config.Capabilities
 		probe bool
 		want  []string // nil: no WebSocket capability
 	}{
-		{name: "declared", lua: declaring, want: []string{"streams.example.test"}},
-		{name: "declared probe", lua: declaring, probe: true, want: []string{"streams.example.test"}},
+		{name: "declared", lua: declaring, caps: httpOnly, want: []string{"streams.example.test"}},
+		{name: "declared probe", lua: declaring, caps: httpOnly, probe: true, want: []string{"streams.example.test"}},
 		{name: "declared and configured", lua: declaring,
-			ws:   &config.WSCapability{AllowedHosts: []string{"other.example.test"}},
+			caps: config.Capabilities{HTTP: &config.HTTPCapability{},
+				WebSocket: &config.WSCapability{AllowedHosts: []string{"other.example.test"}}},
 			want: []string{"other.example.test", "streams.example.test"}},
-		{name: "not declared", lua: silent},
+		{name: "declared and any host configured", lua: declaring,
+			caps: config.Capabilities{HTTP: &config.HTTPCapability{}, WebSocket: &config.WSCapability{}},
+			want: []string{"streams.example.test"}},
+		{name: "declared without HTTP", lua: declaring, caps: config.Capabilities{Standalone: true}},
+		{name: "not declared", lua: silent, caps: httpOnly},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := NewRegistry(telemetry.NewStore())
-			cfg := config.Driver{
-				Name: "ws-" + tc.name,
-				Lua:  tc.lua,
-				Capabilities: config.Capabilities{
-					HTTP:      &config.HTTPCapability{},
-					WebSocket: tc.ws,
-				},
+			cfg := config.Driver{Name: "ws-" + tc.name, Lua: tc.lua, Capabilities: tc.caps}
+			if tc.want == nil {
+				cfg.Config = map[string]any{"expect": "none"}
 			}
 			add, stop := r.Add, r.Remove
 			if tc.probe {
@@ -320,7 +323,7 @@ function driver_poll() return 60000 end
 			}
 			if tc.want == nil {
 				if rd.env.WS != nil {
-					t.Fatal("a driver that declares no ws_hosts got a WebSocket")
+					t.Fatal("got a WebSocket it should not have")
 				}
 				return
 			}
