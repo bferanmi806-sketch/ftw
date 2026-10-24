@@ -123,33 +123,20 @@ func TestMigrationKeepsEveryEarlierNo(t *testing.T) {
 	}
 }
 
-// With Cloud under the current terms, statistics are part of Cloud whatever
-// the local answer; under older terms nothing goes until they are accepted.
-func TestCloudDecidesStatisticsWhileItIsOn(t *testing.T) {
+// Without a running link no stored grant counts, so the box's own answer
+// alone decides. The link's answer, with the grant it honours, is tested in
+// link_test.go.
+func TestWithoutALinkOnlyTheLocalAnswerCounts(t *testing.T) {
 	kv := &memKV{m: map[string]string{statsShareKey: "off"}}
 	cloud := grantRecord{Policy: cloudwire.CloudTermsPolicy, Purposes: []string{protocol.CloudPurposeServe, protocol.CloudPurposeStats}}
 	if err := saveJSON(kv, grantKey, cloud); err != nil {
 		t.Fatal(err)
 	}
-	if !SharesStatistics(kv) {
-		t.Fatal("Cloud under the current terms did not share")
-	}
-	older := cloud
-	older.Policy = "ftw-cloud-2026-10-v2"
-	kv.m[statsShareKey] = "on"
-	if err := saveJSON(kv, grantKey, older); err != nil {
-		t.Fatal(err)
-	}
-	if SharesStatistics(kv) {
-		t.Fatal("Cloud under older terms shared")
-	}
-	revoked := cloud
-	revoked.Revoked = true
-	if err := saveJSON(kv, grantKey, revoked); err != nil {
-		t.Fatal(err)
-	}
-	if !SharesStatistics(kv) {
-		t.Fatal("a box leaving Cloud lost its own answer")
+	for share, want := range map[string][2]bool{"off": {false, false}, "default": {true, false}, "on": {true, true}} {
+		kv.m[statsShareKey] = share
+		if got := [2]bool{SharesStatistics(kv), SaidYesToStatistics(kv)}; got != want {
+			t.Fatalf("%s: shares, said yes = %v, want %v", share, got, want)
+		}
 	}
 }
 

@@ -173,3 +173,44 @@ func TestAnAssetRetiredBeforeTheDayIsLeftOut(t *testing.T) {
 		t.Fatalf("%+v ok %v err %v", r, ok, err)
 	}
 }
+
+// An asset first seen after the day ended is not part of it.
+func TestAnAssetAddedAfterTheDayLeavesItWhole(t *testing.T) {
+	st := wholeDay(t, nil)
+	w := 400.0
+	for _, at := range []time.Time{day.Add(24*time.Hour + 30*time.Minute), day.Add(24*time.Hour + 32*time.Minute)} {
+		o := state.EnergyObservation{AssetID: "battery:2/battery", DeviceID: "battery:2", AssetKind: state.AssetBattery, Label: "x",
+			Flow: state.FlowBatteryCharge, AtMs: at.UnixMilli(), PowerW: &w}
+		if err := st.RecordTickWithOptionalHistory(nil, nil, []state.EnergyObservation{o}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r, ok, err := Day(context.Background(), st, day); err != nil || !ok || r.BatteryCharge != 6 {
+		t.Fatalf("%+v ok %v err %v", r, ok, err)
+	}
+}
+
+// A charger's session counter starts again at every plug-in. The ledger marks
+// a reset and covers the interval from the power reading, so the day stays
+// whole and the charge is counted.
+func TestASessionCounterThatStartsAgainKeepsTheDay(t *testing.T) {
+	st := wholeDay(t, func(id string, _ time.Time) bool { return id == "charger:1/vehicle_charger" })
+	var obs []state.EnergyObservation
+	first := day.Add(-10 * time.Minute)
+	for at := first; !at.After(day.Add(24*time.Hour + 10*time.Minute)); at = at.Add(tick) {
+		session := first
+		if !at.Before(day.Add(12 * time.Hour)) {
+			session = day.Add(12 * time.Hour)
+		}
+		w, c := 1000.0, 1000*at.Sub(session).Hours()
+		obs = append(obs, state.EnergyObservation{AssetID: "charger:2/vehicle_charger", DeviceID: "charger:2", AssetKind: state.AssetVehicleCharger,
+			Label: "x", Flow: state.FlowVehicleCharge, AtMs: at.UnixMilli(), PowerW: &w, CounterWh: &c})
+	}
+	if err := st.RecordTickWithOptionalHistory(nil, nil, obs); err != nil {
+		t.Fatal(err)
+	}
+	r, ok, err := Day(context.Background(), st, day)
+	if err != nil || !ok || r.VehicleCharge != 24 {
+		t.Fatalf("%+v ok %v err %v", r, ok, err)
+	}
+}

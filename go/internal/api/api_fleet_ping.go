@@ -58,8 +58,11 @@ func (s *Server) handleFleetPing(w http.ResponseWriter, r *http.Request) {
 		ThroughRelay: s.deps.FleetPing.ThroughRelay(),
 		Payload:      s.deps.FleetPing.Payload(),
 	}
-	view.WaitsForRelay = !enabled && !view.ThroughRelay && endpoint == config.DefaultFleetPingEndpoint &&
-		s.deps.State != nil && cloudlink.SharesStatistics(s.deps.State)
+	shares := s.deps.State != nil && cloudlink.SharesStatistics(s.deps.State)
+	if s.deps.Cloud != nil {
+		shares = s.deps.Cloud.Status().Statistics
+	}
+	view.WaitsForRelay = !enabled && !view.ThroughRelay && endpoint == config.DefaultFleetPingEndpoint && shares
 	if s.deps.EnergyReport != nil {
 		p := s.deps.EnergyReport.Preview(r.Context())
 		view.Energy = &p

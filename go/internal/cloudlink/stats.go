@@ -28,6 +28,11 @@ func (w *writer) statistics(snap grantSnapshot, st *cadence, now time.Time) erro
 		!slices.Contains(g.Purposes, protocol.CloudPurposeStats) || !w.link.clockSynced() {
 		return nil
 	}
+	// The one answer covers this upload too: off, or Cloud under older
+	// terms, sends no hour, whatever the grant still carries.
+	if share, _ := w.link.opts.KV.LoadConfig(statsShareKey); !sharesStatistics(g, share) {
+		return nil
+	}
 	hour := now.UTC().Truncate(time.Hour).Add(-time.Hour).UnixMilli()
 	if hour < g.StatsAtMs || st.statsHour == hour || now.Sub(st.statsCheckedAt) < time.Minute {
 		return nil

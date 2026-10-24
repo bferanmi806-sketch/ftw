@@ -53,6 +53,8 @@ func TestAPinIsRefusedUnlessItIsARelayAndAKey(t *testing.T) {
 		"no key":           {"https://relay.example.net/ftw", ""},
 		"plain http":       {"http://relay.example.net/ftw", key},
 		"FTW Cloud itself": {"https://cloud.ftw.energy/v1/ohttp", key},
+		"FTW Cloud, cased": {"https://Cloud.FTW.Energy/v1/ohttp", key},
+		"FTW Cloud, dot":   {"https://cloud.ftw.energy./v1/ohttp", key},
 		"query":            {"https://relay.example.net/ftw?box=1", key},
 		"credentials":      {"https://a:b@relay.example.net/ftw", key},
 		"bad key":          {"https://relay.example.net/ftw", "AAAA"},

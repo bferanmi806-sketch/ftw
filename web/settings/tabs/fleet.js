@@ -106,6 +106,9 @@
     if (status.statisticsRequired) {
       return "Part of FTW Cloud, with no separate off switch. To stop, turn FTW Cloud off, then turn statistics off here.";
     }
+    if (status.statisticsNeedTerms) {
+      return "FTW Cloud is on under earlier terms, which did not include statistics. Nothing is sent until you accept the current terms.";
+    }
     return status.statistics
       ? "On. Turning it off takes effect at once, with no restart, and the box keeps the answer."
       : "Off. Nothing is sent. Turning it on takes effect at once.";
@@ -239,7 +242,7 @@
       .then(function (v) {
         sharePolicy = v[1];
         box.checked = !!(v[0] && v[0].statistics);
-        box.disabled = !v[0] || !v[1] || !!v[0].statisticsRequired;
+        box.disabled = !v[0] || !v[1] || !!v[0].statisticsRequired || !!v[0].statisticsNeedTerms;
         note.textContent = shareLine(v[0]);
       })
       .catch(function () { note.textContent = shareLine(null); });

@@ -381,6 +381,12 @@ anonymous daily reports, with no second setting:
   already running keep working until turned off. Hourly C8 rows for local
   boxes therefore have no way in; if C8 is ever activated for them, it needs
   its own consent.
+- The hourly C8 upload follows the same answer: off, or Cloud under older
+  terms, sends no hour whatever the grant carries, and an answer that is off
+  takes the stats purpose out of the grant. Under older terms, asking for
+  statistics is refused until the owner accepts the current terms.
+- A stored grant counts only through the running link, which honours it only
+  with the key it was made with.
 
 **Two reports, never one message.** Each leaves at its own random time:
 
@@ -414,10 +420,11 @@ swapped in at the service opens nothing. Until both pins are set, the energy
 report is not sent, and the fleet report posts straight to `/v1/fleet` as
 before, but only from a box that said yes: FTW Cloud's terms or a local yes.
 A box that shares only by default never posts straight to FTW Cloud, which
-would see its address; it waits for the relay. A build with the relay sends
-the fleet report to FTW Cloud only through it. `POST /v1/fleet` stays for boxes on older releases; it can go one
-stable release after the first that pins the relay. A collector the household
-set in `fleet_ping.endpoint` is still posted to directly.
+would see its address; it waits for the relay (Fredrik, 24 October 2026). A
+build with the relay sends the fleet report to FTW Cloud only through it.
+`POST /v1/fleet` stays for boxes on older releases; it can go one stable
+release after the first that pins the relay. A collector the household set
+in `fleet_ping.endpoint` is still posted to directly.
 
 **Who sees what.** The relay sees the box's address, the time and a
 ciphertext of fixed length, never a report. Cloudflare's relay, if chosen,
@@ -437,12 +444,14 @@ Limits, plainly:
   computed from them and matched with a report. The gateway does not do this
   and keeps nothing to match with, but that is a rule in code, not one the
   cryptography enforces.
-- An anonymous report cannot prove that a real box sent it. Anyone with the
-  public key configuration can post reports, and the relay can drop some.
-  One real report and four all-zero fakes would publish that home's six
-  sums under "5 reports". The floor of five counts reports, not boxes; this
-  is open, for Fredrik. Privacy Pass-style tokens would close it; they are
-  not built.
+- The floor of five counts reports, not boxes; Fredrik accepted this on
+  24 October 2026. An anonymous report cannot prove that a real box sent
+  it. The relay alone can drop the other reports and add fakes to isolate
+  one home's day, and that shows on our side as missing reports. Anyone
+  else can do it only on a day when one real home reported. Rejecting
+  replays and listing closed days only remove the cheap attacks. Anonymous
+  tokens (Privacy Pass) are the later fix, once the fleet grows or someone
+  shows a need.
 
 **Open for Fredrik's lawyer, not decided here.** Reports that are anonymous
 to Sourceful through OHTTP should be outside GDPR. Reading data from the

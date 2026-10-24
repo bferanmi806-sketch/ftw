@@ -64,6 +64,7 @@ func startFleetPing(
 	cfg *config.Config,
 	cfgMu *sync.RWMutex,
 	st *state.Store,
+	answer statsAnswer,
 	version string,
 	managedDriverDir string,
 ) (*fleetping.Pinger, error) {
@@ -79,7 +80,7 @@ func startFleetPing(
 	installedAt := firstSeen(st, time.Now())
 
 	pinger, err := fleetping.New(fleetping.Options{
-		Enabled: fleetReportAllowed(st, endpoint, provider),
+		Enabled: fleetReportAllowed(answer, endpoint, provider),
 		Facts: func() fleetping.Facts {
 			// Drivers can be installed without restarting FTW. Read the signed
 			// catalogue at the same time as the config so tomorrow's report and
@@ -111,36 +112,61 @@ func fleetProvider(endpoint string, relay *statsrelay.Client) (fleetping.Provide
 	return fleetping.NewHTTPProvider(endpoint, nil)
 }
 
-// sharesStatistics is the one answer for both anonymous daily reports, the
-// fleet report and the energy report: part of FTW Cloud, and on for a box
-// without it until the owner turns it off. One function, so the two reports
-// cannot come to read different answers. fleet_ping.enabled is no longer a
-// second switch; MigrateStatistics read it once.
-func sharesStatistics(st *state.Store) func() bool {
-	return func() bool { return st != nil && cloudlink.SharesStatistics(st) }
+// statsAnswer is the one answer for both anonymous daily reports, the fleet
+// report and the energy report: part of FTW Cloud, and on for a box without
+// it until the owner turns it off. One reader, so the two reports cannot come
+// to read different answers. It asks the running Cloud link, which counts a
+// grant only with the key it was made with; with no link, the box's own
+// answer alone. fleet_ping.enabled is no longer a second switch;
+// migrateStatistics read it once.
+type statsAnswer struct {
+	st   *state.Store
+	link *cloudlink.Link
+}
+
+func (a statsAnswer) shares() bool {
+	if a.link != nil {
+		return a.link.SharesStatistics()
+	}
+	return a.st != nil && cloudlink.SharesStatistics(a.st)
+}
+
+func (a statsAnswer) saidYes() bool {
+	if a.link != nil {
+		return a.link.SaidYesToStatistics()
+	}
+	return a.st != nil && cloudlink.SaidYesToStatistics(a.st)
 }
 
 // fleetReportAllowed is the one answer, with one more rule for the direct
-// path: a box that shares only by default, never having said yes, posts
-// nothing straight to FTW Cloud, which would see its address. Through the
-// relay, or to a collector the household chose, the answer alone decides.
-func fleetReportAllowed(st *state.Store, endpoint string, provider fleetping.Provider) func() bool {
-	shares := sharesStatistics(st)
+// path (Fredrik, 24 October 2026): a box that shares only by default, never
+// having said yes, posts nothing straight to FTW Cloud, which would see its
+// address; it waits for the relay. Through the relay, or to a collector the
+// household chose, the answer alone decides.
+func fleetReportAllowed(answer statsAnswer, endpoint string, provider fleetping.Provider) func() bool {
 	_, relayed := provider.(*fleetping.RelayProvider)
 	direct := !relayed && strings.TrimSpace(endpoint) == config.DefaultFleetPingEndpoint
 	return func() bool {
-		return shares() && (!direct || cloudlink.SaidYesToStatistics(st))
+		return answer.shares() && (!direct || answer.saidYes())
 	}
 }
 
 // migrateStatistics turns what an earlier release stored into the one
-// answer, once: a fleet report switched off in the config stays off.
-func migrateStatistics(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) {
+// answer, once: a fleet report switched off in the config stays off. Then
+// the Cloud grant follows it, so an answer that came out off also stops an
+// hourly upload the grant still carried.
+func migrateStatistics(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store, link *cloudlink.Link) {
 	if st == nil {
 		return
 	}
 	if err := cloudlink.MigrateStatistics(st, !fleetPingEnabled(cfg, cfgMu)()); err != nil {
 		slog.Warn("could not record the statistics answer; nothing is sent until it is", "err", err)
+		return
+	}
+	if link != nil {
+		if err := link.ReconcileStatistics("statistics answer"); err != nil {
+			slog.Warn("could not make the FTW Cloud grant follow the statistics answer", "err", err)
+		}
 	}
 }
 

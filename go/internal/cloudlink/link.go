@@ -784,7 +784,9 @@ func (l *Link) Stats(req StatsRequest) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch {
-	case l.grant == nil:
+	case l.grant == nil || l.grant.Revoked || l.disabled:
+		// The box's own answer, which needs no grant: also while a Cloud
+		// that was turned off waits for its deletion receipt.
 		if req.Policy != cloudwire.StatsPolicy {
 			return ErrNotGranted
 		}
@@ -793,8 +795,8 @@ func (l *Link) Stats(req StatsRequest) error {
 		}
 		l.log.Info("audit: statistics on", "by", req.By)
 		return nil
-	case l.grant.Revoked:
-		return ErrPurgePending
+	case cloudUnderOlderTerms(l.grant):
+		return ErrCloudTermsFirst
 	case len(l.opts.ServiceKeys) == 0:
 		return ErrNoService
 	}
@@ -954,6 +956,9 @@ type Status struct {
 	// StatisticsRequired says it is part of FTW Cloud, with no off switch.
 	Statistics         bool `json:"statistics"`
 	StatisticsRequired bool `json:"statisticsRequired"`
+	// StatisticsNeedTerms is Cloud on under older terms: statistics wait
+	// until the owner accepts the current ones.
+	StatisticsNeedTerms bool `json:"statisticsNeedTerms"`
 	// State is the readable copy's: off, on or revoking.
 	State            string `json:"state"`
 	StatisticsPolicy string `json:"statisticsPolicy"`
@@ -1022,12 +1027,13 @@ func (l *Link) Status() Status {
 	}
 	s.Statistics = sharesStatistics(g, share)
 	s.StatisticsRequired = cloudRequiresStatistics(g)
+	s.StatisticsNeedTerms = cloudUnderOlderTerms(g)
 	s.StatisticsOnly = l.grant.statisticsOnly()
 	s.CloudTermsAccepted = l.grant != nil && !l.grant.Revoked && l.grant.Policy == cloudwire.CloudTermsPolicy
 	s.StatisticsPolicy = cloudwire.StatsPolicy
 	s.StatisticsReady = l.connected && l.serviceStatsPolicy == cloudwire.StatsPolicy
 	if g := l.grant; g != nil {
-		s.StatisticsActive = !g.Revoked && g.StatsAtMs > 0 && g.StatsPolicy == cloudwire.StatsPolicy && len(g.StatsID) == 16 && slices.Contains(g.Purposes, protocol.CloudPurposeStats)
+		s.StatisticsActive = s.Statistics && !g.Revoked && g.StatsAtMs > 0 && g.StatsPolicy == cloudwire.StatsPolicy && len(g.StatsID) == 16 && slices.Contains(g.Purposes, protocol.CloudPurposeStats)
 	}
 	s.BudgetReached = s.BytesLast24h >= budgetBytes
 	if !l.lastSend.IsZero() {

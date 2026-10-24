@@ -117,7 +117,7 @@ func TestRunningFleetPingSeesADriverInstalledLater(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, "v1.4.0", active)
+	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, statsAnswer{st: store}, "v1.4.0", active)
 	if err != nil {
 		t.Fatalf("startFleetPing: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestNoNameTheHouseholdChoseReachesThePostedPing(t *testing.T) {
 	// path unchanged. Payload() is what sendOnce marshals and posts.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, "v1.4.0", active)
+	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, statsAnswer{st: store}, "v1.4.0", active)
 	if err != nil {
 		t.Fatalf("startFleetPing: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestARepositoryRootInsideTheBundledTreeIsNotTheShippedCatalogue(t *testing.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, "v1.4.0", active)
+	pinger, err := startFleetPing(ctx, cfg, cfgMu, store, statsAnswer{st: store}, "v1.4.0", active)
 	if err != nil {
 		t.Fatalf("startFleetPing: %v", err)
 	}

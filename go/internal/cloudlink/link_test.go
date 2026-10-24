@@ -1147,43 +1147,35 @@ func (h *harness) nextRoster(t *testing.T) cloudwire.Roster {
 	return r
 }
 
-// Statistics are a second consent under a grant already on. The box draws a
-// statsId once, keeps it while statistics stay on, tells the service through
-// the roster and sends no statistics yet.
-func TestStatisticsAreASecondConsentUnderTheGrant(t *testing.T) {
+// Under Cloud, statistics come with the current terms. Under older terms they
+// wait: asking for them is refused rather than added beside the old terms.
+func TestStatisticsComeWithTheCurrentCloudTerms(t *testing.T) {
 	svc := newFakeService(t)
 	h := newHarness(t, svc)
-	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-10"}); !errors.Is(err, ErrNotGranted) {
-		t.Fatalf("statistics with FTW Cloud off: %v", err)
-	}
-	h.grant(t)
-	first := h.nextRoster(t)
-	svc.waitFor(cloudwire.MsgLive, 5*time.Second)
 	if err := h.link.Stats(StatsRequest{}); !errors.Is(err, ErrGrantRequest) {
 		t.Fatalf("statistics without a policy: %v", err)
 	}
+	h.grant(t)
+	first := h.nextRoster(t)
+	if err := h.link.Stats(StatsRequest{Policy: cloudwire.StatsPolicy, By: "app:aaaa1111"}); !errors.Is(err, ErrCloudTermsFirst) {
+		t.Fatalf("statistics under older terms: %v", err)
+	}
+	if g := h.record(t); len(g.StatsID) != 0 || strings.Join(g.Purposes, ",") != "serve" {
+		t.Fatalf("older terms gained statistics: %+v", g)
+	}
+	if st := h.link.Status(); !st.StatisticsNeedTerms || st.Statistics || h.link.SharesStatistics() {
+		t.Fatalf("status under older terms: %+v", st)
+	}
 
-	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-10", By: "app:aaaa1111"}); err != nil {
+	if err := h.link.Grant(GrantRequest{Scopes: []string{protocol.ScopeLiveRead}, Policy: cloudwire.CloudTermsPolicy, By: "owner"}); err != nil {
 		t.Fatal(err)
 	}
 	r := h.nextRoster(t)
-	if strings.Join(r.Grant.Purposes, ",") != "serve,stats" || r.RosterSeq <= first.RosterSeq {
-		t.Fatalf("roster after statistics on: purposes %v, seq %d after %d", r.Grant.Purposes, r.RosterSeq, first.RosterSeq)
+	if strings.Join(r.Grant.Purposes, ",") != "serve,stats" || r.RosterSeq <= first.RosterSeq || len(r.Grant.StatsID) != statsIDBytes {
+		t.Fatalf("roster under the current terms: %+v", r.Grant)
 	}
-	if st := h.link.Status(); strings.Join(st.Purposes, ",") != "serve,stats" {
-		t.Fatalf("status purposes %v", st.Purposes)
-	}
-	g := h.record(t)
-	if len(g.StatsID) != statsIDBytes || g.StatsPolicy != "stats-2026-10" || g.Policy != "2026-10" {
-		t.Fatalf("grant record %+v", g)
-	}
-
-	// A new policy needs a new id and consent start.
-	if err := h.link.Stats(StatsRequest{Policy: "stats-2026-11"}); err != nil {
-		t.Fatal(err)
-	}
-	if again := h.record(t); bytes.Equal(again.StatsID, g.StatsID) || again.StatsPolicy != "stats-2026-11" {
-		t.Fatalf("statsId %x became %x", g.StatsID, again.StatsID)
+	if st := h.link.Status(); !st.Statistics || !st.StatisticsRequired || st.StatisticsNeedTerms || !h.link.SaidYesToStatistics() {
+		t.Fatalf("status under the current terms: %+v", st)
 	}
 
 	// A restart reads it back.
@@ -1192,64 +1184,67 @@ func TestStatisticsAreASecondConsentUnderTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st := reopened.Status(); strings.Join(st.Purposes, ",") != "serve,stats" {
+	if st := reopened.Status(); strings.Join(st.Purposes, ",") != "serve,stats" || !st.Statistics {
 		t.Fatalf("after a restart: %+v", st)
 	}
-
 	for _, env := range svc.received() {
 		if env.T == "stats" {
-			t.Fatal("the box sent statistics")
+			t.Fatal("the box sent statistics before the service approved them")
 		}
 	}
 }
 
-// Turning statistics off forgets the statsId; turning them on again draws a
-// new one, because the service refuses an id it has deleted.
-func TestStoppingStatisticsForgetsTheID(t *testing.T) {
-	svc := newFakeService(t)
-	h := newHarness(t, svc)
-	if err := h.link.StopStats("lan"); err != nil {
-		t.Fatalf("statistics off with FTW Cloud off: %v", err)
-	}
-	h.grant(t)
-	h.nextRoster(t)
-	if err := h.link.Stats(StatsRequest{Policy: "p"}); err != nil {
-		t.Fatal(err)
-	}
-	h.nextRoster(t)
-	old := h.record(t).StatsID
-
-	if err := h.link.StopStats("lan"); err != nil {
-		t.Fatal(err)
-	}
-	r := h.nextRoster(t)
-	if strings.Join(r.Grant.Purposes, ",") != "serve" {
-		t.Fatalf("roster after statistics off: %v", r.Grant.Purposes)
-	}
-	if g := h.record(t); len(g.StatsID) != 0 || g.StatsPolicy != "" || strings.Join(g.Purposes, ",") != "serve" {
-		t.Fatalf("grant record after statistics off: %+v", g)
-	}
-	if err := h.link.StopStats("lan"); err != nil {
-		t.Fatalf("statistics off twice: %v", err)
-	}
-
-	if err := h.link.Stats(StatsRequest{Policy: "p"}); err != nil {
-		t.Fatal(err)
-	}
-	if renewed := h.record(t).StatsID; len(renewed) != statsIDBytes || bytes.Equal(renewed, old) {
-		t.Fatalf("statsId %x after %x", renewed, old)
-	}
-}
-
-func TestNoStatisticsWhileTheCopyIsBeingDeleted(t *testing.T) {
+// While a Cloud that was turned off waits for its deletion receipt, the box's
+// own answer can still change. It touches nothing in the grant being deleted.
+func TestTheLocalAnswerChangesWhileTheCopyIsBeingDeleted(t *testing.T) {
 	svc := newFakeService(t)
 	h := newHarness(t, svc)
 	h.grant(t)
 	if err := h.link.Revoke("test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrPurgePending) {
+	if err := h.link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrNotGranted) {
+		t.Fatalf("an unknown policy: %v", err)
+	}
+	if err := h.link.Stats(StatsRequest{Policy: cloudwire.StatsPolicy}); err != nil {
 		t.Fatalf("statistics while revoking: %v", err)
+	}
+	if g := h.record(t); !g.Revoked || len(g.StatsID) != 0 || !h.link.SharesStatistics() {
+		t.Fatalf("grant while revoking: %+v", g)
+	}
+	if err := h.link.StopStats("lan"); err != nil || h.link.SharesStatistics() {
+		t.Fatalf("off while revoking: %v", err)
+	}
+}
+
+// A stored grant counts only when the link honours it. With a cloud.key that
+// is not the one the grant was made with, the box's own answer stands, and a
+// box that only shares by default has said no yes.
+func TestOnlyAGrantTheLinkHonoursCounts(t *testing.T) {
+	svc := newFakeService(t)
+	h := newHarness(t, svc)
+	if err := h.link.Grant(GrantRequest{Scopes: []string{protocol.ScopeLiveRead}, Policy: cloudwire.CloudTermsPolicy, By: "owner"}); err != nil {
+		t.Fatal(err)
+	}
+	h.nextRoster(t)
+	if err := h.kv.SaveConfig(statsShareKey, "default"); err != nil {
+		t.Fatal(err)
+	}
+	if !h.link.SaidYesToStatistics() {
+		t.Fatal("the current terms are not a yes")
+	}
+	if err := os.Remove(h.keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createKey(h.keyPath); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(Options{Site: h.site, Roster: fakeRoster{}, KV: h.kv, KeyPath: h.keyPath, ServiceKeys: h.link.opts.ServiceKeys})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.Status().State != "off" || reopened.SaidYesToStatistics() || !reopened.SharesStatistics() {
+		t.Fatalf("a grant made with another key counted: %+v", reopened.Status())
 	}
 }
 

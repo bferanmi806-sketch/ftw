@@ -18,12 +18,12 @@ import (
 // startEnergyReport builds the sender and starts its schedule. It is built
 // even when nothing may be sent, so Settings can show the report this box
 // would send. A build with no relay or gateway key sends nothing at all.
-func startEnergyReport(ctx context.Context, cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) *energyreport.Sender {
+func startEnergyReport(ctx context.Context, cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store, answer statsAnswer) *energyreport.Sender {
 	if st == nil {
 		return nil
 	}
 	sender, err := energyreport.New(energyreport.Options{
-		Enabled:     energyReportAllowed(cfg, cfgMu, st),
+		Enabled:     energyReportAllowed(cfg, cfgMu, answer),
 		Ledger:      st,
 		KV:          st,
 		ClockSynced: cloudlink.ClockSynced,
@@ -39,12 +39,11 @@ func startEnergyReport(ctx context.Context, cfg *config.Config, cfgMu *sync.RWMu
 // energyReportAllowed is the fleet report's answer, and no site a partner
 // controls: as for the hourly project statistics, a partner's contract has to
 // let such a home in first.
-func energyReportAllowed(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) func() bool {
-	allowed := sharesStatistics(st)
+func energyReportAllowed(cfg *config.Config, cfgMu *sync.RWMutex, answer statsAnswer) func() bool {
 	return func() bool {
 		cfgMu.RLock()
 		partner := cfg.Nova != nil && cfg.Nova.Enabled
 		cfgMu.RUnlock()
-		return !partner && allowed()
+		return !partner && answer.shares()
 	}
 }

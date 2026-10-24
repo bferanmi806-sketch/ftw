@@ -15,10 +15,11 @@ type Ledger interface {
 	LoadEnergyHistoryContext(context.Context, state.EnergyHistoryQuery) ([]state.EnergyLedgerPoint, bool, error)
 }
 
-// usable are the ledger qualities that count as a recorded bucket. A gap,
-// reset, invalid read or anything this list does not name makes the day
-// incomplete.
-var usable = map[string]bool{"measured": true, "recovered": true, "integrated": true, "estimated": true}
+// usable are the ledger qualities that count as a recorded bucket. A reset
+// is one: a charger's session counter starts again at every plug-in, and the
+// ledger covers that interval from the power reading. A gap, an invalid read
+// or anything this list does not name makes the day incomplete.
+var usable = map[string]bool{"measured": true, "recovered": true, "integrated": true, "estimated": true, "reset": true}
 
 // sums maps a ledger flow to its place in energywire.Fields.
 var sums = map[state.EnergyFlow]int{
@@ -37,7 +38,7 @@ const dayMS = int64(24 * time.Hour / time.Millisecond)
 //
 // Whole means: a site meter, and every grid meter, solar, battery and charger
 // asset that was in use that day recorded every bucket of it, with nothing the
-// ledger marks as a gap, reset or invalid read. An asset that arrived or went
+// ledger marks as a gap or invalid read. An asset that arrived or went
 // silent during the day makes it incomplete; one that left before the day
 // began is not part of it. A box that misses part of a day sends nothing for
 // it rather than a sum that looks like a quiet day.
@@ -57,7 +58,8 @@ func Day(ctx context.Context, l Ledger, start time.Time) (energywire.Report, boo
 		default:
 			continue
 		}
-		if a.LastSeenMS < from {
+		// Gone before the day began, or first seen after it ended.
+		if a.LastSeenMS < from || a.FirstSeenMS >= to {
 			continue
 		}
 		if a.FirstSeenMS > from || a.LastSeenMS < to {

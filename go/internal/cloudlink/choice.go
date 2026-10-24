@@ -2,11 +2,17 @@ package cloudlink
 
 import (
 	"errors"
+	"slices"
+
 	"github.com/srcfl/ftw/go/protocol"
 	"github.com/srcfl/ftw/go/protocol/cloudwire"
 )
 
 var ErrCloudNeedsStatistics = errors.New("cloudlink: statistics are part of FTW Cloud; turn FTW Cloud off, then statistics, to stop contributing")
+
+// ErrCloudTermsFirst is statistics asked for while Cloud runs under older
+// terms, which did not include them.
+var ErrCloudTermsFirst = errors.New("cloudlink: accept the current FTW Cloud terms first; they include statistics")
 
 // includeStatistics records the exact scope the owner read. Service approval
 // still gates every report. The caller holds mu.
@@ -78,20 +84,54 @@ func (l *Link) End(by string) error {
 // With FTW Cloud they are part of Cloud, with no separate off switch. A Cloud
 // grant under older terms sends nothing until the owner accepts the current
 // ones. Without Cloud they are on unless the owner turned them off.
+//
+// This form is for a box whose Cloud link is not running, so no stored grant
+// is honoured: the local answer alone. Link.SharesStatistics counts the grant
+// the running link honours, which it does only with the key it was made with.
 func SharesStatistics(kv KV) bool {
 	if kv == nil {
 		return false
 	}
-	g, err := loadJSON[grantRecord](kv, grantKey)
-	if err != nil {
+	share, _ := kv.LoadConfig(statsShareKey)
+	return sharesStatistics(nil, share)
+}
+
+// SaidYesToStatistics reports an active yes, for a box whose Cloud link is
+// not running: a local yes. A box that shares only by default has not given
+// one, so its reports reach FTW Cloud only through the relay, which hides its
+// address; nothing goes straight to FTW Cloud from it.
+func SaidYesToStatistics(kv KV) bool {
+	if kv == nil {
 		return false
 	}
-	// Cloud turned off is off at once, before the grant record says so.
-	if disabled, _ := kv.LoadConfig(disabledKey); disabled == "true" {
+	share, _ := kv.LoadConfig(statsShareKey)
+	return saidYesToStatistics(nil, share)
+}
+
+// SharesStatistics is the one answer with the grant this link honours.
+func (l *Link) SharesStatistics() bool {
+	g, share := l.statisticsAnswer()
+	return sharesStatistics(g, share)
+}
+
+// SaidYesToStatistics is an active yes with the grant this link honours:
+// Cloud under the current terms, or a local yes.
+func (l *Link) SaidYesToStatistics() bool {
+	g, share := l.statisticsAnswer()
+	return saidYesToStatistics(g, share)
+}
+
+// statisticsAnswer is the grant this link honours, nil once Cloud is turned
+// off, and the stored local answer.
+func (l *Link) statisticsAnswer() (*grantRecord, string) {
+	l.mu.Lock()
+	g := l.grant
+	if l.disabled {
 		g = nil
 	}
-	share, _ := kv.LoadConfig(statsShareKey)
-	return sharesStatistics(g, share)
+	l.mu.Unlock()
+	share, _ := l.opts.KV.LoadConfig(statsShareKey)
+	return g, share
 }
 
 func sharesStatistics(g *grantRecord, share string) bool {
@@ -101,26 +141,31 @@ func sharesStatistics(g *grantRecord, share string) bool {
 	return share == "on" || share == "default"
 }
 
-// SaidYesToStatistics reports an active yes: FTW Cloud under the current
-// terms, or a local yes. A box that shares only by default has not given one,
-// so its reports reach FTW Cloud only through the relay, which hides its
-// address; nothing goes straight to FTW Cloud from it.
-func SaidYesToStatistics(kv KV) bool {
-	if kv == nil {
-		return false
-	}
-	g, err := loadJSON[grantRecord](kv, grantKey)
-	if err != nil {
-		return false
-	}
-	if disabled, _ := kv.LoadConfig(disabledKey); disabled == "true" {
-		g = nil
-	}
+func saidYesToStatistics(g *grantRecord, share string) bool {
 	if g != nil && !g.Revoked && !g.statisticsOnly() {
 		return g.Policy == cloudwire.CloudTermsPolicy
 	}
-	share, _ := kv.LoadConfig(statsShareKey)
 	return share == "on"
+}
+
+// cloudUnderOlderTerms is Cloud on under terms older than the current ones,
+// which did not include statistics: nothing goes until the owner accepts.
+func cloudUnderOlderTerms(g *grantRecord) bool {
+	return g != nil && !g.Revoked && !g.statisticsOnly() && g.Policy != cloudwire.CloudTermsPolicy
+}
+
+// ReconcileStatistics makes the grant follow the one answer once it is off:
+// the stats purpose and statsId go, and a statistics-only link ends, as
+// turning statistics off does. Core calls it after MigrateStatistics, so an
+// earlier fleet switch set to off also stops the hourly upload it never
+// covered.
+func (l *Link) ReconcileStatistics(by string) error {
+	g, share := l.statisticsAnswer()
+	if share != "off" || g == nil || g.Revoked || cloudRequiresStatistics(g) ||
+		(len(g.StatsID) == 0 && !slices.Contains(g.Purposes, protocol.CloudPurposeStats)) {
+		return nil
+	}
+	return l.StopStats(by)
 }
 
 // cloudRequiresStatistics reports whether the grant is Cloud under the

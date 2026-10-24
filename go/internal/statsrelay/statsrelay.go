@@ -20,6 +20,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/srcfl/ftw/go/protocol/ohttp"
@@ -76,7 +77,13 @@ func pinned(relay, key string) (string, ohttp.KeyConfig, bool) {
 		return "", ohttp.KeyConfig{}, false
 	}
 	u, err := url.Parse(relay)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == reportwire.Authority {
+	if err != nil {
+		return "", ohttp.KeyConfig{}, false
+	}
+	// Host names compare without case and without a trailing dot, so FTW
+	// Cloud cannot pass as its own relay under another spelling.
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	if u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || strings.EqualFold(host, reportwire.Authority) {
 		return "", ohttp.KeyConfig{}, false
 	}
 	return relay, cfg, true

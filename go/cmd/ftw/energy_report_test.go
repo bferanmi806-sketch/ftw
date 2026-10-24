@@ -26,7 +26,8 @@ func TestBothReportsReadTheOneStatisticsAnswer(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{FleetPing: &config.FleetPing{Enabled: true}}
 	cfgMu := &sync.RWMutex{}
-	energy, fleet := energyReportAllowed(cfg, cfgMu, st), sharesStatistics(st)
+	answer := statsAnswer{st: st}
+	energy, fleet := energyReportAllowed(cfg, cfgMu, answer), answer.shares
 	check := func(name string, wantEnergy, wantFleet bool) {
 		t.Helper()
 		if energy() != wantEnergy || fleet() != wantFleet {
@@ -35,7 +36,7 @@ func TestBothReportsReadTheOneStatisticsAnswer(t *testing.T) {
 	}
 
 	check("before the stored state is read", false, false)
-	migrateStatistics(cfg, cfgMu, st)
+	migrateStatistics(cfg, cfgMu, st, nil)
 	check("a box without Cloud, never asked", true, true)
 
 	// The old switch is read once and is no longer a second setting.
@@ -51,11 +52,14 @@ func TestBothReportsReadTheOneStatisticsAnswer(t *testing.T) {
 	}
 	check("the owner turned statistics off", false, false)
 
+	// A stored Cloud grant counts only through a running link, which honours
+	// it only with its key (cloudlink's tests). Without one, the box's own
+	// answer stands.
 	grant, _ := json.Marshal(map[string]any{"policy": cloudwire.CloudTermsPolicy, "purposes": []string{"serve", "stats"}})
 	if err := st.SaveConfig("cloud/grant_v1", string(grant)); err != nil {
 		t.Fatal(err)
 	}
-	check("FTW Cloud under the current terms", true, true)
+	check("a stored grant with no link", false, false)
 }
 
 // A box that shares only by default posts nothing straight to FTW Cloud: its
@@ -67,21 +71,22 @@ func TestADefaultBoxSendsNothingStraightToFTWCloud(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	migrateStatistics(&config.Config{}, &sync.RWMutex{}, st)
+	migrateStatistics(&config.Config{}, &sync.RWMutex{}, st, nil)
+	answer := statsAnswer{st: st}
 	client, _, _ := statsrelaytest.New(t, time.Now())
 	direct, _ := fleetProvider(config.DefaultFleetPingEndpoint, nil)
 	relayed, _ := fleetProvider(config.DefaultFleetPingEndpoint, client)
 	own, _ := fleetProvider("https://collector.example.test/fleet", nil)
-	if fleetReportAllowed(st, config.DefaultFleetPingEndpoint, direct)() {
+	if fleetReportAllowed(answer, config.DefaultFleetPingEndpoint, direct)() {
 		t.Fatal("a box that never said yes posted straight to FTW Cloud")
 	}
-	if !fleetReportAllowed(st, config.DefaultFleetPingEndpoint, relayed)() || !fleetReportAllowed(st, "https://collector.example.test/fleet", own)() {
+	if !fleetReportAllowed(answer, config.DefaultFleetPingEndpoint, relayed)() || !fleetReportAllowed(answer, "https://collector.example.test/fleet", own)() {
 		t.Fatal("the relay or the household's collector was held back")
 	}
 	if err := st.SaveConfig("statistics/share_v1", "on"); err != nil {
 		t.Fatal(err)
 	}
-	if !fleetReportAllowed(st, config.DefaultFleetPingEndpoint, direct)() {
+	if !fleetReportAllowed(answer, config.DefaultFleetPingEndpoint, direct)() {
 		t.Fatal("a yes did not send")
 	}
 }
@@ -94,8 +99,8 @@ func TestASwitchedOffFleetReportStaysOff(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	cfg := &config.Config{FleetPing: &config.FleetPing{Enabled: false}}
-	migrateStatistics(cfg, &sync.RWMutex{}, st)
-	if sharesStatistics(st)() {
+	migrateStatistics(cfg, &sync.RWMutex{}, st, nil)
+	if (statsAnswer{st: st}).shares() {
 		t.Fatal("an earlier off was turned on")
 	}
 }

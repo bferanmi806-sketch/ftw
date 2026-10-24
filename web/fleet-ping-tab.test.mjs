@@ -196,6 +196,12 @@ describe("the statistics switch", () => {
     assert.match(line, /no separate off switch/);
   });
 
+  it("says nothing goes under earlier Cloud terms", () => {
+    const line = shareLine({ statistics: false, statisticsRequired: false, statisticsNeedTerms: true });
+    assert.match(line, /earlier terms/);
+    assert.match(line, /Nothing is sent until you accept the current terms/);
+  });
+
   it("says what on and off mean without Cloud", () => {
     assert.match(shareLine({ statistics: true, statisticsRequired: false }), /takes effect at once, with no restart/);
     assert.match(shareLine({ statistics: false, statisticsRequired: false }), /^Off\. Nothing is sent/);
