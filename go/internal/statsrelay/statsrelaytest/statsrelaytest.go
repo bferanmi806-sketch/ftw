@@ -93,10 +93,11 @@ func (g *Gateway) add(msg []byte) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.last = http.StatusBadRequest
-	body, ok := reportwire.Body(msg)
-	if !ok {
+	report, ok := reportwire.Read(msg)
+	if !ok || !reportwire.Fresh(report.Day, g.now) {
 		return g.last
 	}
+	body := report.Body
 	switch reportwire.Schema(body) {
 	case fleetwire.Schema:
 		if r, err := fleetwire.Decode(body); err == nil {

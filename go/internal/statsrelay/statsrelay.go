@@ -12,6 +12,7 @@ package statsrelay
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -52,6 +53,7 @@ type Client struct {
 	relay string
 	key   ohttp.KeyConfig
 	http  *http.Client
+	now   func() time.Time
 }
 
 // Pinned is this build's client, or nil when the build names no usable relay
@@ -90,7 +92,7 @@ func New(relay string, key ohttp.KeyConfig, client *http.Client) *Client {
 	}
 	// A redirect would resend the sealed report to an address nobody chose.
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{relay: relay, key: key, http: client}
+	return &Client{relay: relay, key: key, http: client, now: time.Now}
 }
 
 // Relay is the relay's URL, for Settings.
@@ -98,8 +100,16 @@ func (c *Client) Relay() string { return c.relay }
 
 // Send seals one report body and reads the gateway's answer. Only a sealed
 // 204 from the gateway the box encrypted to counts as delivered.
+//
+// Each call is one report: it draws a fresh id, which the gateway counts
+// once. Nothing retries; a retry of the same report would have to reuse its
+// id, or the gateway would count it twice.
 func (c *Client) Send(ctx context.Context, body []byte) error {
-	inner, ok := reportwire.Request(body)
+	id := make([]byte, reportwire.IDBytes)
+	if _, err := rand.Read(id); err != nil {
+		return err
+	}
+	inner, ok := reportwire.Request(reportwire.Report{ID: id, Day: c.now().UTC().Format(time.DateOnly), Body: body})
 	if !ok {
 		return errors.New("statsrelay: the report does not fit the padded request")
 	}

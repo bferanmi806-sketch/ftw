@@ -400,8 +400,13 @@ together.
 **Path.** Both go through one independent Oblivious HTTP relay (RFC 9458) to
 FTW Cloud's gateway, `POST /v1/ohttp` in `ftwcloudd`, as one padded inner
 request each (`go/protocol/reportwire`, 1,536 bytes; the relay always sees
-1,591). The gateway reads the schema, adds the report to its own day totals
-(`/v1/fleet/public`, `/v1/energy/public`) and keeps nothing per report.
+1,591). Inside, each report carries a random id and the UTC date it was
+sent. The gateway reads the schema, adds the report to its own day totals
+(`/v1/fleet/public`, `/v1/energy/public`) and keeps nothing per report but
+a hash of its id, for three days, so a replay or a retry counts once
+(RFC 9458, section 6.5). A report sent before yesterday is refused. Both
+public views list closed days only, so nobody can match a new count to the
+report that just arrived.
 `go/internal/statsrelay` holds the relay URL and the gateway key as
 compile-time pins. The box encrypts only to the pinned key and never asks the
 service for one, so every box on a release uses the same key and a key
@@ -432,9 +437,12 @@ Limits, plainly:
   computed from them and matched with a report. The gateway does not do this
   and keeps nothing to match with, but that is a rule in code, not one the
   cryptography enforces.
-- An anonymous report cannot prove that a real box sent it, and the relay
-  could replay one. Bounds per field and a cap per date limit junk to noise.
-  Privacy Pass-style tokens are the later fix; they are not built.
+- An anonymous report cannot prove that a real box sent it. Anyone with the
+  public key configuration can post reports, and the relay can drop some.
+  One real report and four all-zero fakes would publish that home's six
+  sums under "5 reports". The floor of five counts reports, not boxes; this
+  is open, for Fredrik. Privacy Pass-style tokens would close it; they are
+  not built.
 
 **Open for Fredrik's lawyer, not decided here.** Reports that are anonymous
 to Sourceful through OHTTP should be outside GDPR. Reading data from the
