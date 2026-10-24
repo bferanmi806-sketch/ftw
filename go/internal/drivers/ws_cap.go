@@ -45,9 +45,15 @@ func NewGorillaWS(driverName string, allowUnverifiedLocal ...bool) WSCap {
 	return &gorillaWS{driverName: driverName, allowUnverifiedLocal: allow}
 }
 
+// wsDialTimeout bounds Open: the TCP dial, TLS and the upgrade. Open runs
+// inside driver_poll, and the driver's commands wait for the poll, so a hung
+// server must not hold a charger's current cut for long. A healthy cloud
+// endpoint answers in well under a second.
+const wsDialTimeout = 5 * time.Second
+
 func newGorillaWSDialer(allowUnverifiedLocal bool, proxy func(*net_http.Request) (*net_url.URL, error)) websocket.Dialer {
 	dialer := *websocket.DefaultDialer
-	dialer.HandshakeTimeout = 15 * time.Second
+	dialer.HandshakeTimeout = wsDialTimeout
 	if proxy == nil {
 		proxy = dialer.Proxy
 	}
