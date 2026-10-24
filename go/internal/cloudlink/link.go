@@ -772,26 +772,36 @@ type StatsRequest struct {
 	By string `json:"-"`
 }
 
-// Stats adds the stats purpose to a grant already on. The first time, it
-// draws the statsId that names this box's rows at the service; later calls
-// keep it. It sends no statistics itself.
+// Stats turns statistics on. For a box without FTW Cloud that is the one
+// answer on the box, and nothing links to Cloud. Under a grant already on it
+// also adds the stats purpose; the first time, it draws the statsId that
+// names this box's rows at the service, and later calls keep it. It sends no
+// statistics itself.
 func (l *Link) Stats(req StatsRequest) error {
-	if len(l.opts.ServiceKeys) == 0 {
-		return ErrNoService
-	}
 	if strings.TrimSpace(req.Policy) == "" {
 		return fmt.Errorf("%w: name the policy the owner accepted", ErrGrantRequest)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	switch {
-	case l.grant == nil:
+	case l.grant == nil || l.grant.Revoked || l.disabled:
+		// The box's own answer, which needs no grant: also while a Cloud
+		// that was turned off waits for its deletion receipt.
 		if req.Policy != cloudwire.StatsPolicy {
 			return ErrNotGranted
 		}
-		return l.startStatisticsOnly(req)
-	case l.grant.Revoked:
-		return ErrPurgePending
+		if err := l.opts.KV.SaveConfig(statsShareKey, "on"); err != nil {
+			return err
+		}
+		l.log.Info("audit: statistics on", "by", req.By)
+		return nil
+	case cloudUnderOlderTerms(l.grant):
+		return ErrCloudTermsFirst
+	case len(l.opts.ServiceKeys) == 0:
+		return ErrNoService
+	}
+	if err := l.opts.KV.SaveConfig(statsShareKey, "on"); err != nil {
+		return err
 	}
 	g := *l.grant
 	if len(g.StatsID) == 0 || g.StatsPolicy != req.Policy {
@@ -812,16 +822,21 @@ func (l *Link) Stats(req StatsRequest) error {
 	return l.storeLocked(g, "statistics on")
 }
 
-// StopStats removes the stats purpose and forgets the statsId. Turning it on
-// again draws a new one.
+// StopStats turns statistics off for a box without FTW Cloud, removes the
+// stats purpose and forgets the statsId. Turning it on again draws a new one.
+// With Cloud under the current terms statistics are part of Cloud.
 func (l *Link) StopStats(by string) error {
 	l.mu.Lock()
-	if l.grant != nil && !l.grant.Revoked && l.grant.Policy == cloudwire.CloudTermsPolicy {
+	if cloudRequiresStatistics(l.grant) {
 		l.mu.Unlock()
 		return ErrCloudNeedsStatistics
 	}
 	only := l.grant != nil && l.grant.statisticsOnly()
 	l.mu.Unlock()
+	if err := l.opts.KV.SaveConfig(statsShareKey, "off"); err != nil {
+		return err
+	}
+	l.log.Info("audit: statistics off", "by", by)
 	if only {
 		if err := l.End(by); err != nil {
 			return err
@@ -937,6 +952,13 @@ type Status struct {
 	CloudTermsAccepted         bool   `json:"cloudTermsAccepted"`
 	StatisticsOnly             bool   `json:"statisticsOnly"`
 	StatisticsDecisionRequired bool   `json:"statisticsDecisionRequired"`
+	// Statistics is the one answer for both anonymous daily reports, and
+	// StatisticsRequired says it is part of FTW Cloud, with no off switch.
+	Statistics         bool `json:"statistics"`
+	StatisticsRequired bool `json:"statisticsRequired"`
+	// StatisticsNeedTerms is Cloud on under older terms: statistics wait
+	// until the owner accepts the current ones.
+	StatisticsNeedTerms bool `json:"statisticsNeedTerms"`
 	// State is the readable copy's: off, on or revoking.
 	State            string `json:"state"`
 	StatisticsPolicy string `json:"statisticsPolicy"`
@@ -995,17 +1017,23 @@ func (l *Link) Status() Status {
 		TunDropped: l.tunDropped,
 	}
 	s.CloudPolicy = cloudwire.CloudTermsPolicy
-	decision, _ := l.opts.KV.LoadConfig(statsDecisionKey)
-	s.StatisticsDecisionRequired = decision != cloudwire.StatsPolicy
-	if l.grant != nil && !l.grant.Revoked && l.grant.StatsPolicy == cloudwire.StatsPolicy && len(l.grant.StatsID) == 16 {
-		s.StatisticsDecisionRequired = false
+	// Nobody is asked any more: statistics are part of Cloud, and on for a
+	// box without it until its owner turns them off. The field stays false
+	// for clients that still read it.
+	share, _ := l.opts.KV.LoadConfig(statsShareKey)
+	g := l.grant
+	if l.disabled {
+		g = nil
 	}
+	s.Statistics = sharesStatistics(g, share)
+	s.StatisticsRequired = cloudRequiresStatistics(g)
+	s.StatisticsNeedTerms = cloudUnderOlderTerms(g)
 	s.StatisticsOnly = l.grant.statisticsOnly()
 	s.CloudTermsAccepted = l.grant != nil && !l.grant.Revoked && l.grant.Policy == cloudwire.CloudTermsPolicy
 	s.StatisticsPolicy = cloudwire.StatsPolicy
 	s.StatisticsReady = l.connected && l.serviceStatsPolicy == cloudwire.StatsPolicy
 	if g := l.grant; g != nil {
-		s.StatisticsActive = !g.Revoked && g.StatsAtMs > 0 && g.StatsPolicy == cloudwire.StatsPolicy && len(g.StatsID) == 16 && slices.Contains(g.Purposes, protocol.CloudPurposeStats)
+		s.StatisticsActive = s.Statistics && !g.Revoked && g.StatsAtMs > 0 && g.StatsPolicy == cloudwire.StatsPolicy && len(g.StatsID) == 16 && slices.Contains(g.Purposes, protocol.CloudPurposeStats)
 	}
 	s.BudgetReached = s.BytesLast24h >= budgetBytes
 	if !l.lastSend.IsZero() {

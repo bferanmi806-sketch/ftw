@@ -1858,3 +1858,9 @@ codes, Noise key or browser subscriptions. It grants no remote access. Core
 also rejects tunnels locally in that mode and emits no live or event data.
 Collection stays off until the signed C8 review; the default operator setting
 is empty. Withdrawal and retention continue while it is paused.
+
+Since 24 October 2026 a box without Cloud no longer starts a statistics-only
+roster: its statistics are the two anonymous daily reports, through the
+Oblivious HTTP relay (ADR 0008, "Anonymous daily reports and one statistics
+answer"). Statistics-only rosters already running keep working until the
+owner turns statistics off.
