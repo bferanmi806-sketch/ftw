@@ -5,6 +5,9 @@
 // on which version, with which drivers, so engineering effort lands where the
 // fleet actually is. It runs against the constraint in docs/architecture.md:
 // the daily totals must not give the relay a stable household record.
+// It also says, coarsely, how the box ran over the last day: how slow its
+// slowest plan was, whether plans fell back, how often driver polls failed and
+// whether an update failed, so the fleet's trouble is found where it is.
 //
 // So one ping is a picture of one box's shape and carries nothing that joins
 // two pings together:
@@ -130,6 +133,29 @@ type Facts struct {
 
 	// InstalledAt is when this box first ran FTW.
 	InstalledAt time.Time
+
+	// Health is how the box ran lately.
+	Health Health
+}
+
+// Health is how the box ran lately, before it is coarsened. Every field is a
+// sum over the whole box: never a driver's name, a plan's time or an
+// update's version.
+type Health struct {
+	// Plans is how many plans the planner kept in the last 24 hours,
+	// SlowestSolve the longest any of them took, and Fallbacks how many were
+	// a fallback plan.
+	Plans        int
+	SlowestSolve time.Duration
+	Fallbacks    int
+
+	// Polls is how many driver polls ran in the last 24 hours, all drivers
+	// together, and PollErrors how many failed.
+	Polls, PollErrors uint64
+
+	// Update is the outcome of the newest update in the last 7 days: "ok",
+	// "failed", or empty without one.
+	Update string
 }
 
 // Payload is the whole ping. Every field is a bucket or a label shared with
@@ -144,14 +170,81 @@ type Payload = fleetwire.Report
 func Build(f Facts, now time.Time) Payload {
 	version, channel := releaseVersion(f.Version)
 	return Payload{
-		Schema:  Schema,
-		Version: version,
-		Channel: channel,
-		Drivers: driverTypes(f.Drivers, f.Catalogue),
-		Battery: batteryBucket(f.BatteryWh),
-		Zone:    knownZone(f.PriceZone),
-		Age:     ageBucket(f.InstalledAt, now),
+		Schema:    Schema,
+		Version:   version,
+		Channel:   channel,
+		Drivers:   driverTypes(f.Drivers, f.Catalogue),
+		Battery:   batteryBucket(f.BatteryWh),
+		Zone:      knownZone(f.PriceZone),
+		Age:       ageBucket(f.InstalledAt, now),
+		Solve:     solveBucket(f.Health),
+		Fallbacks: fallbackBucket(f.Health),
+		Errors:    errorBucket(f.Health),
+		Update:    updateBucket(f.Health.Update),
 	}
+}
+
+// The health buckets answer where engineering time goes: is the planner fast
+// enough on the hardware boxes run, does it fall back, do drivers fail, do
+// updates. Each is three or four words wide and describes the last day, or
+// for updates the last week, so it changes as the box runs instead of
+// becoming one more fixed trait of the household. Most boxes share the
+// common answer, which is what keeps the rarer ones in a crowd.
+
+// solveBucket is the slowest plan of the last 24 hours. Five seconds is the
+// edge that matters: past it a small box's planner runs out of its budget.
+func solveBucket(h Health) string {
+	switch s := h.SlowestSolve; {
+	case h.Plans <= 0:
+		return "none"
+	case s < time.Second:
+		return "0-1s"
+	case s < 5*time.Second:
+		return "1-5s"
+	default:
+		return "5s+"
+	}
+}
+
+// fallbackBucket is how many of the last 24 hours' plans fell back.
+func fallbackBucket(h Health) string {
+	switch {
+	case h.Plans <= 0:
+		return "none"
+	case h.Fallbacks <= 0:
+		return "0"
+	case h.Fallbacks <= 3:
+		return "1-3"
+	default:
+		return "4+"
+	}
+}
+
+// errorBucket is the share of the last 24 hours' driver polls that failed.
+// A share, not a count, so a driver that polls every second and one that
+// polls every minute land in the same bucket for the same trouble.
+func errorBucket(h Health) string {
+	switch {
+	case h.Polls == 0:
+		return "none"
+	case h.PollErrors == 0:
+		return "0"
+	case h.PollErrors*100 < h.Polls:
+		return "0-1%"
+	default:
+		return "1%+"
+	}
+}
+
+// updateBucket is the newest update of the last 7 days. A box that does not
+// update itself says none, like a box that had no update, so how a box was
+// installed does not become one more field.
+func updateBucket(outcome string) string {
+	switch outcome {
+	case "ok", "failed":
+		return outcome
+	}
+	return "none"
 }
 
 // releaseTag matches the two shapes this project publishes: vX.Y.Z and

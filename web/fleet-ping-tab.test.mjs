@@ -45,13 +45,17 @@ function render(config) {
 }
 
 const payload = {
-  schema: "ftw.fleet/1",
+  schema: "ftw.fleet/2",
   ftw_version: "v1.4.0-beta.2",
   channel: "beta",
   drivers: ["easee_cloud", "sungrow"],
   battery_kwh: "5-15",
   price_zone: "SE3",
   install_age: "6-12m",
+  plan_solve: "1-5s",
+  plan_fallbacks: "0",
+  driver_errors: "0-1%",
+  update: "failed",
 };
 
 describe("the fleet statistics panel", () => {
@@ -85,26 +89,27 @@ describe("the fleet statistics panel", () => {
   it("names every field the message carries", () => {
     // This screen is the whole argument for a feature that is on by default,
     // and the sentence people actually read is the paragraph, not the table
-    // under it. A paragraph that names four of six fields is the screen
+    // under it. A paragraph that names some of the fields is the screen
     // making its case with the awkward ones left out — the price zone above
     // all, since it is the only field that says roughly where the house is.
     const html = render({});
-    for (const field of [/version/i, /channel/i, /device|driver/i, /battery/i, /price zone/i, /how old/i]) {
+    for (const field of [/version/i, /channel/i, /device|driver/i, /battery/i, /price zone/i, /how old/i,
+      /slowest plan/i, /fell back/i, /failed to read/i, /update/i]) {
       assert.match(html, field, `the paragraph does not name ${field}`);
     }
   });
 
   it("counts the fields it names, and the count is the fixture's", () => {
-    // "six things" is a claim like any other on this screen, and the only one
+    // "ten things" is a claim like any other on this screen, and the only one
     // that can go stale in silence.
     //
     // What this holds is the sentence against the fixture above, which is a
     // copy of the payload written here by hand. It is not a guard on the box:
-    // a seventh field would leave this passing. That guard is
+    // an eleventh field would leave this passing. That guard is
     // TestPayloadCarriesOnlyTheAgreedFields in go/internal/fleetping, which
-    // counts the marshalled fields and fails on the seventh — and whoever
+    // counts the marshalled fields and fails on the eleventh — and whoever
     // answers it has to come back through here.
-    const words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight"];
+    const words = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven"];
     const fields = Object.keys(payload).length - 1; // schema names the format, not the box
     assert.ok(words[fields], `no number word for ${fields} fields`);
     assert.match(render({}), new RegExp(words[fields] + " things"));
@@ -271,8 +276,13 @@ describe("payloadRows", () => {
     assert.equal(byKey.battery_kwh.value, "5 to 15 kWh");
     assert.equal(byKey.price_zone.value, "SE3");
     assert.equal(byKey.install_age.value, "six to twelve months");
+    assert.equal(byKey.plan_solve.value, "one to five seconds");
+    assert.equal(byKey.plan_fallbacks.value, "none");
+    assert.equal(byKey.driver_errors.value, "under 1 in 100");
+    assert.equal(byKey.update.value, "failed");
 
     assert.equal(byKey.battery_kwh.label, "Battery size");
+    assert.equal(byKey.plan_solve.label, "Slowest plan, last day");
   });
 
   it("drops only the schema name", () => {

@@ -617,6 +617,16 @@ how many reports arrive and what they describe, which helps size engineering
 bets. It is one of two anonymous daily reports under one statistics answer, with
 the energy report beside it (ADR 0008).
 
+Since `ftw.fleet/2` it also says, in four buckets, how the box ran: the
+slowest plan of the last 24 hours (`none`, `0-1s`, `1-5s`, `5s+`), how many of
+those plans fell back (`none`, `0`, `1-3`, `4+`), the share of driver polls
+that failed (`none`, `0`, `0-1%`, `1%+`) and the newest update of the last 7
+days (`none`, `ok`, `failed`). Core reads them from the plans it already keeps
+(`planner_diagnostics`), a 24-hour count of polls in the telemetry store and
+the updater's status. A box that does not update itself says `none`, so how it
+was installed does not become a field. The service accepts both schemas and
+counts health only from reports that carry it.
+
 Once a release names an Oblivious HTTP relay (`go/internal/statsrelay`), it goes
 through that relay to FTW Cloud's gateway, sealed, so FTW Cloud never sees the
 box's address. Until then it goes over HTTPS to
@@ -681,7 +691,10 @@ Three things this does not fix, and each is said on the Settings screen or the
 Cloud service's loopback stats response. The fields still describe a household, so the
 payload remains a quasi-identifier: a beta box in a small price zone with a big
 battery may be the only one like it, and coarse buckets with a small field set
-are what keep that population large rather than a proof that it is. The endpoint
+are what keep that population large rather than a proof that it is. The health
+buckets are each at most four words wide, describe the last day or week rather
+than the house, and most boxes share the common answer; the service keeps each
+field's daily count apart, never the combination. The endpoint
 also sees the source IP while the request is open when the report goes straight
 to it, though the Cloud service writes no request log or source address; through
 the relay it does not. And nothing ties two reports to one box, so the totals

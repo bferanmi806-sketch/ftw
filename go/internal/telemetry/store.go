@@ -324,6 +324,16 @@ type Store struct {
 	// arrivals hear of each finished poll (see Arrived).
 	arrivalsMu sync.Mutex
 	arrivals   map[chan struct{}]struct{}
+
+	// pollHours counts driver polls and their errors, all drivers together,
+	// one slot per clock hour of the last day. Guarded by mu.
+	pollHours [24]pollHour
+}
+
+// pollHour is one clock hour's driver polls, all drivers together.
+type pollHour struct {
+	hour          int64 // Unix hours
+	polls, errors uint64
 }
 
 type metricSnap struct {
@@ -762,12 +772,44 @@ func (s *Store) RecordDriverTick(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.driverHealthLocked(name).RecordTick()
+	s.countPollLocked(time.Now(), false)
 }
 
 func (s *Store) RecordDriverError(name, err string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.driverHealthLocked(name).RecordError(err)
+	s.countPollLocked(time.Now(), true)
+}
+
+// countPollLocked counts one poll in its clock hour, reusing the slot of the
+// same hour a day before.
+func (s *Store) countPollLocked(now time.Time, failed bool) {
+	hour := now.Unix() / 3600
+	slot := &s.pollHours[hour%int64(len(s.pollHours))]
+	if slot.hour != hour {
+		*slot = pollHour{hour: hour}
+	}
+	slot.polls++
+	if failed {
+		slot.errors++
+	}
+}
+
+// PollsLastDay is how many driver polls ran in the 24 clock hours up to now,
+// all drivers together, and how many of them failed. The anonymous fleet
+// report coarsens the share into a bucket; no driver's name is counted.
+func (s *Store) PollsLastDay(now time.Time) (polls, errors uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	hour := now.Unix() / 3600
+	for _, slot := range s.pollHours {
+		if slot.hour > hour-int64(len(s.pollHours)) && slot.hour <= hour {
+			polls += slot.polls
+			errors += slot.errors
+		}
+	}
+	return polls, errors
 }
 
 // Remove drops all in-memory state for a driver: readings, Kalman

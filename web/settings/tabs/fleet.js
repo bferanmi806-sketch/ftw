@@ -32,6 +32,18 @@
     battery_kwh: "Battery size",
     price_zone: "Price zone",
     install_age: "Time since install",
+    plan_solve: "Slowest plan, last day",
+    plan_fallbacks: "Fallback plans, last day",
+    driver_errors: "Failed driver reads, last day",
+    update: "Newest update, last week",
+  };
+
+  // The health fields, each a few words wide.
+  var HEALTH = {
+    plan_solve: { none: "no plan", "0-1s": "under a second", "1-5s": "one to five seconds", "5s+": "five seconds or more" },
+    plan_fallbacks: { none: "no plan", "0": "none", "1-3": "one to three", "4+": "four or more" },
+    driver_errors: { none: "no reads", "0": "none", "0-1%": "under 1 in 100", "1%+": "1 in 100 or more" },
+    update: { none: "none", ok: "succeeded", failed: "failed" },
   };
 
   var BATTERY = {
@@ -54,6 +66,7 @@
     if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
     if (key === "battery_kwh" && BATTERY[value]) return BATTERY[value];
     if (key === "install_age" && AGE[value]) return AGE[value];
+    if (HEALTH[key] && HEALTH[key][value]) return HEALTH[key][value];
     if (value === "unknown") return "not known";
     return String(value);
   }
@@ -327,16 +340,19 @@
         '<label><input type="checkbox" id="statistics-share" disabled> Share anonymous statistics</label>' +
         '<p id="statistics-share-note" class="hint" role="status">Checking…</p>' +
         '<h4 class="fleet-energy-title">Daily fleet report</h4>' +
-        '<p class="hint">The fleet report carries six things once a day: its ' +
+        '<p class="hint">The fleet report carries ten things once a day: its ' +
         "FTW version, its release channel, the kinds of device it talks to, " +
-        "roughly how much battery, its price zone, and roughly how old the " +
-        "install is. Nothing else — no id, no key, no serial, no site name, no " +
+        "roughly how much battery, its price zone, roughly how old the " +
+        "install is, and four rough marks of how it ran: how slow its slowest " +
+        "plan of the last day was, how many plans fell back, how often its " +
+        "drivers failed to read, and whether its newest update of the last week " +
+        "failed. Nothing else — no id, no key, no serial, no site name, no " +
         "counter, no timestamp — so nothing in the message says which box sent " +
         "it. The message itself cannot prove how many unique boxes sent reports. " +
         "Sent through the relay, two things go with it, sealed: a random number, " +
         "drawn new for each report so FTW Cloud counts it once, and the UTC day it " +
         "was sent. Neither says which box sent it.</p>" +
-        '<p class="hint fleet-ping-limits">Two limits, plainly. Those six things still describe ' +
+        '<p class="hint fleet-ping-limits">Two limits, plainly. Those ten things still describe ' +
         "you: a beta box in a small price zone with a big battery may be the " +
         "only one of its kind. And without a relay the receiving service sees the address during " +
         "the request, the way any website does. What it keeps depends on the " +

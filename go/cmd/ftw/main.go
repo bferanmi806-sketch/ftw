@@ -2495,7 +2495,7 @@ func main() {
 	migrateStatistics(cfg, cfgMu, st, cloudLink)
 	answer := statsAnswer{st: st, link: cloudLink}
 	fleetPinger, fleetPingErr := startFleetPing(
-		ctx, cfg, cfgMu, st, answer, Version, config.ManagedDriversDirOverride,
+		ctx, cfg, cfgMu, st, answer, tel, selfUpdater, Version, config.ManagedDriversDirOverride,
 	)
 	if fleetPingErr != nil {
 		slog.Warn("fleet ping unavailable", "err", fleetPingErr)

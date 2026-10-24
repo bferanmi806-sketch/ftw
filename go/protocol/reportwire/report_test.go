@@ -20,7 +20,8 @@ func TestEveryReportHasOneLength(t *testing.T) {
 		drivers[i] = strings.Repeat(string(rune('a'+i)), 64)
 	}
 	fleet, _ := json.Marshal(fleetwire.Report{Schema: fleetwire.Schema, Version: "v1234.1234.1234-beta.1234", Channel: "unknown",
-		Drivers: drivers, Battery: "30+", Zone: strings.Repeat("Z", 16), Age: "unknown"})
+		Drivers: drivers, Battery: "30+", Zone: strings.Repeat("Z", 16), Age: "unknown",
+		Solve: "none", Fallbacks: "none", Errors: "none", Update: "failed"})
 	energy, _ := json.Marshal(energywire.Report{Schema: energywire.Schema, Date: "2026-10-23", PVGeneration: 1000, GridImport: 1000,
 		GridExport: 1000, BatteryCharge: 1000, BatteryDischarge: 1000, VehicleCharge: 1000})
 	small, _ := json.Marshal(energywire.Report{Schema: energywire.Schema, Date: "2026-10-23"})
