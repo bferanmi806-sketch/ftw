@@ -198,6 +198,14 @@
     exact.className = "fleet-ping-json";
     exact.textContent = JSON.stringify(body.payload, null, 2);
     slot.appendChild(exact);
+    if (body.through_relay) sealedRows(slot);
+  }
+
+  // sealedRows shows what goes beside a message sent through the relay,
+  // inside the sealed request: drawn when it is sent, so not shown as values.
+  function sealedRows(slot) {
+    slot.appendChild(row("Report id", "a random number, new for each report"));
+    slot.appendChild(row("Send day", "the UTC day it is sent"));
   }
 
   function paintEnergy(energy) {
@@ -228,6 +236,7 @@
     exact.className = "fleet-ping-json";
     exact.textContent = JSON.stringify(energy.payload, null, 2);
     slot.appendChild(exact);
+    sealedRows(slot);
   }
 
   var sharePolicy = null;
@@ -323,23 +332,29 @@
         "roughly how much battery, its price zone, and roughly how old the " +
         "install is. Nothing else — no id, no key, no serial, no site name, no " +
         "counter, no timestamp — so nothing in the message says which box sent " +
-        "it. The message itself cannot prove how many unique boxes sent reports.</p>" +
+        "it. The message itself cannot prove how many unique boxes sent reports. " +
+        "Sent through the relay, two things go with it, sealed: a random number, " +
+        "drawn new for each report so FTW Cloud counts it once, and the UTC day it " +
+        "was sent. Neither says which box sent it.</p>" +
         '<p class="hint fleet-ping-limits">Two limits, plainly. Those six things still describe ' +
         "you: a beta box in a small price zone with a big battery may be the " +
         "only one of its kind. And without a relay the receiving service sees the address during " +
         "the request, the way any website does. What it keeps depends on the " +
-        "endpoint shown below. Here is the whole message, as this box would send it right now.</p>" +
+        "endpoint shown below. Here is the whole message, as this box would send it right now, " +
+        "with what goes beside it.</p>" +
         '<div id="fleet-ping-payload"></div>' +
         '<h4 class="fleet-energy-title">Daily energy report</h4>' +
         '<p class="hint">The other report: the date, and the ' +
         "day's solar generation, grid import and export, battery charge and " +
-        "discharge, and vehicle charge, each in whole kWh. It carries no id and " +
+        "discharge, and vehicle charge, each in whole kWh. It carries no box id and " +
         "nothing from the fleet report, and leaves at its own time, so the two " +
         "cannot be matched. They never travel together: device kinds and a price " +
         "zone can point at one home, and the energy beside them would then be " +
         "that home's. It goes through an independent relay, so FTW Cloud reads " +
         "the numbers without this box's address, and the relay sees the address " +
-        "without the numbers. A day with a gap in the energy record is skipped.</p>" +
+        "without the numbers. Sealed with it go a random number, drawn new for " +
+        "each report so FTW Cloud counts it once, and the UTC day it was sent. " +
+        "A day with a gap in the energy record is skipped.</p>" +
         '<div id="fleet-energy-payload"></div>' +
         "</fieldset>"
       );

@@ -25,7 +25,9 @@
 // that names a relay (package statsrelay) sends the report to FTW Cloud
 // through it instead, sealed with Oblivious HTTP, so FTW Cloud reads the
 // report without the address and the relay sees the address without the
-// report. Without one, this design makes the *payload* useless as an
+// report. The sealed request also carries a random number drawn new for each
+// report, and the day it was sent (package reportwire); neither joins two
+// pings. Without a relay, this design makes the *payload* useless as an
 // identifier; it does not make the connection anonymous. The drifting send time is what stops arrival time
 // becoming a second selector alongside it — though the drift is a random walk
 // in six-hour steps, so it takes about four days to spread across the clock,

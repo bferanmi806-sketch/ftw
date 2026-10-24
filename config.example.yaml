@@ -226,10 +226,12 @@ app_link:
 # reports, each alone and at its own time. The fleet report carries six
 # things: FTW version, release channel, driver types, roughly how much
 # battery, price zone and roughly how old the install is. The energy report
-# carries a closed UTC day's six whole-kWh sums. No id, no key, no serial, no
-# site name, no counter. Once a release names a relay, both go through it, so
-# FTW Cloud never sees the address; until then the fleet report goes straight
-# to `endpoint`, which sees the address, and the energy report is not sent.
+# carries a closed UTC day's six whole-kWh sums. No box id, no key, no serial,
+# no site name, no counter. Once a release names a relay, both go through it,
+# sealed with a random number drawn new for each report and the day it was
+# sent, so FTW Cloud never sees the address; until then the fleet report goes
+# straight to `endpoint`, which sees the address, and the energy report is not
+# sent.
 # `enabled: false` from an earlier release is read once and kept as "off"; it
 # is no longer a switch of its own.
 fleet_ping:

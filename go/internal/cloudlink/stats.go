@@ -28,9 +28,11 @@ func (w *writer) statistics(snap grantSnapshot, st *cadence, now time.Time) erro
 		!slices.Contains(g.Purposes, protocol.CloudPurposeStats) || !w.link.clockSynced() {
 		return nil
 	}
-	// The one answer covers this upload too: off, or Cloud under older
-	// terms, sends no hour, whatever the grant still carries.
-	if share, _ := w.link.opts.KV.LoadConfig(statsShareKey); !sharesStatistics(g, share) {
+	// The one answer covers this upload too, and only a given yes sends an
+	// hour: Cloud under the current terms or a local yes. Off, a box that
+	// shares only by default, or Cloud under older terms sends none,
+	// whatever the grant still carries.
+	if share, _ := w.link.opts.KV.LoadConfig(statsShareKey); !saidYesToStatistics(g, share) {
 		return nil
 	}
 	hour := now.UTC().Truncate(time.Hour).Add(-time.Hour).UnixMilli()

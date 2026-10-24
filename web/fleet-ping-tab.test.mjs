@@ -65,6 +65,16 @@ describe("the fleet statistics panel", () => {
     assert.equal(config.fleet_ping, undefined, "render() wrote a config section");
   });
 
+  it("says what goes beside each message through the relay", () => {
+    // The sealed request carries a random report id and the send day. A
+    // screen that says "no id, no timestamp" and leaves those out would be
+    // the claim this tab exists not to make.
+    const html = render({});
+    assert.match(html, /random number, drawn new for each report so FTW Cloud counts it once/);
+    assert.match(html, /UTC day it was sent/);
+    assert.match(html, /with what goes beside it/);
+  });
+
   it("names both reports and says they never travel together", () => {
     const html = render({});
     assert.match(html, /two anonymous reports a day/);
@@ -337,7 +347,7 @@ describe("the daily energy report", () => {
   it("names the fields, the missing id and the relay in its paragraph", () => {
     const html = render({});
     assert.match(html, /id="fleet-energy-payload"/);
-    for (const want of [/solar generation/i, /grid import and export/i, /battery charge/i, /vehicle charge/i, /whole kWh/i, /no id/i, /independent relay/i, /skipped/i]) {
+    for (const want of [/solar generation/i, /grid import and export/i, /battery charge/i, /vehicle charge/i, /whole kWh/i, /no box id/i, /independent relay/i, /skipped/i]) {
       assert.match(html, want, `the paragraph does not say ${want}`);
     }
   });

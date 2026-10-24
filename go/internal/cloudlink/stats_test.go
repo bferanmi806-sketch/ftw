@@ -117,6 +117,15 @@ func TestALocalNoStopsTheHourlyUpload(t *testing.T) {
 		t.Fatalf("status says statistics run: %+v", st)
 	}
 
+	// Sharing only by default is no given yes, so no hour either.
+	if err := h.kv.SaveConfig(statsShareKey, "default"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if sentStats(svc) {
+		t.Fatal("an answer that was never given sent an hour")
+	}
+
 	// The same link with the answer on does send, so the answer is the gate.
 	if err := h.kv.SaveConfig(statsShareKey, "on"); err != nil {
 		t.Fatal(err)
