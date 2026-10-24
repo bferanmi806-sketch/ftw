@@ -104,7 +104,9 @@ func (g *gorillaWS) Open(ctx context.Context, url string, headers map[string]str
 	}
 	// gorilla stops the TCP dial and TLS when ctx ends, but bounds the
 	// upgrade reply only by HandshakeTimeout. Ending ctx also ends that wait:
-	// the raw connection's deadline moves to now.
+	// the raw connection's deadline moves to now. On plain ws:// a cancel in
+	// the first microseconds can still be lost to gorilla setting its own
+	// deadline; that dial then ends at the timeout.
 	var rawMu sync.Mutex
 	var raw net.Conn
 	dial := dialer.NetDialContext
@@ -126,8 +128,16 @@ func (g *gorillaWS) Open(ctx context.Context, url string, headers map[string]str
 	})
 	// EnableCompression default is true on DefaultDialer; leave it.
 	conn, resp, err := dialer.DialContext(ctx, url, hdr)
-	stopWatch()
+	if !stopWatch() && err == nil {
+		// ctx ended as the dial finished, so the deadline may already have
+		// moved on the new connection. A cancelled call opens nothing.
+		conn.Close()
+		return fmt.Errorf("ws dial: %w", ctx.Err())
+	}
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("ws dial: %w", ctxErr)
+		}
 		// A refused upgrade says only "bad handshake"; the status tells a
 		// driver whether its token, its path or the server is wrong. The
 		// body stays out: it may echo what the driver sent.

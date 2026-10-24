@@ -2,6 +2,7 @@ package drivers
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -78,6 +79,9 @@ func TestGorillaWSOpenEndsWithItsContext(t *testing.T) {
 	}
 	if took := time.Since(start); took > time.Second {
 		t.Fatalf("Open ran %v after its context ended", took)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled dial reported %v, not the cancel", err)
 	}
 }
 
