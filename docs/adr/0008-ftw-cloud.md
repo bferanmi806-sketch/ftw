@@ -419,7 +419,9 @@ ciphertext of fixed length, never a report. Cloudflare's relay, if chosen,
 keeps those logs for about 124 days. The gateway sees each report, the
 relay's address and the time, never the box's address. FTW Cloud keeps per
 date only the counts and sums; a public energy date appears once no report
-may still name it, four days after it ends, and needs at least 5 reports.
+may still name it, four days after it ends, and needs at least 5 reports. A
+sum that one to four of them had any of shows null: five reports with one car
+would otherwise publish that car's charge.
 
 Limits, plainly:
 
