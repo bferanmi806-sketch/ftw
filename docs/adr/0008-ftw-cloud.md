@@ -350,3 +350,58 @@ even if an owner previously chose to contribute. The owner policy response
 reports this readiness so native clients can explain the wait. Pausing the
 service policy stops collection while withdrawal and retention still run.
 Deploying this code does not sign the DPIA or accept a household's consent.
+
+### Anonymous daily energy, October 2026
+
+Fredrik chose this on 24 October 2026 so that stats.ftw.energy can show
+energy without C8's household rows. One new outside part: an independent
+Oblivious HTTP relay (RFC 9458). FTW Cloud's `ftwcloudd` is the gateway, as
+one route.
+
+- **Sent.** Once per closed UTC day, 1 to 12 hours after it closes, at a time
+  drawn afresh each day: the schema, the date, and six whole-kWh sums (solar
+  generation, grid import and export, battery charge and discharge, vehicle
+  charge). Nothing else: no id, version, driver, zone or size. A day with a
+  gap in the energy ledger is skipped, never sent in part
+  (`go/internal/energyreport`, `go/protocol/energywire`).
+- **Who may send.** The fleet report's answer: its switch and the current
+  project statistics choice. Not a site a partner controls. No new question
+  or setting. Settings shows the report beside the fleet report.
+- **Path.** The box seals the report to FTW Cloud's gateway key with HPKE
+  (`go/protocol/ohttp`, the standard library's `crypto/hpke`) and posts it to
+  the relay, which forwards it to `POST /v1/ohttp`. The inner request is
+  padded to one length. The key and the relay are compile-time pins
+  (`energyreport.GatewayKey`, `energyreport.RelayURL`). The box never asks
+  the service for a key, so every box on a release uses the same one and a
+  key swapped in at the service opens nothing. Both pins are empty until the
+  relay exists; until then the box sends nothing.
+- **Who sees what.** The relay sees the box's address, the time and a
+  ciphertext of fixed length, never the report. Cloudflare's relay, if
+  chosen, keeps those logs for about 124 days. The gateway sees the report,
+  the relay's address and the time, never the box's address.
+- **Kept.** Per date: the report count and the six sums, for 30 days. No row,
+  logged body or address per report.
+- **Published.** `GET /v1/energy/public` lists closed dates only, once no
+  report may still name them, so two readings never differ by one report. A
+  date with fewer than 5 reports shows null, as `/v1/fleet/public` does.
+- **Not linkable.** The energy report shares no field with the fleet report,
+  and the two leave at times drawn apart. Neither the relay nor the gateway
+  holds both a box's address and its numbers.
+
+Limits, plainly:
+
+- The relay and Sourceful together could join reports to addresses by time.
+  The relay's independence is the control.
+- FTW Cloud holds readings from homes whose owners turned on the readable
+  copy, including 48 hours of history tiles. The same daily sums could be
+  computed from them and matched with a report. The gateway does not do this
+  and keeps nothing to match with, but that is a rule in code, not one the
+  cryptography enforces.
+- An anonymous report cannot prove that a real box sent it. Bounds per field
+  and a cap per date limit junk to noise. Privacy Pass-style tokens are the
+  later fix; they are not built.
+
+Open for Fredrik, not decided here: whether reports that are anonymous to
+Sourceful still need the owner's yes under the ePrivacy rule on reading
+terminal equipment (Swedish LEK 9:28). The design keeps the existing yes, so
+it is covered either way. C8 stays off.

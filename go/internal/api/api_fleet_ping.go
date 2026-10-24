@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/srcfl/ftw/go/internal/config"
+	"github.com/srcfl/ftw/go/internal/energyreport"
 )
 
 // What this box would add to FTW's daily fleet totals.
@@ -21,6 +22,9 @@ type fleetPingView struct {
 	FTWRelay bool `json:"ftw_relay"`
 	// Payload is the whole message, exactly as it would be posted.
 	Payload any `json:"payload"`
+	// Energy is the daily energy report under the same switch, built by the
+	// call its sender uses. Absent on a box without one.
+	Energy *energyreport.Preview `json:"energy,omitempty"`
 }
 
 func (s *Server) handleFleetPing(w http.ResponseWriter, r *http.Request) {
@@ -39,10 +43,15 @@ func (s *Server) handleFleetPing(w http.ResponseWriter, r *http.Request) {
 	s.deps.CfgMu.RUnlock()
 
 	endpoint := s.deps.FleetPing.Endpoint()
-	writeJSON(w, http.StatusOK, fleetPingView{
+	view := fleetPingView{
 		Enabled:  enabled,
 		Endpoint: endpoint,
 		FTWRelay: endpoint == config.DefaultFleetPingEndpoint,
 		Payload:  s.deps.FleetPing.Payload(),
-	})
+	}
+	if s.deps.EnergyReport != nil {
+		p := s.deps.EnergyReport.Preview(r.Context())
+		view.Energy = &p
+	}
+	writeJSON(w, http.StatusOK, view)
 }

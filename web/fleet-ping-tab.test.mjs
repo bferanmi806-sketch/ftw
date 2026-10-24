@@ -271,3 +271,50 @@ describe("payloadRows", () => {
     assert.equal(payloadRows("not an object").length, 0);
   });
 });
+
+describe("the daily energy report", () => {
+  const { energyRows, energyLine } = tab._pure;
+  const energy = {
+    schema: "ftw.energy/1", date: "2026-10-23", pv_generation_kwh: 12, grid_import_kwh: 30, grid_export_kwh: 4,
+    battery_charge_kwh: 9, battery_discharge_kwh: 8, vehicle_charge_kwh: 0,
+  };
+
+  it("shows every field the report carries, in kWh", () => {
+    const rows = energyRows(energy);
+    const byKey = Object.fromEntries(rows.map((r) => [r.key, r]));
+    assert.equal(rows.length, Object.keys(energy).length - 1);
+    assert.equal(byKey.pv_generation_kwh.value, "12 kWh");
+    assert.equal(byKey.vehicle_charge_kwh.label, "Vehicle charge");
+    assert.equal(byKey.date.value, "2026-10-23");
+    const extra = energyRows({ ...energy, home: "x" }).find((r) => r.key === "home");
+    assert.ok(extra, "an unexpected field was silently dropped");
+  });
+
+  it("says nothing is sent from a release without a relay", () => {
+    const line = energyLine({ relay: "", sending: false, day: "2026-10-23", payload: energy });
+    assert.match(line, /no relay yet/i);
+    assert.doesNotMatch(line, /^Sent/);
+  });
+
+  it("does not point at a report it is not showing", () => {
+    assert.doesNotMatch(energyLine({ relay: "", day: "2026-10-23", payload: null }), /this is the report/i);
+    assert.doesNotMatch(energyLine({ relay: "https://relay.example.net/ftw", day: "2026-10-23", payload: null }), /this is the report/i);
+  });
+
+  it("says who sees what while it is sent, and nothing is sent while it is off", () => {
+    const relay = "https://relay.example.net/ftw";
+    const on = energyLine({ relay, sending: true, payload: energy });
+    assert.match(on, /^Sent through https:\/\/relay\.example\.net/);
+    assert.match(on, /sees this box's address but not the report/);
+    assert.match(on, /reads the report but not the address/);
+    assert.match(energyLine({ relay, sending: false, payload: energy }), /^Nothing is sent/);
+  });
+
+  it("names the fields, the missing id and the relay in its paragraph", () => {
+    const html = render({});
+    assert.match(html, /id="fleet-energy-payload"/);
+    for (const want of [/solar generation/i, /grid import and export/i, /battery charge/i, /vehicle charge/i, /whole kWh/i, /no id/i, /independent relay/i, /skipped/i]) {
+      assert.match(html, want, `the paragraph does not say ${want}`);
+    }
+  });
+});

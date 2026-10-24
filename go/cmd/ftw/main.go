@@ -2498,6 +2498,9 @@ func main() {
 	if fleetPingErr != nil {
 		slog.Warn("fleet ping unavailable", "err", fleetPingErr)
 	}
+	// The anonymous daily energy report, under the same answer, through an
+	// independent relay so that FTW Cloud never learns which box sent it.
+	energyReport := startEnergyReport(ctx, cfg, cfgMu, st)
 
 	mutationPolicy := apiMutationPolicy()
 	mutationPolicy.LANAuthEnabled = func() bool {
@@ -2520,6 +2523,7 @@ func main() {
 		AppEnroll:       appEnrollForAPI(appEnroll, appUplink, st, appLinkEnabled, agents),
 		Agents:          agentsForAPI(agents),
 		FleetPing:       fleetPinger,
+		EnergyReport:    energyReport,
 		Cloud:           cloudForAPI(cloudLink),
 		CfgMu:           cfgMu, Cfg: cfg, ConfigPath: *configPath,
 		ConfigApplier:       applyConfigChange,

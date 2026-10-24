@@ -91,6 +91,49 @@
       ", once a day, if you switched it on." + handling;
   }
 
+  // Labels for the daily energy report. As above, a field with no label is
+  // shown under its own name.
+  var ENERGY_LABELS = {
+    date: "Day (UTC)",
+    pv_generation_kwh: "Solar generation",
+    grid_import_kwh: "Grid import",
+    grid_export_kwh: "Grid export",
+    battery_charge_kwh: "Battery charge",
+    battery_discharge_kwh: "Battery discharge",
+    vehicle_charge_kwh: "Vehicle charge",
+  };
+
+  // energyRows is payloadRows for the energy report: driven by its keys, so
+  // nothing it carries can be missing from this screen.
+  function energyRows(payload) {
+    if (!payload || typeof payload !== "object") return [];
+    return Object.keys(payload)
+      .filter(function (key) { return key !== "schema"; })
+      .map(function (key) {
+        var value = payload[key];
+        var text = /_kwh$/.test(key) && typeof value === "number" ? value + " kWh" : String(value);
+        return { key: key, label: ENERGY_LABELS[key] || key, value: text };
+      });
+  }
+
+  // energyLine is whereLine for the energy report. It follows the box's own
+  // answer, and says so when this release has no relay to send through.
+  //
+  // Without a report to show, it does not point at one.
+  function energyLine(energy) {
+    var shown = !!(energy && energy.payload);
+    if (!energy || !energy.relay) {
+      return "This release has no relay yet, so no energy report is sent." +
+        (shown ? " This is the report it would send." : "");
+    }
+    var how = " The relay sees this box's address but not the report. FTW Cloud reads the report but not the address, adds it to that day's totals and keeps nothing of it.";
+    if (energy.sending) {
+      return "Sent through " + energy.relay + ", an independent relay, once a day, 1 to 12 hours after the UTC day ends." + how;
+    }
+    return "Nothing is sent. " + (shown ? "This is the report that would go" : "A report would go") + " through " +
+      energy.relay + ", an independent relay, once a day, if sharing were on." + how;
+  }
+
   function row(label, value) {
     var el = document.createElement("div");
     el.className = "fleet-ping-row";
@@ -134,6 +177,36 @@
     slot.appendChild(exact);
   }
 
+  function paintEnergy(energy) {
+    var slot = document.getElementById("fleet-energy-payload");
+    if (!slot) return;
+    slot.textContent = "";
+    var rows = energyRows(energy && energy.payload);
+    var note = document.createElement("p");
+    note.className = "hint fleet-energy-note";
+    if (!energy) {
+      note.textContent = "This box has no energy report.";
+      slot.appendChild(note);
+      return;
+    }
+    if (rows.length === 0) {
+      note.textContent = "The energy record for " + energy.day + " has a gap, so this box has no report for that day. A day with a gap is skipped, never sent in part.";
+      slot.appendChild(note);
+    }
+    rows.forEach(function (r) { slot.appendChild(row(r.label, r.value)); });
+
+    var where = document.createElement("p");
+    where.className = "hint fleet-energy-note";
+    where.textContent = energyLine(energy);
+    slot.appendChild(where);
+
+    if (rows.length === 0) return;
+    var exact = document.createElement("pre");
+    exact.className = "fleet-ping-json";
+    exact.textContent = JSON.stringify(energy.payload, null, 2);
+    slot.appendChild(exact);
+  }
+
   function refresh() {
     var slot = document.getElementById("fleet-ping-payload");
     if (!slot) return;
@@ -149,6 +222,7 @@
           return;
         }
         paint(body);
+        paintEnergy(body.energy);
       })
       .catch(function () {
         slot.textContent = "";
@@ -164,7 +238,7 @@
   // app relay. Keep this as a reusable panel instead of a tab so the payload
   // and privacy wording stay in one place.
   S.fleetPing = {
-    _pure: { payloadRows: payloadRows, describe: describe, whereLine: whereLine },
+    _pure: { payloadRows: payloadRows, describe: describe, whereLine: whereLine, energyRows: energyRows, energyLine: energyLine },
 
     // The line under the payload is the box's answer, not the checkbox's, so
     // it can only be right again once the box has the new config. Saving is
@@ -183,7 +257,7 @@
       return (
         "<fieldset><legend>Anonymous daily report</legend>" +
         '<p class="hint">The project statistics choice above controls whether this box contributes. This additional daily report describes versions and integrations. It does not count unique boxes.</p>' +
-        '<p class="hint">When sharing is on, this box sends six things once a day: its ' +
+        '<p class="hint">When sharing is on, this report carries six things once a day: its ' +
         "FTW version, its release channel, the kinds of device it talks to, " +
         "roughly how much battery, its price zone, and roughly how old the " +
         "install is. Nothing else — no id, no key, no serial, no site name, no " +
@@ -199,6 +273,15 @@
         "> Share daily fleet statistics</label>" +
         '<p class="hint">Takes effect as soon as you save. No restart.</p>' +
         '<div id="fleet-ping-payload"></div>' +
+        '<h4 class="fleet-energy-title">Daily energy report</h4>' +
+        '<p class="hint">The same switch sends one more report a day: the date, and the ' +
+        "day's solar generation, grid import and export, battery charge and " +
+        "discharge, and vehicle charge, each in whole kWh. It carries no id and " +
+        "nothing from the report above, so the two cannot be matched. It goes " +
+        "through an independent relay, so FTW Cloud reads the numbers without " +
+        "this box's address, and the relay sees the address without the numbers. " +
+        "A day with a gap in the energy record is skipped.</p>" +
+        '<div id="fleet-energy-payload"></div>' +
         "</fieldset>"
       );
     },

@@ -77,7 +77,7 @@ func startFleetPing(
 	installedAt := firstSeen(st, time.Now())
 
 	pinger, err := fleetping.New(fleetping.Options{
-		Enabled: func() bool { return fleetPingEnabled(cfg, cfgMu)() && cloudlink.StatisticsChoice(st) },
+		Enabled: projectReportsAllowed(cfg, cfgMu, st),
 		Facts: func() fleetping.Facts {
 			// Drivers can be installed without restarting FTW. Read the signed
 			// catalogue at the same time as the config so tomorrow's report and
@@ -95,6 +95,15 @@ func startFleetPing(
 
 	go pinger.Run(ctx)
 	return pinger, nil
+}
+
+// projectReportsAllowed is the owner's answer for both anonymous daily
+// reports, the fleet report and the energy report: the saved switch and the
+// project statistics choice. One function, so the two reports cannot come to
+// read different answers.
+func projectReportsAllowed(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) func() bool {
+	enabled := fleetPingEnabled(cfg, cfgMu)
+	return func() bool { return enabled() && cloudlink.StatisticsChoice(st) }
 }
 
 // fleetPingEnabled reads the switch, under the config lock, at each send.
