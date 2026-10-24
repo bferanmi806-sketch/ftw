@@ -17,6 +17,7 @@ import (
 
 	"github.com/srcfl/ftw/go/internal/config"
 	"github.com/srcfl/ftw/go/internal/statsrelay/statsrelaytest"
+	"github.com/srcfl/ftw/go/protocol/fleetwire"
 )
 
 // The whole point of this package is what it does NOT send. These tests are
@@ -53,12 +54,16 @@ func TestPayloadCarriesOnlyTheAgreedFields(t *testing.T) {
 	got := marshal(t, Build(facts(), time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)))
 
 	want := map[string]any{
-		"schema":      "ftw.fleet/1",
-		"ftw_version": "v1.4.0-beta.2",
-		"channel":     "beta",
-		"battery_kwh": "5-15",
-		"price_zone":  "SE3",
-		"install_age": "6-12m",
+		"schema":         "ftw.fleet/2",
+		"ftw_version":    "v1.4.0-beta.2",
+		"channel":        "beta",
+		"battery_kwh":    "5-15",
+		"price_zone":     "SE3",
+		"install_age":    "6-12m",
+		"plan_solve":     "none",
+		"plan_fallbacks": "none",
+		"driver_errors":  "none",
+		"update":         "none",
 	}
 	for key, value := range want {
 		if got[key] != value {
@@ -453,7 +458,7 @@ func TestHTTPProviderPostsTheJSONAndReadsNothingBack(t *testing.T) {
 	if err := provider.Send(context.Background(), Build(facts(), time.Now())); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	if got := body.Load().(string); !strings.Contains(got, `"schema":"ftw.fleet/1"`) {
+	if got := body.Load().(string); !strings.Contains(got, `"schema":"ftw.fleet/2"`) {
 		t.Fatalf("posted body = %s", got)
 	}
 	if got := agent.Load().(string); got != "ftw-fleet-ping" {
@@ -565,5 +570,38 @@ func TestTheReportGoesThroughTheRelayUnchanged(t *testing.T) {
 	}
 	if bytes.Contains(relay.Bodies()[0], []byte("sungrow")) || !pinger.ThroughRelay() || pinger.Endpoint() != relay.URL {
 		t.Fatal("the relay saw the report, or the pinger does not say where it sends")
+	}
+}
+
+// ---- health ----
+
+func TestHealthTravelsOnlyAsBuckets(t *testing.T) {
+	// Each case is what a box held over its last day; what leaves is a word
+	// from a short list, never the count or the time behind it.
+	for _, c := range []struct {
+		h                                Health
+		solve, fallbacks, errors, update string
+	}{
+		{Health{}, "none", "none", "none", "none"},
+		{Health{Plans: 96, SlowestSolve: 420 * time.Millisecond, Polls: 86_400}, "0-1s", "0", "0", "none"},
+		{Health{Plans: 96, SlowestSolve: time.Second, Fallbacks: 3, Polls: 1000, PollErrors: 9, Update: "ok"}, "1-5s", "1-3", "0-1%", "ok"},
+		{Health{Plans: 12, SlowestSolve: 5 * time.Second, Fallbacks: 4, Polls: 1000, PollErrors: 10, Update: "failed"}, "5s+", "4+", "1%+", "failed"},
+		{Health{Plans: 1, SlowestSolve: 47 * time.Second, Polls: 3, PollErrors: 3, Update: "v1.4.0"}, "5s+", "0", "1%+", "none"},
+	} {
+		f := facts()
+		f.Health = c.h
+		p := Build(f, time.Now())
+		if p.Solve != c.solve || p.Fallbacks != c.fallbacks || p.Errors != c.errors || p.Update != c.update {
+			t.Errorf("%+v: got %s %s %s %s", c.h, p.Solve, p.Fallbacks, p.Errors, p.Update)
+		}
+		raw, _ := json.Marshal(p)
+		if _, err := fleetwire.Decode(raw); err != nil {
+			t.Errorf("the service would refuse %s", raw)
+		}
+		for _, leak := range []string{"420", "47", "86400", "v1.4.0\"", "1000"} {
+			if strings.Contains(string(raw), leak) {
+				t.Errorf("%s carries %s", raw, leak)
+			}
+		}
 	}
 }

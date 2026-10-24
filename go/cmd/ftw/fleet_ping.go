@@ -14,8 +14,10 @@ import (
 	"github.com/srcfl/ftw/go/internal/config"
 	"github.com/srcfl/ftw/go/internal/drivers"
 	"github.com/srcfl/ftw/go/internal/fleetping"
+	"github.com/srcfl/ftw/go/internal/selfupdate"
 	"github.com/srcfl/ftw/go/internal/state"
 	"github.com/srcfl/ftw/go/internal/statsrelay"
+	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
 // The anonymous fleet ping, wired to the box.
@@ -65,6 +67,8 @@ func startFleetPing(
 	cfgMu *sync.RWMutex,
 	st *state.Store,
 	answer statsAnswer,
+	tel *telemetry.Store,
+	updates *selfupdate.Checker,
 	version string,
 	managedDriverDir string,
 ) (*fleetping.Pinger, error) {
@@ -86,9 +90,12 @@ func startFleetPing(
 			// catalogue at the same time as the config so tomorrow's report and
 			// the Settings preview both see the install.
 			catalogue := fleetCatalogue(st, managedDriverDir)
+			health := fleetHealth(st, tel, updates, time.Now())
 			cfgMu.RLock()
 			defer cfgMu.RUnlock()
-			return fleetping.FactsFromConfig(cfg, version, catalogue, installedAt)
+			f := fleetping.FactsFromConfig(cfg, version, catalogue, installedAt)
+			f.Health = health
+			return f
 		},
 		Provider: provider,
 	})
@@ -98,6 +105,42 @@ func startFleetPing(
 
 	go pinger.Run(ctx)
 	return pinger, nil
+}
+
+// fleetHealth reads how the box ran lately, for the report's health buckets:
+// the planner's last 24 hours from the plans it kept, the drivers' last 24
+// hours of polls once the count covers six of them, and the newest update of
+// the last 7 days. A source that is missing or too short, as the updater is
+// on a box that does not update itself, reads as nothing to report.
+func fleetHealth(st *state.Store, tel *telemetry.Store, updates *selfupdate.Checker, now time.Time) fleetping.Health {
+	var h fleetping.Health
+	if st != nil {
+		plans, slowestMs, fallbacks, err := st.PlannerDay(now.Add(-24 * time.Hour).UnixMilli())
+		if err != nil {
+			slog.Debug("fleet report: planner day unavailable", "err", err)
+		} else {
+			h.Plans, h.SlowestSolve, h.Fallbacks = plans, time.Duration(slowestMs*float64(time.Millisecond)), fallbacks
+		}
+	}
+	// Counts that cover under six hours, as after an update's restart, say
+	// too little: a start-up burst of failed polls would read as trouble.
+	if tel != nil {
+		if polls, errors, covered := tel.PollsLastDay(now); covered >= 6*time.Hour {
+			h.Polls, h.PollErrors = polls, errors
+		}
+	}
+	if updates != nil {
+		u := updates.Status()
+		if u.Action == "update" && !u.UpdatedAt.IsZero() && now.Sub(u.UpdatedAt) <= 7*24*time.Hour {
+			switch u.State {
+			case "done":
+				h.Update = "ok"
+			case "failed":
+				h.Update = "failed"
+			}
+		}
+	}
+	return h
 }
 
 // fleetProvider sends the report to FTW Cloud through the relay when this
