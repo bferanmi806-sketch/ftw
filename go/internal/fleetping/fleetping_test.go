@@ -1,6 +1,7 @@
 package fleetping
 
 import (
+	"bytes"
 	"context"
 
 	"encoding/json"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/srcfl/ftw/go/internal/config"
+	"github.com/srcfl/ftw/go/internal/statsrelay/statsrelaytest"
 )
 
 // The whole point of this package is what it does NOT send. These tests are
@@ -540,5 +542,28 @@ func TestHTTPProviderDefaultClientHasATimeout(t *testing.T) {
 	}
 	if p.Client.Timeout <= 0 {
 		t.Fatal("the default client has no timeout")
+	}
+}
+
+// Through the relay the gateway reads the same report the box would post
+// directly, and the relay sees none of it.
+func TestTheReportGoesThroughTheRelayUnchanged(t *testing.T) {
+	client, gw, relay := statsrelaytest.New(t, time.Now())
+	p := NewRelayProvider(client)
+	facts := Facts{Version: "v1.4.0", Drivers: []string{"sungrow"}, Catalogue: []string{"sungrow"}, PriceZone: "SE3"}
+	pinger, err := New(Options{Facts: func() Facts { return facts }, Provider: p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := pinger.Payload()
+	if err := p.Send(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got := gw.Fleet()
+	if len(got) != 1 || got[0].Version != want.Version || got[0].Zone != "SE3" || len(got[0].Drivers) != 1 {
+		t.Fatalf("gateway got %+v", got)
+	}
+	if bytes.Contains(relay.Bodies()[0], []byte("sungrow")) || !pinger.ThroughRelay() || pinger.Endpoint() != relay.URL {
+		t.Fatal("the relay saw the report, or the pinger does not say where it sends")
 	}
 }

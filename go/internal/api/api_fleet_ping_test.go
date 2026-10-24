@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/srcfl/ftw/go/internal/cloudlink"
 	"github.com/srcfl/ftw/go/internal/config"
 	"github.com/srcfl/ftw/go/internal/energyreport"
 	"github.com/srcfl/ftw/go/internal/fleetping"
@@ -26,7 +28,13 @@ func fleetPingServer(t *testing.T, cfg *config.Config) *Server {
 
 func fleetPingServerAt(t *testing.T, cfg *config.Config, endpoint string) *Server {
 	t.Helper()
+	st, err := state.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
 	pinger, err := fleetping.New(fleetping.Options{
+		Enabled:  func() bool { return cloudlink.SharesStatistics(st) },
 		Provider: silentProvider(endpoint),
 		Facts: func() fleetping.Facts {
 			return fleetping.FactsFromConfig(cfg, "v1.4.0",
@@ -37,7 +45,12 @@ func fleetPingServerAt(t *testing.T, cfg *config.Config, endpoint string) *Serve
 	if err != nil {
 		t.Fatalf("fleetping.New: %v", err)
 	}
-	return New(&Deps{CfgMu: &sync.RWMutex{}, Cfg: cfg, FleetPing: pinger})
+	// The box's one statistics answer, written from this config the way
+	// Core writes it once at start.
+	if err := cloudlink.MigrateStatistics(st, !cfg.FleetPing.On()); err != nil {
+		t.Fatal(err)
+	}
+	return New(&Deps{CfgMu: &sync.RWMutex{}, Cfg: cfg, FleetPing: pinger, State: st})
 }
 
 func TestFleetPingShowsTheRealPayload(t *testing.T) {

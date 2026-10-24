@@ -1,4 +1,5 @@
-// Settings → Fleet ping: the message this box adds to FTW's fleet totals.
+// Settings → FTW app → Anonymous statistics: the one switch for both daily
+// reports, and the messages this box adds to FTW's fleet and energy totals.
 //
 // This tab is not a privacy policy. A policy is a promise; this screen shows
 // the actual payload, built by the same call the sender uses, so somebody
@@ -79,16 +80,35 @@
   // clock, and until then one box's arrival times are still loosely related.
   function whereLine(body) {
     var endpoint = (body && body.endpoint) || "nowhere";
-    var handling = body && body.ftw_relay
-      ? " FTW Cloud adds the report to that day's totals, then drops it and does not save the source address. These are reports, not unique boxes."
-      : " This box uses a custom collector. FTW cannot say what that service stores or whether it counts unique boxes.";
+    var relayed = !!(body && body.through_relay);
+    var where = relayed ? "through " + endpoint + ", an independent relay, to FTW Cloud" : "to " + endpoint;
+    var handling = relayed
+      ? " The relay sees this box's address but not the report. FTW Cloud reads the report but not the address, adds it to that day's totals and keeps nothing of it. These are reports, not unique boxes."
+      : body && body.ftw_relay
+        ? " FTW Cloud adds the report to that day's totals, then drops it and does not save the source address. These are reports, not unique boxes."
+        : " This box uses a custom collector. FTW cannot say what that service stores or whether it counts unique boxes.";
+    if (body && body.waits_for_relay) {
+      return "Not sent yet. This box shares statistics without having said yes, so this report goes to FTW Cloud only through an independent relay, which hides this box's address, and this release names none yet.";
+    }
     if (body && body.enabled) {
-      return "Sent to " + endpoint +
+      return "Sent " + where +
         ", once a day, at a time that moves from day to day — it takes a few days to work its way round the clock." +
         handling;
     }
-    return "Nothing is sent. This is the message that would go to " + endpoint +
-      ", once a day, if you switched it on." + handling;
+    return "Nothing is sent. This is the message that would go " + where +
+      ", once a day, if statistics were on." + handling;
+  }
+
+  // shareLine says what the one statistics switch means right now. With FTW
+  // Cloud it is part of Cloud; without, it is the owner's to turn off.
+  function shareLine(status) {
+    if (!status) return "Could not read this box's statistics answer.";
+    if (status.statisticsRequired) {
+      return "Part of FTW Cloud, with no separate off switch. To stop, turn FTW Cloud off, then turn statistics off here.";
+    }
+    return status.statistics
+      ? "On. Turning it off takes effect at once, with no restart, and the box keeps the answer."
+      : "Off. Nothing is sent. Turning it on takes effect at once.";
   }
 
   // Labels for the daily energy report. As above, a field with no label is
@@ -207,6 +227,41 @@
     slot.appendChild(exact);
   }
 
+  var sharePolicy = null;
+
+  // refreshShare reads the box's one statistics answer into the switch.
+  function refreshShare() {
+    var box = document.getElementById("statistics-share");
+    var note = document.getElementById("statistics-share-note");
+    if (!box || !note) return;
+    Promise.all([fetch("/api/cloud"), fetch("/api/cloud/stats-policy")])
+      .then(function (rs) { return Promise.all(rs.map(function (r) { return r.ok ? r.json() : null; })); })
+      .then(function (v) {
+        sharePolicy = v[1];
+        box.checked = !!(v[0] && v[0].statistics);
+        box.disabled = !v[0] || !v[1] || !!v[0].statisticsRequired;
+        note.textContent = shareLine(v[0]);
+      })
+      .catch(function () { note.textContent = shareLine(null); });
+  }
+
+  // The switch writes at once, as the Cloud terms do, and not on Save: it is
+  // the box's answer, not part of the config document.
+  function changeShare(box) {
+    var note = document.getElementById("statistics-share-note");
+    box.disabled = true;
+    var write = box.checked
+      ? fetch("/api/cloud/stats", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ policy: sharePolicy && sharePolicy.policy }) })
+      : fetch("/api/cloud/stats", { method: "DELETE" });
+    write
+      .then(function (r) { return r.json().then(function (v) { if (!r.ok) throw Error(v.error || "The box refused the change."); }); })
+      .then(function () { refreshShare(); refresh(); })
+      .catch(function (e) {
+        refreshShare();
+        if (note) note.textContent = e.message || "The change could not be saved. Try again.";
+      });
+  }
+
   function refresh() {
     var slot = document.getElementById("fleet-ping-payload");
     if (!slot) return;
@@ -233,31 +288,34 @@
       });
   }
 
-  // The FTW app and fleet statistics share a settings page, but not a
-  // setting: a box can share its anonymous daily report without using the
-  // app relay. Keep this as a reusable panel instead of a tab so the payload
-  // and privacy wording stay in one place.
+  // The FTW app and statistics share a settings page, but not a setting: a
+  // box shares its anonymous reports whether or not it uses the app. Keep
+  // this as a reusable panel instead of a tab so the payloads and privacy
+  // wording stay in one place.
   S.fleetPing = {
-    _pure: { payloadRows: payloadRows, describe: describe, whereLine: whereLine, energyRows: energyRows, energyLine: energyLine },
+    _pure: { payloadRows: payloadRows, describe: describe, whereLine: whereLine, shareLine: shareLine, energyRows: energyRows, energyLine: energyLine },
 
-    // The line under the payload is the box's answer, not the checkbox's, so
-    // it can only be right again once the box has the new config. Saving is
-    // the moment that happens.
-    afterSave: refresh,
+    // Saving the config does not change the answer, but the payload under it
+    // is built from the config, so read both again.
+    afterSave: function () { refresh(); refreshShare(); },
 
-    render: function (ctx) {
-      // Mirrors the box's own default (see applyDefaults in
-      // go/internal/config): a box that has never had the section is sending.
-      // Rendering it unchecked here would say the opposite of what is true.
-      if (!ctx.config.fleet_ping) ctx.config.fleet_ping = { enabled: true };
-      var enabled = !!ctx.config.fleet_ping.enabled;
-
-      setTimeout(refresh, 0);
+    render: function () {
+      setTimeout(function () {
+        var box = document.getElementById("statistics-share");
+        if (box) box.addEventListener("change", function () { changeShare(box); });
+        refreshShare();
+        refresh();
+      }, 0);
 
       return (
-        "<fieldset><legend>Anonymous daily report</legend>" +
-        '<p class="hint">The project statistics choice above controls whether this box contributes. This additional daily report describes versions and integrations. It does not count unique boxes.</p>' +
-        '<p class="hint">When sharing is on, this report carries six things once a day: its ' +
+        "<fieldset><legend>Anonymous statistics</legend>" +
+        '<p class="hint">This box sends two anonymous reports a day, each on its own and at its own time: ' +
+        "a fleet report and an energy report. With FTW Cloud they are part of Cloud. Without Cloud they " +
+        "are on until you turn them off here.</p>" +
+        '<label><input type="checkbox" id="statistics-share" disabled> Share anonymous statistics</label>' +
+        '<p id="statistics-share-note" class="hint" role="status">Checking…</p>' +
+        '<h4 class="fleet-energy-title">Daily fleet report</h4>' +
+        '<p class="hint">The fleet report carries six things once a day: its ' +
         "FTW version, its release channel, the kinds of device it talks to, " +
         "roughly how much battery, its price zone, and roughly how old the " +
         "install is. Nothing else — no id, no key, no serial, no site name, no " +
@@ -265,22 +323,20 @@
         "it. The message itself cannot prove how many unique boxes sent reports.</p>" +
         '<p class="hint fleet-ping-limits">Two limits, plainly. Those six things still describe ' +
         "you: a beta box in a small price zone with a big battery may be the " +
-        "only one of its kind. And the receiving service sees the address during " +
+        "only one of its kind. And without a relay the receiving service sees the address during " +
         "the request, the way any website does. What it keeps depends on the " +
         "endpoint shown below. Here is the whole message, as this box would send it right now.</p>" +
-        '<label><input type="checkbox" id="fleet-ping-enabled" ' +
-        'data-checkbox-path="fleet_ping.enabled"' + (enabled ? " checked" : "") +
-        "> Share daily fleet statistics</label>" +
-        '<p class="hint">Takes effect as soon as you save. No restart.</p>' +
         '<div id="fleet-ping-payload"></div>' +
         '<h4 class="fleet-energy-title">Daily energy report</h4>' +
-        '<p class="hint">The same switch sends one more report a day: the date, and the ' +
+        '<p class="hint">The other report: the date, and the ' +
         "day's solar generation, grid import and export, battery charge and " +
         "discharge, and vehicle charge, each in whole kWh. It carries no id and " +
-        "nothing from the report above, so the two cannot be matched. It goes " +
-        "through an independent relay, so FTW Cloud reads the numbers without " +
-        "this box's address, and the relay sees the address without the numbers. " +
-        "A day with a gap in the energy record is skipped.</p>" +
+        "nothing from the fleet report, and leaves at its own time, so the two " +
+        "cannot be matched. They never travel together: device kinds and a price " +
+        "zone can point at one home, and the energy beside them would then be " +
+        "that home's. It goes through an independent relay, so FTW Cloud reads " +
+        "the numbers without this box's address, and the relay sees the address " +
+        "without the numbers. A day with a gap in the energy record is skipped.</p>" +
         '<div id="fleet-energy-payload"></div>' +
         "</fieldset>"
       );

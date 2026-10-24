@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/drivers"
 	"github.com/srcfl/ftw/go/internal/fleetping"
 	"github.com/srcfl/ftw/go/internal/state"
+	"github.com/srcfl/ftw/go/internal/statsrelay"
 )
 
 // The anonymous fleet ping, wired to the box.
@@ -69,7 +71,7 @@ func startFleetPing(
 	endpoint := cfg.FleetPing.Resolved()
 	cfgMu.RUnlock()
 
-	provider, err := fleetping.NewHTTPProvider(endpoint, nil)
+	provider, err := fleetProvider(endpoint, statsrelay.Pinned())
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +79,7 @@ func startFleetPing(
 	installedAt := firstSeen(st, time.Now())
 
 	pinger, err := fleetping.New(fleetping.Options{
-		Enabled: projectReportsAllowed(cfg, cfgMu, st),
+		Enabled: fleetReportAllowed(st, endpoint, provider),
 		Facts: func() fleetping.Facts {
 			// Drivers can be installed without restarting FTW. Read the signed
 			// catalogue at the same time as the config so tomorrow's report and
@@ -97,16 +99,53 @@ func startFleetPing(
 	return pinger, nil
 }
 
-// projectReportsAllowed is the owner's answer for both anonymous daily
-// reports, the fleet report and the energy report: the saved switch and the
-// project statistics choice. One function, so the two reports cannot come to
-// read different answers.
-func projectReportsAllowed(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) func() bool {
-	enabled := fleetPingEnabled(cfg, cfgMu)
-	return func() bool { return enabled() && cloudlink.StatisticsChoice(st) }
+// fleetProvider sends the report to FTW Cloud through the relay when this
+// build names one, and only then: FTW Cloud then never sees the box's
+// address. A build without a relay posts straight to /v1/fleet as before. An
+// endpoint the household chose is its own collector and is posted to
+// directly.
+func fleetProvider(endpoint string, relay *statsrelay.Client) (fleetping.Provider, error) {
+	if relay != nil && strings.TrimSpace(endpoint) == config.DefaultFleetPingEndpoint {
+		return fleetping.NewRelayProvider(relay), nil
+	}
+	return fleetping.NewHTTPProvider(endpoint, nil)
 }
 
-// fleetPingEnabled reads the switch, under the config lock, at each send.
+// sharesStatistics is the one answer for both anonymous daily reports, the
+// fleet report and the energy report: part of FTW Cloud, and on for a box
+// without it until the owner turns it off. One function, so the two reports
+// cannot come to read different answers. fleet_ping.enabled is no longer a
+// second switch; MigrateStatistics read it once.
+func sharesStatistics(st *state.Store) func() bool {
+	return func() bool { return st != nil && cloudlink.SharesStatistics(st) }
+}
+
+// fleetReportAllowed is the one answer, with one more rule for the direct
+// path: a box that shares only by default, never having said yes, posts
+// nothing straight to FTW Cloud, which would see its address. Through the
+// relay, or to a collector the household chose, the answer alone decides.
+func fleetReportAllowed(st *state.Store, endpoint string, provider fleetping.Provider) func() bool {
+	shares := sharesStatistics(st)
+	_, relayed := provider.(*fleetping.RelayProvider)
+	direct := !relayed && strings.TrimSpace(endpoint) == config.DefaultFleetPingEndpoint
+	return func() bool {
+		return shares() && (!direct || cloudlink.SaidYesToStatistics(st))
+	}
+}
+
+// migrateStatistics turns what an earlier release stored into the one
+// answer, once: a fleet report switched off in the config stays off.
+func migrateStatistics(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) {
+	if st == nil {
+		return
+	}
+	if err := cloudlink.MigrateStatistics(st, !fleetPingEnabled(cfg, cfgMu)()); err != nil {
+		slog.Warn("could not record the statistics answer; nothing is sent until it is", "err", err)
+	}
+}
+
+// fleetPingEnabled reads the old switch under the config lock. Since the one
+// statistics answer it is read once, by migrateStatistics.
 //
 // On() and not a second reading of nil. A config posted to /api/config never
 // passes through applyDefaults and configreload.Apply swaps it in whole, so a

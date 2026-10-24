@@ -55,34 +55,21 @@ const payload = {
 };
 
 describe("the fleet statistics panel", () => {
-  it("offers a checkbox bound to fleet_ping.enabled", () => {
-    const html = render({});
-    assert.match(html, /data-checkbox-path="fleet_ping\.enabled"/);
-    assert.match(html, /type="checkbox"/);
-  });
-
-  it("reflects the saved setting", () => {
-    assert.doesNotMatch(render({ fleet_ping: { enabled: false } }), /checkbox"[^>]*checked/);
-    assert.match(render({ fleet_ping: { enabled: true } }), /checked/);
-  });
-
-  it("mirrors the box's default when the section is missing", () => {
-    // A box that has never had fleet_ping in its YAML is sending, because
-    // applyDefaults turns it on. An unchecked box here would say the opposite
-    // of what is true, which is the one thing this screen must never do.
+  it("offers one statistics switch, not a config setting", () => {
+    // Statistics are one answer for both reports, kept by the box, not a
+    // field in the config document that Save writes.
     const config = {};
     const html = render(config);
-    // Compared field by field: the object is built inside the vm sandbox, so
-    // its prototype comes from another realm and deepStrictEqual refuses it.
-    assert.ok(config.fleet_ping, "fleet_ping was not created");
-    assert.equal(config.fleet_ping.enabled, true);
-    assert.match(html, /checked/);
+    assert.match(html, /id="statistics-share"/);
+    assert.doesNotMatch(html, /data-checkbox-path/);
+    assert.equal(config.fleet_ping, undefined, "render() wrote a config section");
   });
 
-  it("says the switch needs no restart", () => {
-    // The one thing about this setting that differs from the FTW app tab
-    // next to it, where saving is not enough.
-    assert.match(render({}), /[Nn]o restart/);
+  it("names both reports and says they never travel together", () => {
+    const html = render({});
+    assert.match(html, /two anonymous reports a day/);
+    assert.match(html, /never travel together/);
+    assert.match(html, /part of Cloud/);
   });
 
   it("names every field the message carries", () => {
@@ -200,6 +187,36 @@ describe("the line under the payload", () => {
   });
 });
 
+describe("the statistics switch", () => {
+  const { shareLine } = tab._pure;
+
+  it("is part of FTW Cloud while Cloud is on", () => {
+    const line = shareLine({ statistics: true, statisticsRequired: true });
+    assert.match(line, /Part of FTW Cloud/);
+    assert.match(line, /no separate off switch/);
+  });
+
+  it("says what on and off mean without Cloud", () => {
+    assert.match(shareLine({ statistics: true, statisticsRequired: false }), /takes effect at once, with no restart/);
+    assert.match(shareLine({ statistics: false, statisticsRequired: false }), /^Off\. Nothing is sent/);
+    assert.match(shareLine(null), /Could not read/);
+  });
+
+  it("does not claim a report goes while it waits for the relay", () => {
+    const line = whereLine({ enabled: false, waits_for_relay: true, endpoint: "https://cloud.ftw.energy/v1/fleet", ftw_relay: true, payload });
+    assert.match(line, /^Not sent yet/);
+    assert.match(line, /only through an independent relay/);
+    assert.doesNotMatch(line, /^Sent/);
+  });
+
+  it("says who sees what when the report goes through the relay", () => {
+    const line = whereLine({ enabled: true, endpoint: "https://relay.example.net/ftw", ftw_relay: true, through_relay: true, payload });
+    assert.match(line, /^Sent through https:\/\/relay\.example\.net\/ftw, an independent relay, to FTW Cloud/);
+    assert.match(line, /sees this box's address but not the report/);
+    assert.match(line, /reads the report but not the address/);
+  });
+});
+
 describe("keeping the line true after a save", () => {
   it("registers a post-save hook, because render() runs only on a tab switch", () => {
     // Without this the line keeps whatever the box said when the tab opened:
@@ -222,7 +239,8 @@ describe("keeping the line true after a save", () => {
     vm.createContext(sandbox);
     vm.runInContext(source, sandbox);
     sandbox.window.FTWSettings.fleetPing.afterSave();
-    assert.deepEqual(asked, ["/api/fleet-ping"]);
+    // And the statistics answer, which the switch shows.
+    assert.deepEqual([...asked].sort(), ["/api/cloud", "/api/cloud/stats-policy", "/api/fleet-ping"]);
   });
 });
 

@@ -1,10 +1,10 @@
 // Package energywire names the anonymous daily energy report: one closed UTC
 // day of one home as six whole-kWh sums, and nothing that says whose.
 //
-// It travels inside Oblivious HTTP (package ohttp) through a relay, so the
-// gateway never sees the box's address. It carries no id, version, driver,
-// zone or size, because the daily fleet report (package fleetwire) carries
-// those, and the two must never be joined into one home's record.
+// It travels alone through a relay (package reportwire), so the gateway never
+// sees the box's address. It carries no id, version, driver, zone or size,
+// because the daily fleet report (package fleetwire) carries those, and the
+// two must never be joined into one home's record.
 package energywire
 
 import (
@@ -16,21 +16,7 @@ import (
 
 const Schema = "ftw.energy/1"
 
-// The one inner request a box sends. The gateway answers no other.
 const (
-	Method    = "POST"
-	Scheme    = "https"
-	Authority = "cloud.ftw.energy"
-	Path      = "/v1/energy/report"
-)
-
-const (
-	// RequestSize is every padded inner request, and ResponseSize every
-	// padded inner response, so the relay sees one length whatever the
-	// numbers or the answer.
-	RequestSize  = 320
-	ResponseSize = 16
-
 	// MaxBodyBytes bounds the report itself, before any parsing.
 	MaxBodyBytes = 256
 

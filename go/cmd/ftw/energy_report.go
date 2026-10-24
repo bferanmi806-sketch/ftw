@@ -40,7 +40,7 @@ func startEnergyReport(ctx context.Context, cfg *config.Config, cfgMu *sync.RWMu
 // controls: as for the hourly project statistics, a partner's contract has to
 // let such a home in first.
 func energyReportAllowed(cfg *config.Config, cfgMu *sync.RWMutex, st *state.Store) func() bool {
-	allowed := projectReportsAllowed(cfg, cfgMu, st)
+	allowed := sharesStatistics(st)
 	return func() bool {
 		cfgMu.RLock()
 		partner := cfg.Nova != nil && cfg.Nova.Enabled

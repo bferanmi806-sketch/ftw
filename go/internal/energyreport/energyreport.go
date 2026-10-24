@@ -3,8 +3,8 @@
 // can tell which home sent it.
 //
 // The report is six whole-kWh sums of one closed UTC day and its date
-// (package energywire). The box seals it to FTW Cloud's gateway key, pinned
-// in this release, and posts it to the relay:
+// (package energywire). Package statsrelay seals it to FTW Cloud's gateway
+// key, pinned in this release, and posts it to the relay:
 //
 //   - the relay sees the box's address, the time and a ciphertext of fixed
 //     length, never the report;
@@ -12,71 +12,27 @@
 //     It adds the sums to that day's totals and keeps nothing of the report.
 //
 // Two things keep the report from being joined to the daily fleet report,
-// which goes straight to FTW Cloud from the box's own address: it carries no
-// field the fleet report carries, and it is sent at its own time, drawn
-// afresh for each day from 1 to 12 hours after the day closes.
+// which carries the box's drivers, zone and size: it carries no field the
+// fleet report carries, and it is sent alone at its own time, drawn afresh
+// for each day from 1 to 12 hours after the day closes. With a fleet of a
+// few boxes those fields can point at one home, so energy sent beside them
+// would be that home's again.
 //
-// It runs only when the owner's answer to the project statistics question
-// allows the fleet report, and never for a site a partner controls. It adds
-// no question or setting of its own.
+// It runs only while the box shares statistics (cloudlink.SharesStatistics),
+// the one answer that also covers the fleet report, and never for a site a
+// partner controls. It adds no question or setting of its own.
 package energyreport
 
 import (
-	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
-	"mime"
-	"net/http"
-	"net/url"
 	"time"
 
+	"github.com/srcfl/ftw/go/internal/statsrelay"
 	"github.com/srcfl/ftw/go/protocol/energywire"
-	"github.com/srcfl/ftw/go/protocol/ohttp"
 )
-
-// Compile-time settings, as in cloudlink: a relay a household could point
-// elsewhere is a relay a support call could point at an attacker's. A local
-// test build may set them with -ldflags -X.
-var (
-	// RelayURL is the OHTTP relay the report goes through, run by someone
-	// other than Sourceful. Empty until that relay exists: the box then
-	// sends nothing.
-	RelayURL = ""
-	// GatewayKey is FTW Cloud's gateway key configuration (RFC 9458,
-	// section 3), base64url, as
-	// https://cloud.ftw.energy/.well-known/ohttp-gateway serves it. The box
-	// encrypts only to this key and never asks the service for one, so every
-	// box on a release uses the same key and a key swapped in at the service
-	// reads nothing. Empty means no gateway key exists for this build.
-	GatewayKey = ""
-)
-
-// Pinned returns this build's relay and gateway key. ok is false unless both
-// are set and the key offers the suite package ohttp speaks.
-func Pinned() (relay string, key ohttp.KeyConfig, ok bool) {
-	return pinned(RelayURL, GatewayKey)
-}
-
-func pinned(relay, key string) (string, ohttp.KeyConfig, bool) {
-	raw, err := base64.RawURLEncoding.DecodeString(key)
-	if err != nil || relay == "" || key == "" {
-		return "", ohttp.KeyConfig{}, false
-	}
-	cfg, err := ohttp.ParseKeyConfig(raw)
-	if err != nil {
-		return "", ohttp.KeyConfig{}, false
-	}
-	u, err := url.Parse(relay)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Hostname() == energywire.Authority {
-		return "", ohttp.KeyConfig{}, false
-	}
-	return relay, cfg, true
-}
 
 const (
 	// The send window after a day closes: late enough that the day's last
@@ -84,9 +40,6 @@ const (
 	// the date.
 	firstSend = time.Hour
 	lastSend  = 12 * time.Hour
-
-	sendTimeout      = 30 * time.Second
-	maxResponseBytes = 1 << 10
 
 	// lastDayKey records the last date this box sent, on the box only, so a
 	// restart does not send a day twice.
@@ -106,11 +59,8 @@ type Options struct {
 	Ledger  Ledger
 	KV      KV
 
-	// Relay and Key default to Pinned. Tests set them to a fake relay.
-	Relay string
-	Key   *ohttp.KeyConfig
-
-	Client *http.Client
+	// Relay defaults to statsrelay.Pinned. Tests set a fake relay.
+	Relay  *statsrelay.Client
 	Logger *slog.Logger
 
 	// Injectable seams. Production leaves them nil.
@@ -124,10 +74,7 @@ type Sender struct {
 	enabled func() bool
 	ledger  Ledger
 	kv      KV
-	relay   string
-	key     ohttp.KeyConfig
-	ready   bool
-	client  *http.Client
+	relay   *statsrelay.Client
 	log     *slog.Logger
 	now     func() time.Time
 	random  func() float64
@@ -138,24 +85,14 @@ func New(opts Options) (*Sender, error) {
 	if opts.Ledger == nil {
 		return nil, errors.New("energyreport: Ledger is required")
 	}
-	s := &Sender{enabled: opts.Enabled, ledger: opts.Ledger, kv: opts.KV, client: opts.Client, log: opts.Logger,
+	s := &Sender{enabled: opts.Enabled, ledger: opts.Ledger, kv: opts.KV, relay: opts.Relay, log: opts.Logger,
 		now: opts.Now, random: opts.Random, synced: opts.ClockSynced}
-	if opts.Key != nil {
-		s.relay, s.key, s.ready = opts.Relay, *opts.Key, opts.Relay != ""
-	} else {
-		s.relay, s.key, s.ready = Pinned()
+	if s.relay == nil {
+		s.relay = statsrelay.Pinned()
 	}
 	if s.enabled == nil {
 		s.enabled = func() bool { return false }
 	}
-	if s.client == nil {
-		s.client = &http.Client{Timeout: sendTimeout}
-	} else {
-		c := *s.client
-		s.client = &c
-	}
-	// A redirect would resend the sealed report to an address nobody chose.
-	s.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if s.log == nil {
 		s.log = slog.Default()
 	}
@@ -188,7 +125,10 @@ type Preview struct {
 // Preview builds yesterday's report with the same call the sender uses.
 func (s *Sender) Preview(ctx context.Context) Preview {
 	day := s.now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -1)
-	p := Preview{Relay: s.relay, Sending: s.ready && s.enabled(), Day: day.Format(time.DateOnly)}
+	p := Preview{Day: day.Format(time.DateOnly)}
+	if s.relay != nil {
+		p.Relay, p.Sending = s.relay.Relay(), s.enabled()
+	}
 	if r, ok, err := Day(ctx, s.ledger, day); err == nil && ok {
 		p.Payload = &r
 	}
@@ -198,7 +138,7 @@ func (s *Sender) Preview(ctx context.Context) Preview {
 // Run sends once a day until ctx ends. Without a relay and a gateway key it
 // returns at once and sends nothing.
 func (s *Sender) Run(ctx context.Context) {
-	if !s.ready {
+	if s.relay == nil {
 		return
 	}
 	var p plan
@@ -267,7 +207,7 @@ func (s *Sender) sent(day time.Time) bool {
 // send makes one attempt for one day and forgets about it. There is no
 // retry: a lost report is one fewer in a count that says it counts reports.
 func (s *Sender) send(ctx context.Context, day time.Time) {
-	if !s.ready || !s.synced() || !s.enabled() || s.sent(day) {
+	if s.relay == nil || !s.synced() || !s.enabled() || s.sent(day) {
 		return
 	}
 	r, ok, err := Day(ctx, s.ledger, day)
@@ -286,56 +226,11 @@ func (s *Sender) send(ctx context.Context, day time.Time) {
 			return
 		}
 	}
-	sendCtx, cancel := context.WithTimeout(ctx, sendTimeout)
-	defer cancel()
-	if err := s.post(sendCtx, r); err != nil {
-		s.log.Debug("energy report did not go through", "err", err)
-	}
-}
-
-// post seals one report and reads the gateway's answer.
-func (s *Sender) post(ctx context.Context, r energywire.Report) error {
 	body, err := json.Marshal(r)
 	if err != nil {
-		return err
+		return
 	}
-	inner := ohttp.Request{Method: energywire.Method, Scheme: energywire.Scheme, Authority: energywire.Authority,
-		Path: energywire.Path, Content: body}.Marshal(energywire.RequestSize)
-	sealed, reader, err := ohttp.Encapsulate(s.key, inner)
-	if err != nil {
-		return err
+	if err := s.relay.Send(ctx, body); err != nil {
+		s.log.Debug("energy report did not go through", "err", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.relay, bytes.NewReader(sealed))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", ohttp.RequestType)
-	// Pinned, as for the fleet report: the relay sees it, and Go's default
-	// names the runtime's version.
-	req.Header.Set("User-Agent", "ftw-energy-report")
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return err
-	}
-	media, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
-	if resp.StatusCode != http.StatusOK || media != ohttp.ResponseType || len(data) > maxResponseBytes {
-		return fmt.Errorf("energy report: relay answered %d %q", resp.StatusCode, media)
-	}
-	msg, err := reader.Open(data)
-	if err != nil {
-		return err
-	}
-	answer, err := ohttp.ParseResponse(msg)
-	if err != nil {
-		return err
-	}
-	if answer.Status != http.StatusNoContent {
-		return fmt.Errorf("energy report: gateway answered %d", answer.Status)
-	}
-	return nil
 }

@@ -2492,6 +2492,7 @@ func main() {
 	// The bundled drivers dir is deliberately not passed: which drivers this
 	// build ships with is compiled in, not discovered on disk. See
 	// fleetCatalogue for what that buys.
+	migrateStatistics(cfg, cfgMu, st)
 	fleetPinger, fleetPingErr := startFleetPing(
 		ctx, cfg, cfgMu, st, Version, config.ManagedDriversDirOverride,
 	)

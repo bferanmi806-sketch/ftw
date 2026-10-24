@@ -20,10 +20,13 @@
 //   - a send time that moves. A box that pings at 03:17 every night has told
 //     the endpoint its name in a field nobody thought to look at.
 //
-// What this cannot fix is the source IP, which the endpoint sees and which a
-// household often keeps for months. That is the honest limit: this design
-// makes the *payload* useless as an identifier, it does not make the
-// connection anonymous. The drifting send time is what stops arrival time
+// Sent straight to an endpoint, the source IP is what this cannot fix: the
+// endpoint sees it, and a household often keeps one for months. A release
+// that names a relay (package statsrelay) sends the report to FTW Cloud
+// through it instead, sealed with Oblivious HTTP, so FTW Cloud reads the
+// report without the address and the relay sees the address without the
+// report. Without one, this design makes the *payload* useless as an
+// identifier; it does not make the connection anonymous. The drifting send time is what stops arrival time
 // becoming a second selector alongside it — though the drift is a random walk
 // in six-hour steps, so it takes about four days to spread across the clock,
 // and until then one box's arrival times are still loosely related.
@@ -53,6 +56,7 @@ import (
 
 	"github.com/srcfl/ftw/go/internal/config"
 	"github.com/srcfl/ftw/go/internal/prices"
+	"github.com/srcfl/ftw/go/internal/statsrelay"
 	"github.com/srcfl/ftw/go/protocol/fleetwire"
 )
 
@@ -347,6 +351,26 @@ func (h *HTTPProvider) Send(ctx context.Context, p Payload) error {
 	return nil
 }
 
+// RelayProvider sends the report through the relay (package statsrelay), as
+// its own message at its own time: never beside the energy report, whose
+// sums a driver set and a price zone could otherwise tie to one home.
+type RelayProvider struct {
+	c *statsrelay.Client
+}
+
+func NewRelayProvider(c *statsrelay.Client) *RelayProvider { return &RelayProvider{c: c} }
+
+func (p *RelayProvider) Send(ctx context.Context, payload Payload) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return p.c.Send(ctx, body)
+}
+
+// EndpointURL is the relay, which is where the box sends.
+func (p *RelayProvider) EndpointURL() string { return p.c.Relay() }
+
 // Options wires the pinger. Everything except the injectable seams is required.
 type Options struct {
 	// Enabled is read at each send rather than captured, so turning the ping
@@ -424,6 +448,16 @@ func (p *Pinger) Endpoint() string {
 		return provider.EndpointURL()
 	}
 	return ""
+}
+
+// Enabled is whether the next report would go, read the way the sender reads
+// it, so Settings says what the box does.
+func (p *Pinger) Enabled() bool { return p.enabled() }
+
+// ThroughRelay reports whether the running provider sends through the relay.
+func (p *Pinger) ThroughRelay() bool {
+	_, ok := p.provider.(*RelayProvider)
+	return ok
 }
 
 // Run pings once a day until ctx ends.

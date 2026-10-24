@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/srcfl/ftw/go/protocol/ohttp"
 )
 
 var now = time.Date(2026, 10, 24, 9, 30, 0, 0, time.UTC)
@@ -69,24 +67,5 @@ func TestOpenAndClosedDays(t *testing.T) {
 		if got := [2]bool{Accepts(date, now), Closed(date, now)}; got != want {
 			t.Fatalf("%s: accepts, closed = %v, want %v", date, got, want)
 		}
-	}
-}
-
-// The largest report still fits the padded request, so every request has the
-// same length on the wire.
-func TestTheLargestReportFitsThePaddedRequest(t *testing.T) {
-	r := Report{Schema: Schema, Date: "2026-10-23", PVGeneration: MaxKWh, GridImport: MaxKWh, GridExport: MaxKWh,
-		BatteryCharge: MaxKWh, BatteryDischarge: MaxKWh, VehicleCharge: MaxKWh}
-	body, _ := json.Marshal(r)
-	if len(body) > MaxBodyBytes {
-		t.Fatalf("body %d", len(body))
-	}
-	req := ohttp.Request{Method: Method, Scheme: Scheme, Authority: Authority, Path: Path, Content: body}.Marshal(RequestSize)
-	small := ohttp.Request{Method: Method, Scheme: Scheme, Authority: Authority, Path: Path, Content: []byte(valid)}.Marshal(RequestSize)
-	if len(req) != RequestSize || len(small) != RequestSize {
-		t.Fatalf("padded %d and %d", len(req), len(small))
-	}
-	if len(ohttp.Response{Status: 400}.Marshal(ResponseSize)) != ResponseSize {
-		t.Fatal("response padding")
 	}
 }

@@ -1253,13 +1253,19 @@ func TestNoStatisticsWhileTheCopyIsBeingDeleted(t *testing.T) {
 	}
 }
 
-func TestABuildWithoutAServiceRefusesStatistics(t *testing.T) {
-	link, err := New(Options{Site: &fakeSite{}, Roster: fakeRoster{}, KV: &memKV{},
+// Without Cloud the statistics answer is the box's own, so a build with no
+// service still records it. It still names the policy the owner read.
+func TestABuildWithoutAServiceStillRecordsTheLocalAnswer(t *testing.T) {
+	kv := &memKV{}
+	link, err := New(Options{Site: &fakeSite{}, Roster: fakeRoster{}, KV: kv,
 		KeyPath: filepath.Join(t.TempDir(), "cloud.key"), ServiceKeys: []*ecdsa.PublicKey{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrNoService) {
+	if err := link.Stats(StatsRequest{Policy: "p"}); !errors.Is(err, ErrNotGranted) {
+		t.Fatalf("an unknown policy: %v", err)
+	}
+	if err := link.Stats(StatsRequest{Policy: cloudwire.StatsPolicy}); err != nil || !SharesStatistics(kv) {
 		t.Fatalf("statistics: %v", err)
 	}
 }
