@@ -150,7 +150,8 @@ type Health struct {
 	Fallbacks    int
 
 	// Polls is how many driver polls ran in the last 24 hours, all drivers
-	// together, and PollErrors how many failed.
+	// together, and PollErrors how many failed. Both stay zero while the
+	// count covers too little of the day to say anything.
 	Polls, PollErrors uint64
 
 	// Update is the outcome of the newest update in the last 7 days: "ok",
@@ -222,7 +223,8 @@ func fallbackBucket(h Health) string {
 
 // errorBucket is the share of the last 24 hours' driver polls that failed.
 // A share, not a count, so a driver that polls every second and one that
-// polls every minute land in the same bucket for the same trouble.
+// polls every minute land in the same bucket for the same trouble. None is
+// no polls, or too few hours of them, as just after a restart.
 func errorBucket(h Health) string {
 	switch {
 	case h.Polls == 0:

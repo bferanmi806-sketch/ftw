@@ -622,8 +622,10 @@ slowest plan of the last 24 hours (`none`, `0-1s`, `1-5s`, `5s+`), how many of
 those plans fell back (`none`, `0`, `1-3`, `4+`), the share of driver polls
 that failed (`none`, `0`, `0-1%`, `1%+`) and the newest update of the last 7
 days (`none`, `ok`, `failed`). Core reads them from the plans it already keeps
-(`planner_diagnostics`), a 24-hour count of polls in the telemetry store and
-the updater's status. A box that does not update itself says `none`, so how it
+(`planner_diagnostics`), a 24-hour count of the driver registry's polls in
+the telemetry store and the updater's status. The poll count lives in memory,
+so until it covers six hours, as after a restart, the share says `none`.
+An OCPP charger's messages are not polls and are not counted. A box that does not update itself says `none`, so how it
 was installed does not become a field. The service accepts both schemas and
 counts health only from reports that carry it.
 

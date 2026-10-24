@@ -42,7 +42,7 @@
   var HEALTH = {
     plan_solve: { none: "no plan", "0-1s": "under a second", "1-5s": "one to five seconds", "5s+": "five seconds or more" },
     plan_fallbacks: { none: "no plan", "0": "none", "1-3": "one to three", "4+": "four or more" },
-    driver_errors: { none: "no reads", "0": "none", "0-1%": "under 1 in 100", "1%+": "1 in 100 or more" },
+    driver_errors: { none: "too few reads to say", "0": "none", "0-1%": "under 1 in 100", "1%+": "1 in 100 or more" },
     update: { none: "none", ok: "succeeded", failed: "failed" },
   };
 

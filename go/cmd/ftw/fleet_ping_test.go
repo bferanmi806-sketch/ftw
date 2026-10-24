@@ -517,15 +517,21 @@ func TestFleetHealthReadsTheBoxsLastDay(t *testing.T) {
 	}
 	tel := telemetry.NewStore()
 	for range 99 {
-		tel.RecordDriverTick("inverter")
+		tel.CountPoll(false)
 	}
-	tel.RecordDriverError("meter", "timeout")
+	tel.CountPoll(true)
 	updates := selfupdate.New(selfupdate.Config{StatusPath: filepath.Join(t.TempDir(), "update-status.json")}, nil)
 	if err := updates.WriteStatus(selfupdate.UpdateStatus{State: "failed", Action: "update", Target: "v9.9.9", UpdatedAt: now.Add(-48 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 
-	h := fleetHealth(store, tel, updates, now)
+	// Just after a start the poll count covers too little to say anything.
+	if h := fleetHealth(store, tel, updates, now); h.Polls != 0 || h.PollErrors != 0 || h.Plans != 2 {
+		t.Fatalf("a fresh count was reported: %+v", h)
+	}
+	// Seven hours on, it covers enough; the polls and plans are still in
+	// their 24 hours.
+	h := fleetHealth(store, tel, updates, now.Add(7*time.Hour))
 	if h.Plans != 2 || h.SlowestSolve != 6100*time.Millisecond || h.Fallbacks != 1 || h.Polls != 100 || h.PollErrors != 1 || h.Update != "failed" {
 		t.Fatalf("%+v", h)
 	}

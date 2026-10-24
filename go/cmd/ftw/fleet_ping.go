@@ -109,9 +109,9 @@ func startFleetPing(
 
 // fleetHealth reads how the box ran lately, for the report's health buckets:
 // the planner's last 24 hours from the plans it kept, the drivers' last 24
-// hours of polls, and the newest update of the last 7 days. A source that is
-// missing, as the updater is on a box that does not update itself, reads as
-// nothing to report.
+// hours of polls once the count covers six of them, and the newest update of
+// the last 7 days. A source that is missing or too short, as the updater is
+// on a box that does not update itself, reads as nothing to report.
 func fleetHealth(st *state.Store, tel *telemetry.Store, updates *selfupdate.Checker, now time.Time) fleetping.Health {
 	var h fleetping.Health
 	if st != nil {
@@ -122,8 +122,12 @@ func fleetHealth(st *state.Store, tel *telemetry.Store, updates *selfupdate.Chec
 			h.Plans, h.SlowestSolve, h.Fallbacks = plans, time.Duration(slowestMs*float64(time.Millisecond)), fallbacks
 		}
 	}
+	// Counts that cover under six hours, as after an update's restart, say
+	// too little: a start-up burst of failed polls would read as trouble.
 	if tel != nil {
-		h.Polls, h.PollErrors = tel.PollsLastDay(now)
+		if polls, errors, covered := tel.PollsLastDay(now); covered >= 6*time.Hour {
+			h.Polls, h.PollErrors = polls, errors
+		}
 	}
 	if updates != nil {
 		u := updates.Status()
