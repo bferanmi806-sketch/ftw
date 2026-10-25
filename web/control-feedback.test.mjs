@@ -77,6 +77,9 @@ test('expected limits stay calm and explain themselves', () => {
   // A charger holding a lower order than FTW sent.
   const lower = controlStatus(row({kind: 'ev', status: 'limited', reason: 'offered_current_lower', severity: 'warning', offered_a: 12, requested_a: 15}));
   assert.equal(lower.text, 'The charger offers 12 A, below the 15 A FTW asked for.');
+  // A lower held order is said first, even when the driver reports less.
+  const both = controlStatus(row({kind: 'ev', status: 'limited', reason: 'offered_current_lower', severity: 'warning', offered_a: 12, limit_a: 10, requested_a: 15}));
+  assert.equal(both.text, 'The charger offers 12 A, below the 15 A FTW asked for.');
   const onePhase = controlStatus(row({kind: 'ev', mode: 'plan', status: 'limited', reason: 'one_phase', severity: 'info',
     sent_w: 3680, actual_w: 3650, charging_phase: 'L1', charging_phase_max_w: 3680}));
   assert.equal(onePhase.title, 'Charging on one phase');

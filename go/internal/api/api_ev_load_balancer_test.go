@@ -33,9 +33,12 @@ func TestEaseeLoadBalancingReadsAsLimited(t *testing.T) {
 		{"no limit reported", held, 8850, "not_following", "power_below_target", "warning"},
 		{"a 13 A limit does not explain zero", named, 0, "not_following", "no_power_response", "warning"},
 		{"nor a car taking far less", named, 4000, "not_following", "power_below_target", "warning"},
+		{"nor a car 2 A under it", named, 7500, "not_following", "power_below_target", "warning"},
+		{"nor a car 1.5 A under a 7 A limit", held + `,"current_limit_a":7,"current_limited_by":"load_balancer"`, 3800, "not_following", "power_below_target", "warning"},
 		{"nor a car at the order", named, 10300, "following", "power_observed", "info"},
 		{"limit at the order", held + `,"current_limit_a":15,"current_limited_by":"load_balancer"`, 8850, "not_following", "power_below_target", "warning"},
 		{"a zero limit", held + `,"current_limit_a":0,"current_limited_by":"load_balancer"`, 0, "not_following", "no_power_response", "warning"},
+		{"a zero limit, no readback", `,"current_limit_a":0,"current_limited_by":"load_balancer"`, 0, "not_following", "no_power_response", "warning"},
 		// A charger that holds a lower order than FTW sent says so first.
 		{"charger holds 12 A", `,"max_a":12,"current_limit_a":10,"current_limited_by":"load_balancer"`, 6900, "limited", "offered_current_lower", "warning"},
 	} {
@@ -137,5 +140,11 @@ function driver_default_mode() end
 		if len(rows) != 1 || rows[0].Make != tc.make {
 			t.Fatalf("extra %q: rows %+v, want make %q", tc.extra, rows, tc.make)
 		}
+	}
+	// Stale readings drop the limit, its cause and the make together.
+	tel.Update("easee", telemetry.DerEV, 8850, nil, []byte(`{"connected":true,"current_limit_a":13,"current_limited_by":"load_balancer"}`))
+	rows := srv.controlFeedback(time.Now().Add(2 * time.Minute))
+	if len(rows) != 1 || rows[0].Reason != "telemetry_stale" || rows[0].LimitA != nil || rows[0].LimitedBy != "" || rows[0].Make != "" {
+		t.Fatalf("stale row keeps its limit: %+v", rows)
 	}
 }

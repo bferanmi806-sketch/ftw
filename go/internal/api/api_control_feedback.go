@@ -510,15 +510,16 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	// The charger holds the order but its driver reports that it lets the car
 	// take less, and names its load balancing when the charger's allocation
 	// shows it (easee_cloud 1.4.1). That explains a car taking about that
-	// much: within 10 % or 2 A, as the car follows a step, never more. A car
-	// taking far less, nothing, or more keeps its verdict. A lower current
-	// whose cause the driver does not show still asks for a look.
+	// much, never more: within 10 %, or as the car follows a step, within
+	// 2 A but at most 15 % of the limit. A car taking far less, nothing, or
+	// more keeps its verdict. A lower current whose cause the driver does
+	// not show still asks for a look.
 	if f.Kind == "ev" && f.SentW != nil && f.RequestedW != nil && f.RequestedA != nil && f.LimitA != nil && f.ActualW != nil &&
 		*f.SentW > 100 && *f.RequestedA > 0 && *f.LimitA > 0 && *f.LimitA+0.5 < *f.RequestedA && settled {
 		perA := *f.RequestedW / *f.RequestedA
 		limitW := *f.LimitA * perA
 		tolerance := telemetry.ControlToleranceW(limitW)
-		if *f.ActualW >= limitW-math.Max(tolerance, 2*perA) && *f.ActualW <= limitW+tolerance && *f.ActualW < *f.SentW {
+		if *f.ActualW >= limitW-math.Max(tolerance, math.Min(2*perA, 0.15*limitW)) && *f.ActualW <= limitW+tolerance && *f.ActualW < *f.SentW {
 			if f.LimitedBy == "load_balancer" {
 				set("limited", "load_balancer_limit", "info")
 			} else {

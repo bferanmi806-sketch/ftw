@@ -100,7 +100,7 @@ function sentence(row) {
     case 'fuse_cooldown': return 'FTW waits a moment after a site power limit before it raises the rate.';
     case 'charger_limit': return 'The charger limit in FTW’s settings caps the rate.';
     case 'device_limit': return `The charger’s own limit is ${amps(row.device_limit_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
-    case 'offered_current_lower': return num(row.limit_a)
+    case 'offered_current_lower': return num(row.limit_a) && !(num(row.offered_a) && num(row.requested_a) && row.offered_a + 0.5 < row.requested_a)
       ? `The charger lets the car take ${amps(row.limit_a)}, below the ${amps(row.requested_a)} FTW asked for.`
       : `The charger offers ${amps(row.offered_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
     case 'load_balancer_limit': return `${row.make ? `${row.make} limits the charger to ${amps(row.limit_a)} (its load balancing)`
