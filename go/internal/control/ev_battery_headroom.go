@@ -34,7 +34,11 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 	}
 	needW := math.Max(0, demandW-offeredW)
 	meter := store.Get(state.SiteMeterDriver, telemetry.DerMeter)
-	if meter == nil || !finiteFuseValue(meter.RawW) || !finiteFuseValue(fuseMaxW) {
+	if meter == nil {
+		return floorPositiveEVBatteryTargets(targets)
+	}
+	gridW := meter.RawW
+	if !finiteFuseValue(gridW) || !finiteFuseValue(fuseMaxW) {
 		return floorPositiveEVBatteryTargets(targets)
 	}
 	latest := make(map[string]float64, len(targets))
@@ -61,16 +65,17 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 	// discharge needs room past our own raises the meter may not show, the
 	// EV's included, not past what the car still wants.
 	riseW := math.Max(0, state.EVCommandedW-offeredW)
-	ceilingW := state.importRiseCeilingW(fuseMaxW) - meter.RawW
+	ceilingW := state.importRiseCeilingW(fuseMaxW) - gridW
 	spare, releaseSpare := ceilingW-needW, ceilingW-riseW
 	// During measured export overflow, the existing fuse pipeline may
-	// require charge to reduce export. Magnitudes alone cannot label that
-	// worst phase as import; leave this direction to the existing guard.
-	if meter.RawW >= -state.effectiveExportCeilingW(fuseMaxW) && state.SiteFuseVoltage > 0 {
-		if phaseSpare, known := evBatteryPhaseSpareW(meter, state, needW/(state.SiteFuseVoltage*phases)); known {
+	// require charge to reduce export; leave that direction to it. The
+	// phases carry their direction (phaseCurrentsA): the worst phase is the
+	// one importing most, and an exporting phase leaves the charge more room.
+	if gridW >= -state.effectiveExportCeilingW(fuseMaxW) && state.SiteFuseVoltage > 0 {
+		if phaseSpare, known := evBatteryPhaseSpareW(meter, state, gridW, needW/(state.SiteFuseVoltage*phases)); known {
 			spare = math.Min(spare, phaseSpare)
 		}
-		if phaseSpare, known := evBatteryPhaseSpareW(meter, state, riseW/(state.SiteFuseVoltage*phases)); known {
+		if phaseSpare, known := evBatteryPhaseSpareW(meter, state, gridW, riseW/(state.SiteFuseVoltage*phases)); known {
 			releaseSpare = math.Min(releaseSpare, phaseSpare)
 		}
 	}
@@ -83,7 +88,7 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 		offeredCharge += math.Max(0, targets[i].TargetW)
 		finalCharge += math.Max(0, out[i].TargetW)
 	}
-	exportFloor := math.Min(offeredCharge, math.Max(0, -meter.RawW-state.effectiveExportCeilingW(fuseMaxW)))
+	exportFloor := math.Min(offeredCharge, math.Max(0, -gridW-state.effectiveExportCeilingW(fuseMaxW)))
 	if exportFloor > finalCharge && offeredCharge > finalCharge {
 		scale := (exportFloor - finalCharge) / (offeredCharge - finalCharge)
 		for i := range out {
@@ -162,8 +167,8 @@ func keepEndingDischarge(out []DispatchTarget, latest, lowest map[string]float64
 	return out
 }
 
-func evBatteryPhaseSpareW(meter *telemetry.DerReading, state *State, evIncreaseA float64) (float64, bool) {
-	worst, present, valid := worstPhaseA(meter, state)
+func evBatteryPhaseSpareW(meter *telemetry.DerReading, state *State, gridW, evIncreaseA float64) (float64, bool) {
+	worst, present, valid := worstPhaseA(meter, state, gridW)
 	if !present {
 		return 0, false
 	}
