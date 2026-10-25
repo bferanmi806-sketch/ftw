@@ -85,17 +85,17 @@ func TestFuseHeatCountsGapAtLastCurrentSeen(t *testing.T) {
 	} {
 		store, state := fuseHeatState()
 		t0 := time.Unix(1_800_000_000, 0)
-		state.stepFuseHeat(meterAt(store, t0.Add(-time.Hour), [3]float64{20, 20, 20}))
-		state.stepFuseHeat(meterAt(store, t0, [3]float64{tc.before, 20, 20}))
+		state.stepFuseHeat0(meterAt(store, t0.Add(-time.Hour), [3]float64{20, 20, 20}))
+		state.stepFuseHeat0(meterAt(store, t0, [3]float64{tc.before, 20, 20}))
 		held := state.fuseHeat.sq
 		silent := store.Get("meter", telemetry.DerMeter)
 		for range 30 {
-			state.stepFuseHeat(silent) // ticks with no new reading
+			state.stepFuseHeat0(silent) // ticks with no new reading
 		}
 		if state.fuseHeat.sq != held {
 			t.Fatalf("%s: heat moved to %v without a reading", tc.name, state.fuseHeat.sq)
 		}
-		state.stepFuseHeat(meterAt(store, t0.Add(gap), [3]float64{tc.after, 20, 20}))
+		state.stepFuseHeat0(meterAt(store, t0.Add(gap), [3]float64{tc.after, 20, 20}))
 		a := tc.before
 		want := a*a - (a*a-held[0])*math.Exp(-gap.Seconds()/60)
 		if got := state.fuseHeat.sq[0]; math.Abs(got-want) > 1e-9 {
@@ -110,7 +110,7 @@ func TestFuseHeatCountsGapAtLastCurrentSeen(t *testing.T) {
 // A Core restart has no memory: the first reading sets the heat.
 func TestFuseHeatStartsAtFirstReadingAfterRestart(t *testing.T) {
 	store, state := fuseHeatState()
-	state.stepFuseHeat(meterAt(store, time.Unix(1_800_000_000, 0), [3]float64{26, 3, 0}))
+	state.stepFuseHeat0(meterAt(store, time.Unix(1_800_000_000, 0), [3]float64{26, 3, 0}))
 	if state.fuseHeat.sq != [3]float64{676, 9, 0} {
 		t.Fatalf("first reading set %v", state.fuseHeat.sq)
 	}
@@ -521,7 +521,7 @@ func TestPhaseCurrentsTakeDirectionFromPhasePower(t *testing.T) {
 		{"reactive", map[string]float64{"l1_a": 10, "l2_a": 3, "l3_a": 5, "l1_w": -300, "l2_w": 690, "l3_w": 1150}, 1540, []float64{10, 3, 5}},
 	} {
 		raw, _ := json.Marshal(tc.data)
-		amps, present, valid := phaseCurrentsA(&telemetry.DerReading{RawW: tc.totalW, Data: raw}, state)
+		amps, present, valid := phaseCurrentsA(&telemetry.DerReading{Data: raw}, state, tc.totalW)
 		if !present || !valid || len(amps) != 3 || amps[0] != tc.want[0] || amps[1] != tc.want[1] || amps[2] != tc.want[2] {
 			t.Errorf("%s: %v (present %v, valid %v), want %v", tc.name, amps, present, valid, tc.want)
 		}
@@ -555,3 +555,7 @@ func TestExportingPhaseLevelIsItsReading(t *testing.T) {
 		t.Fatalf("start level %.1f A, want L2's 2 A", got)
 	}
 }
+
+// stepFuseHeat0 folds a reading with phase currents but no phase power, so
+// its total does not matter.
+func (s *State) stepFuseHeat0(meter *telemetry.DerReading) { s.stepFuseHeat(meter, 0) }

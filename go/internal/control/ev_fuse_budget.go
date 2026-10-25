@@ -360,7 +360,7 @@ func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State
 	if !finiteFuseValue(gridW) {
 		return 0, true
 	}
-	state.stepFuseHeat(meter)
+	state.stepFuseHeat(meter, gridW)
 	lim := &state.evLimit
 	pool, plugged := evPoolFor(state, points, configs)
 	if !plugged {
@@ -586,7 +586,7 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 		}
 		r.hourly = s.importHourMeasured()
 	}
-	amps, present, valid := phaseCurrentsA(meter, s)
+	amps, present, valid := phaseCurrentsA(meter, s, gridW)
 	if present && !valid {
 		r.phaseRoomKnown = true // No room on phases it cannot read.
 		return r
@@ -612,8 +612,8 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 // direction (phaseCurrentsA), and 0 when every phase exports. present is
 // false when the meter reports no phase currents; valid is false when they
 // cannot be used.
-func worstPhaseA(meter *telemetry.DerReading, state *State) (worstA float64, present, valid bool) {
-	amps, present, valid := phaseCurrentsA(meter, state)
+func worstPhaseA(meter *telemetry.DerReading, state *State, totalW float64) (worstA float64, present, valid bool) {
+	amps, present, valid := phaseCurrentsA(meter, state, totalW)
 	for _, a := range amps {
 		worstA = math.Max(worstA, a)
 	}
