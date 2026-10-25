@@ -124,9 +124,13 @@ func (s *State) stepFuseHeat(meter *telemetry.DerReading) {
 
 // phaseCurrentsA reads the site's configured phases, import positive. A
 // phase's direction is its power's sign in the same reading: P1 and many
-// meters report current as a magnitude. Without that phase's power the
-// current counts as import, the safe side. present is false when the meter
-// reports no phase currents; valid is false when they cannot be used.
+// meters report current as a magnitude. A phase exports only when its power
+// says so clearly, beyond a quarter of what its current could carry, and
+// the phases' powers add up to the reading's total. Otherwise its current
+// counts as import, the safe side: a phase near 0 W, a reactive phase, a
+// meter without phase power, or a driver whose phase power has the wrong
+// sign. present is false when the meter reports no phase currents; valid
+// is false when they cannot be used.
 func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, present, valid bool) {
 	// DER data uses snake case; separate fields retain absent-vs-zero.
 	var data struct {
@@ -143,18 +147,36 @@ func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, 
 	if !finiteFuseValue(state.SiteFuseAmps) || !finiteFuseValue(state.SiteFuseVoltage) || state.SiteFuseAmps <= 0 || state.SiteFuseVoltage <= 0 || state.SiteFusePhases < 1 || state.SiteFusePhases > 3 {
 		return nil, true, false
 	}
-	powers := []*float64{data.L1W, data.L2W, data.L3W}
+	powers := []*float64{data.L1W, data.L2W, data.L3W}[:state.SiteFusePhases]
+	signs := phasePowersAddUp(powers, meter.RawW)
 	for i, a := range []*float64{data.L1, data.L2, data.L3}[:state.SiteFusePhases] {
 		if a == nil || !finiteFuseValue(*a) {
 			return nil, true, false
 		}
 		signed := math.Abs(*a)
-		if w := powers[i]; w != nil && finiteFuseValue(*w) && *w < 0 {
+		if w := powers[i]; signs && *w < -math.Max(exportSignMinW, signed*state.SiteFuseVoltage/4) {
 			signed = -signed
 		}
 		amps = append(amps, signed)
 	}
 	return amps, true, true
+}
+
+// exportSignMinW is the least export a phase's power must show before its
+// current counts as export.
+const exportSignMinW = 25.0
+
+// phasePowersAddUp reports whether every phase power is present and their
+// sum is the reading's total, within a tenth of the phases' power or 250 W.
+func phasePowersAddUp(powers []*float64, totalW float64) bool {
+	var sum, abs float64
+	for _, w := range powers {
+		if w == nil || !finiteFuseValue(*w) {
+			return false
+		}
+		sum, abs = sum+*w, abs+math.Abs(*w)
+	}
+	return finiteFuseValue(totalW) && math.Abs(sum-totalW) <= math.Max(250, abs/10)
 }
 
 // SitePhases is the site meter's last reading of its phase currents, for

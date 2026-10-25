@@ -37,7 +37,7 @@ timing/25A/3p/3p/easee40s/car3p/L1/surplus idle readback
 timing/25A/auto/mixed/cloud60s/car3p/L1/surplus idle readback
 timing/25A/auto/mixed/easee120s/car3p/L1/surplus idle readback
 timing/25A/auto/mixed/easee40s/car3p/L1/surplus idle readback
-timing/25A/empty/none/cloud60s/car3p/L1/surplus idle readback
-timing/25A/empty/none/easee120s/car3p/L1/surplus idle readback
-timing/25A/empty/none/easee40s/car3p/L1/surplus idle readback
+timing/25A/empty/none/cloud60s/car3p/L1/surplus idle nostep
+timing/25A/empty/none/easee120s/car3p/L1/surplus idle nostep
+timing/25A/empty/none/easee40s/car3p/L1/surplus idle nostep
 timing/25A/empty/none/fast2s/car3p/L1/surplus idle nostep
