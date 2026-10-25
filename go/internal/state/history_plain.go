@@ -334,11 +334,11 @@ func (s *Store) writeHourBuckets(ctx context.Context, hours map[string]*namedHou
 		return err
 	}
 	defer s.historyWriteMu.Unlock()
-	tx, err := s.history.BeginTx(ctx, nil)
+	tx, end, err := s.beginHistoryWrite(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer end()
 	var imported bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM history_migrations WHERE name=?)`, receipt).Scan(&imported); err != nil {
 		return err

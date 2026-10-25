@@ -113,11 +113,11 @@ func (h *fuseHeat) worstA() float64 {
 
 // stepFuseHeat folds each new site reading into the model, whether or not a
 // car is plugged in.
-func (s *State) stepFuseHeat(meter *telemetry.DerReading) {
+func (s *State) stepFuseHeat(meter *telemetry.DerReading, totalW float64) {
 	if s.fuseHeat.set && !meter.UpdatedAt.After(s.fuseHeat.at) {
 		return
 	}
-	if amps, _, valid := phaseCurrentsA(meter, s); valid {
+	if amps, _, valid := phaseCurrentsA(meter, s, totalW); valid {
 		s.fuseHeat.step(meter.UpdatedAt, amps)
 	}
 }
@@ -129,9 +129,9 @@ func (s *State) stepFuseHeat(meter *telemetry.DerReading) {
 // the phases' powers add up to the reading's total. Otherwise its current
 // counts as import, the safe side: a phase near 0 W, a reactive phase, a
 // meter without phase power, or a driver whose phase power has the wrong
-// sign. present is false when the meter reports no phase currents; valid
-// is false when they cannot be used.
-func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, present, valid bool) {
+// sign. totalW is the same reading's site total. present is false when the
+// meter reports no phase currents; valid is false when they cannot be used.
+func phaseCurrentsA(meter *telemetry.DerReading, state *State, totalW float64) (amps []float64, present, valid bool) {
 	// DER data uses snake case; separate fields retain absent-vs-zero.
 	var data struct {
 		L1  *float64 `json:"l1_a"`
@@ -148,7 +148,7 @@ func phaseCurrentsA(meter *telemetry.DerReading, state *State) (amps []float64, 
 		return nil, true, false
 	}
 	powers := []*float64{data.L1W, data.L2W, data.L3W}[:state.SiteFusePhases]
-	signs := phasePowersAddUp(powers, meter.RawW)
+	signs := phasePowersAddUp(powers, totalW)
 	for i, a := range []*float64{data.L1, data.L2, data.L3}[:state.SiteFusePhases] {
 		if a == nil || !finiteFuseValue(*a) {
 			return nil, true, false
@@ -187,10 +187,11 @@ func SitePhases(store *telemetry.Store, state *State) (loadpoint.SitePhases, boo
 		return loadpoint.SitePhases{}, false
 	}
 	meter := store.Get(state.SiteMeterDriver, telemetry.DerMeter)
-	if meter == nil {
+	totalW, _, online := store.OnlineMeterW(state.SiteMeterDriver)
+	if meter == nil || !online {
 		return loadpoint.SitePhases{}, false
 	}
-	amps, _, valid := phaseCurrentsA(meter, state)
+	amps, _, valid := phaseCurrentsA(meter, state, totalW)
 	if !valid || len(amps) != 3 {
 		return loadpoint.SitePhases{}, false
 	}
