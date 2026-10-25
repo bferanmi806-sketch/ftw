@@ -552,14 +552,17 @@ func (a *appPlans) Latest() *mpc.Plan {
 // redelivery of the same one. Derived from the plan's own timestamp because
 // mpc has no revision of its own and inventing one there would be a field two
 // packages had to keep in step.
+//
+// The plan is read under revMu. Each session calls Rev, and a session that
+// read the old plan outside the lock could count it again after another had
+// counted the new one, moving the rev twice for one replan.
 func (a *appPlans) Rev() uint64 {
+	a.revMu.Lock()
+	defer a.revMu.Unlock()
 	plan := a.Latest()
 	if plan == nil {
 		return 0
 	}
-
-	a.revMu.Lock()
-	defer a.revMu.Unlock()
 	if plan.GeneratedAtMs != a.lastGen {
 		a.lastGen = plan.GeneratedAtMs
 		a.rev++
