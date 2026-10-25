@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -309,6 +310,7 @@ func TestLoadExistingIdentityDuringInstallFailsClosed(t *testing.T) {
 	syncDirectory := ops.syncDirectory
 	linked, loaded := false, false
 	var during error
+	var namesBefore, namesAfter []string
 	ops.link = func(root *os.Root, oldName, newName string) error {
 		err := root.Link(oldName, newName)
 		linked = err == nil && newName == filepath.Base(path)
@@ -317,7 +319,9 @@ func TestLoadExistingIdentityDuringInstallFailsClosed(t *testing.T) {
 	ops.syncDirectory = func(dir *os.File) error {
 		if linked && !loaded {
 			loaded = true
+			namesBefore = dirNames(t, filepath.Dir(path))
 			_, during = LoadExistingIdentity(path)
+			namesAfter = dirNames(t, filepath.Dir(path))
 		}
 		return syncDirectory(dir)
 	}
@@ -328,10 +332,26 @@ func TestLoadExistingIdentityDuringInstallFailsClosed(t *testing.T) {
 	if !loaded || !isInstallWindowRefusal(during) {
 		t.Fatalf("load inside the install window = %v (ran %v), want the two-link refusal", during, loaded)
 	}
+	if len(namesBefore) != 2 || !slices.Equal(namesBefore, namesAfter) {
+		t.Fatalf("directory inside the install window: %v before the load, %v after, want the key and its temp both times", namesBefore, namesAfter)
+	}
 	after, err := LoadExistingIdentity(path)
 	if err != nil || after.PublicKeyHex() != created.PublicKeyHex() {
 		t.Fatalf("load after the install = %v, %v", after, err)
 	}
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 func isInstallWindowRefusal(err error) bool {
