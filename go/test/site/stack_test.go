@@ -271,6 +271,8 @@ type stackSpec struct {
 	// engine is the planner's: core or energyplan. Empty takes
 	// FTW_SITE_ENGINE, else core.
 	engine string
+	// horizonH is the planner's horizon_hours; 0 leaves Core's 48 h.
+	horizonH int
 }
 
 type stack struct {
@@ -560,6 +562,9 @@ func (st *stack) ftwConfig() (string, error) {
 		// which hides the stress on the fuse.
 		"planner": map[string]any{"enabled": true, "engine": st.engine(), "mode": "self_consumption"},
 		"price":   map[string]any{"provider": "elprisetjustnu", "zone": "SE3"},
+	}
+	if st.spec.horizonH > 0 {
+		cfg["planner"].(map[string]any)["horizon_hours"] = st.spec.horizonH
 	}
 	if st.spec.soc2Pct > 0 {
 		cfg["drivers"] = append(cfg["drivers"].([]map[string]any),

@@ -1149,13 +1149,14 @@ func judgeS16(d *runData) (metrics, []criterion) {
 // turns under the plan, one discharging while the other stood at 0 W.
 // Energyplan's plan puts each quarter's discharge on one battery; Core must
 // share it. Core DP plans one battery only, so this runs Energyplan, as a
-// beta box does. A 3 kW house with no PV. The plan leaves the batteries
-// idle while later hours cost more, so the run waits up to an hour for a
-// quarter the plan discharges, then runs 15 min. It keeps the plan's order
-// for each battery every 30 s in plan.jsonl.
+// beta box does. A 3 kW house with no PV. Over 48 h the plan keeps the
+// batteries for the dearest hours, often tomorrow's; over 6 h they hold
+// more than the house needs, so it discharges now. The run still waits up
+// to an hour for a quarter the plan discharges, then runs 15 min. It keeps
+// the plan's order for each battery every 30 s in plan.jsonl.
 func s17(c *runCtx, fuse float64) (map[string]any, error) {
 	err := with(c, stackSpec{fuseA: fuse, loadsW: [3]float64{1000, 1000, 1000}, socPct: 74, soc2Pct: 60,
-		engine: "energyplan"}, func(st *stack) error {
+		engine: "energyplan", horizonH: 6}, func(st *stack) error {
 		f, err := os.Create(filepath.Join(st.rundir, "plan.jsonl"))
 		if err != nil {
 			return err
@@ -1198,7 +1199,7 @@ func s17(c *runCtx, fuse float64) (map[string]any, error) {
 		st.mark("end")
 		return nil
 	})
-	return map[string]any{"scenario": "s17", "fuse": fuse, "house_w": 3000, "soc_pct": []float64{74, 60}}, err
+	return map[string]any{"scenario": "s17", "fuse": fuse, "house_w": 3000, "soc_pct": []float64{74, 60}, "horizon_h": 6}, err
 }
 
 // planMoves is true when a plan's orders move the batteries 300 W or more.
