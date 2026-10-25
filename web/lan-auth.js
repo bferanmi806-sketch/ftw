@@ -121,7 +121,12 @@
           body: JSON.stringify({ password: password }),
         }).then(function (r) {
           return r.json().then(function (body) {
-            if (!r.ok) throw new Error((body && body.error) || "login failed");
+            if (!r.ok) {
+              var said = (body && body.error) || "";
+              throw new Error(said === "invalid password" ?
+                "That is not the house password. After five wrong tries, wait 30 seconds." :
+                said || "Could not sign in. Try again in a moment.");
+            }
             finish(true);
             if (typeof window.dispatchEvent === "function" && typeof window.Event === "function") window.dispatchEvent(new window.Event("ftw-owner-ready"));
           });

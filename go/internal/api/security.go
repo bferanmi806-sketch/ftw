@@ -171,11 +171,16 @@ func decideLANCaller(r *http.Request, policy MutationPolicy, houseOK bool) apiau
 // counted as a house-password guess. The outer listener and Server.Handler
 // both wrap Authenticate; a context flag stops the inner wrap from hashing
 // or counting twice.
+//
+// The proof counts from the box itself too. Loopback is an owner without it,
+// but letting an assistant in asks for the password wherever the browser
+// runs: a process on the box that does not know the password gains nothing.
+// An app session is proved by its own key and never presents this one.
 func resolveLANSecret(r *http.Request, policy MutationPolicy) (bool, *http.Request) {
 	if ok, checked := lanSecretFrom(r.Context()); checked {
 		return ok, r
 	}
-	if !lanAuthOn(policy) || isLoopbackClient(r.RemoteAddr) || !isLocalClient(r.RemoteAddr) {
+	if !lanAuthOn(policy) || !isLocalClient(r.RemoteAddr) || appLinkOverSession(r) {
 		return false, r
 	}
 	if secret, ok := parseBearer(r.Header.Get("Authorization")); ok {

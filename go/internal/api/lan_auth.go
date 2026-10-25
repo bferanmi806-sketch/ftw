@@ -23,7 +23,10 @@ import (
 
 const (
 	lanAuthPasswordKey = "lan_auth_password"
-	minLANPasswordLen  = 10
+	// Any password the owner chooses is accepted, however short: the page
+	// warns about a short one but does not refuse it (Fredrik, 25 October
+	// 2026). The upper bound only keeps the hashed input small.
+	maxLANPasswordLen = 512
 
 	lanGuessLimit    = 5
 	lanGuessCooldown = 30 * time.Second
@@ -229,8 +232,8 @@ func hashLANPassword(password string) (string, error) {
 // HashInitialLANPassword lets the first-run server establish the owner's
 // lock before the normal API starts. It grants no password-change authority.
 func HashInitialLANPassword(password string) (string, error) {
-	if len(password) < minLANPasswordLen || len(password) > 512 {
-		return "", fmt.Errorf("house password must be between %d and 512 characters", minLANPasswordLen)
+	if password == "" || len(password) > maxLANPasswordLen {
+		return "", fmt.Errorf("house password must be between 1 and %d characters", maxLANPasswordLen)
 	}
 	return hashLANPassword(password)
 }
@@ -364,10 +367,20 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid password"})
 		return
 	}
+	if status, msg := startLANSession(w, st, encoded); status != 0 {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// startLANSession signs this browser in after it proved the house password,
+// whose stored hash is encoded. It sets the session cookie, or returns the
+// status and reason to refuse with.
+func startLANSession(w http.ResponseWriter, st *state.Store, encoded string) (int, string) {
 	token, err := issueLANSession()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "could not create session"})
-		return
+		return http.StatusInternalServerError, "could not create session"
 	}
 	lanSessionMu.Lock()
 	now := lanSessionNow()
@@ -375,11 +388,10 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if err := st.SaveLANSession(lanSessionDigest(token), now.Add(lanSessionTTL).UnixMilli(), now.UnixMilli(), encoded); err != nil {
 		dropLANSession(token)
 		slog.Warn("LAN session could not be saved", "category", lanSessionStoreErrorCategory(err))
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "could not save session"})
-		return
+		return http.StatusServiceUnavailable, "could not save session"
 	}
 	setLANSessionCookie(w, token, int(lanSessionTTL/time.Second))
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	return 0, ""
 }
 
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -425,20 +437,19 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		s.deps.CfgMu.RLock()
 		currentlyOn := s.deps.Cfg.API.LANAuth
 		s.deps.CfgMu.RUnlock()
-		// While the lock is off every LAN peer is an owner. First enable
-		// from the LAN is how a visitor sets their own password and
-		// locks Settings. The box itself (loopback) is the only door
-		// that may turn the lock on. An app session request is built to
-		// look like loopback; it is not the box (appLinkOwnerMintAllowed).
+		// While the lock is off, whoever reaches this route is already an
+		// owner: they may change any setting and pair a phone as an owner
+		// (appLinkOwnerMintAllowed). Setting the first password gives them
+		// nothing new and closes the door behind them, so the address they
+		// call from does not matter: the box itself, a LAN device, or a
+		// published Docker port. A visitor who gets there first locks the
+		// owner out of Settings, which the owner sees at once and undoes on
+		// the box with `ftw password reset` (Fredrik, 25 October 2026).
+		// The app does not turn it on: the password is typed on the box's
+		// own page.
 		if !currentlyOn && appLinkOverSession(r) {
 			writeJSON(w, http.StatusForbidden, map[string]string{
-				"error": "turn the house password on at the box, not through the app",
-			})
-			return
-		}
-		if !currentlyOn && !isLoopbackClient(r.RemoteAddr) {
-			writeJSON(w, http.StatusForbidden, map[string]string{
-				"error": "enable the house password from loopback inside the process. A published Docker port is not loopback — on Docker Desktop use docker compose -f docker-compose.macos.yml exec ftw, then curl http://127.0.0.1:8080",
+				"error": "turn the house password on from the box's own page, not through the app",
 			})
 			return
 		}
@@ -449,9 +460,9 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required to enable LAN auth"})
 				return
 			}
-		case len(req.Password) < minLANPasswordLen:
+		case len(req.Password) > maxLANPasswordLen:
 			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": fmt.Sprintf("password must be at least %d characters", minLANPasswordLen),
+				"error": fmt.Sprintf("password must be at most %d characters", maxLANPasswordLen),
 			})
 			return
 		default:
@@ -488,10 +499,19 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "could not revoke sessions"})
 		return
 	}
+	// Whoever just chose the password has proved it, so this browser stays
+	// signed in and goes on without typing it again. A failed sign-in only
+	// means the page asks for the password; the lock is already on.
+	signedIn := false
+	if enabled && req.Password != "" && !appLinkOverSession(r) {
+		status, _ := startLANSession(w, s.deps.State, cfgCopy.LANPasswordHash)
+		signedIn = status == 0
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "ok",
 		"lan_auth":   enabled,
 		"configured": lanPasswordConfigured(s.deps.State),
+		"signed_in":  signedIn,
 	})
 }
