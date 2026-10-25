@@ -1319,8 +1319,9 @@ func (h *Handler) sendPlan(id *uint32) error { return h.writePlan(id, false) }
 // readPlan reads the plan, its rev and each charger's share as one plan. The
 // three are separate reads, and a replan that lands between them would mix
 // two plans in one message, under either one's rev. A plan that moved while
-// it was read is read again; plans are seconds apart, so the second read
-// nearly always holds, and the third is sent as it is.
+// it was read is read again. A replan moves it once, and once more when the
+// planner swaps in the copy that carries its shadow result, so the third
+// read is sent as it is.
 func (h *Handler) readPlan() Plan {
 	for attempt := 1; ; attempt++ {
 		plan := h.cfg.Plans.Latest()

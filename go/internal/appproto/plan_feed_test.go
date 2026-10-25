@@ -384,7 +384,10 @@ func TestAReplanDuringTheReadSendsOnePlan(t *testing.T) {
 		t.Fatalf("want one plan, got %d (%s)", len(got), rec.types())
 	}
 	p := body[Plan](t, got[0])
-	if p.Rev != 2 || len(p.Slots) == 0 || p.Slots[0].StartMs != box.plan.GeneratedAtMs {
+	if len(p.Slots) == 0 {
+		t.Fatalf("plan rev %d has no slots", p.Rev)
+	}
+	if p.Rev != 2 || p.Slots[0].StartMs != box.plan.GeneratedAtMs {
 		t.Fatalf("plan rev %d with slots from %d, want rev 2 from %d", p.Rev, p.Slots[0].StartMs, box.plan.GeneratedAtMs)
 	}
 	if len(p.Chargers) != 1 || len(p.Chargers[0].Windows) != 1 {
