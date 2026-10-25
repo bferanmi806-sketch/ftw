@@ -57,3 +57,22 @@ func TestSurplusWithoutAStepTableNeverLocksToOnePhase(t *testing.T) {
 		})
 	}
 }
+
+// An owner who removes the step table on a day the charger was locked to
+// one phase, or held on one, leaves no lock behind: the next surplus order
+// is three-phase without a restart.
+func TestRemovingTheStepTableClearsTheOnePhaseLock(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
+	cfg := Config{ID: "garage", DriverName: "evse", MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto", SurplusOnly: true}
+	c := NewController(NewManager(), nil, nil, nil)
+	c.phaseLocked1P = map[string]bool{cfg.ID: true}
+	c.phaseLockedAt = map[string]time.Time{cfg.ID: now.Add(-time.Hour)}
+	c.phaseSelected3P = map[string]bool{cfg.ID: false}
+	c.phaseSelectedAt = map[string]time.Time{cfg.ID: now.Add(-time.Hour)}
+	if steps := c.pickSurplusSteps(now, cfg); steps != nil {
+		t.Fatalf("steps %v, want none without a table", steps)
+	}
+	if c.surplusLockedTo1P(cfg.ID) || c.dwellSelectedPhaseMode(cfg.ID) != "" {
+		t.Fatalf("lock %v, phase held %q after the table went; want neither", c.surplusLockedTo1P(cfg.ID), c.dwellSelectedPhaseMode(cfg.ID))
+	}
+}
