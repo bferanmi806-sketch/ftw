@@ -42,3 +42,19 @@ func TestEVBatteryEndingReliefKeepsWhatThePhaseCannotTake(t *testing.T) {
 		})
 	}
 }
+
+// Before our first battery order, after every Core start, the charge cap
+// counts the battery as possibly discharging at its cap. That is no order
+// of ours: it must not become a discharge to keep. The battery keeps its
+// target or less, never a discharge the plan did not ask for.
+func TestEVBatteryWithNoOrderOfOursKeepsNoDischarge(t *testing.T) {
+	for _, planW := range []float64{0, 6000} {
+		phases := []float64{20.7, 10.7, 10.7}
+		store, state := evSplitFixture(t, (phases[0]+phases[1]+phases[2])*230, phases, 4140, "3p")
+		batteryReading(store, "first", 0, .5)
+		out := clampEVBatteryHeadroom([]DispatchTarget{{Driver: "first", TargetW: planW}}, store, state, 17250)
+		if got := targetW(out, "first"); got < 0 {
+			t.Fatalf("plan %.0f W with no order logged: battery %.0f W, want no discharge", planW, got)
+		}
+	}
+}

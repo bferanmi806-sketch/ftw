@@ -8,7 +8,8 @@ import (
 
 // clampEVBatteryHeadroom keeps optional battery charge out of room an EV
 // still needs. It reads only the site meter and our own commands; no charger
-// or battery reading takes part. The EV still needs its demand less the
+// reading takes part, and a battery's own reading only bounds how much of a
+// discharge we ordered it may keep. The EV still needs its demand less the
 // lowest offer of the last evSettle, which the meter surely shows.
 func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, state *State, fuseMaxW float64) []DispatchTarget {
 	if store == nil || state == nil || len(targets) == 0 || fuseMaxW <= 0 {
@@ -44,11 +45,13 @@ func clampEVBatteryHeadroom(targets []DispatchTarget, store *telemetry.Store, st
 			return floorPositiveEVBatteryTargets(targets)
 		}
 		targeted[target.Driver] = true
-		if r := store.Get(target.Driver, telemetry.DerBattery); r != nil {
-			lowest[target.Driver], _ = fuseTargetBounds(r, state.DriverLimits[target.Driver])
-		}
 		if _, _, last, sent := state.batteryCommands[target.Driver].span(now); sent {
 			latest[target.Driver] = last
+			// Only a discharge we ordered can be kept; a battery we have
+			// not ordered keeps nothing.
+			if r := store.Get(target.Driver, telemetry.DerBattery); r != nil {
+				lowest[target.Driver], _ = fuseTargetBounds(r, state.DriverLimits[target.Driver])
+			}
 		} else {
 			// Without a recent order it may be discharging and stop.
 			latest[target.Driver] = -state.DriverLimits[target.Driver].dischargeCap()
