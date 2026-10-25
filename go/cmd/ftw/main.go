@@ -1670,6 +1670,13 @@ func main() {
 			defer ctrlMu.Unlock()
 			return control.PhaseImbalanceW(tel, ctrl, timeout, time.Now())
 		}
+		// The planner keeps each clock hour under the owner's import
+		// ceiling, from the budget Core's live limit counts.
+		mpcSvc.ImportCeiling = func() mpc.ImportCeiling {
+			ctrlMu.Lock()
+			defer ctrlMu.Unlock()
+			return control.PlanningImportCeiling(ctrl)
+		}
 		// Cap planned export below the fuse when the operator set a site
 		// export ceiling, so the DP never schedules a discharge that would
 		// over-export and trip an inverter (the Ferroamp 0x8030 fault).
