@@ -30,7 +30,8 @@ import (
 //
 // It serializes Write with Stop, keeps the disconnect handler itself, and
 // passes a disconnect the pump has already reported to the handler Stop
-// installed.
+// installed. A Write while the server closes the socket can still meet the
+// first race; chargers therefore stop before the server, at cleanup.
 type chargerSocket struct {
 	*ws.Client
 
@@ -215,4 +216,23 @@ func listening(t *testing.T, srv *Server) bool {
 		}
 	}
 	return true
+}
+
+// The write pump reports a server-side close to the handler of the moment.
+// When ocppj.Client.Stop installs its own handler after that, Stop must
+// still hear of the disconnect, once, or it waits forever.
+func TestChargerSocketPassesAMissedDisconnectToStop(t *testing.T) {
+	s := newChargerSocket(ws.NewClient())
+	var first, second int
+	s.SetDisconnectedHandler(func(error) { first++ })
+	s.disconnected(errors.New("server closed")) // as the write pump does
+	s.SetDisconnectedHandler(func(error) { second++ })
+	s.Stop()
+	s.Stop()
+	if first != 1 || second != 1 {
+		t.Fatalf("disconnect reached the first handler %d times and Stop's %d times, want once each", first, second)
+	}
+	if err := s.Write([]byte("[]")); err == nil {
+		t.Fatal("a stopped charger still wrote")
+	}
 }

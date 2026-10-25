@@ -165,7 +165,9 @@ func TestIdentityProbeTimeoutAndReconnectAreBounded(t *testing.T) {
 	t.Cleanup(h.stopIdentityProbes)
 	h.SetApprovedIDs([]string{"garage"})
 	const interval = 50 * time.Millisecond
-	h.identityProbeTiming = identityProbeTiming{time.Millisecond, 5 * time.Millisecond, interval}
+	// The first request waits an hour for its answer, so no timer can send
+	// another before the reconnect below, however late this goroutine runs.
+	h.identityProbeTiming = identityProbeTiming{time.Millisecond, time.Hour, interval}
 	requests := make(chan time.Time, 10)
 	h.identityProbe = func(_ string, _ Version, done func(error)) error { requests <- time.Now(); done(nil); return nil }
 	// Each request may go no sooner than one interval after the one before,
@@ -180,6 +182,10 @@ func TestIdentityProbeTimeoutAndReconnectAreBounded(t *testing.T) {
 		t.Fatal("initial identity request missing")
 	}
 	// A reconnect starts a fresh set of attempts but keeps the rate limit.
+	// From here each request times out after 5 ms.
+	h.mu.Lock()
+	h.identityProbeTiming.timeout = 5 * time.Millisecond
+	h.mu.Unlock()
 	h.OnDisconnect("garage")
 	h.OnConnect("garage")
 	for k := 1; k <= maxIdentityProbeAttempts; k++ {
