@@ -645,7 +645,7 @@ func simScenarios() []simScenario {
 			plant: surplus, lp: surplusPhase("")},
 		{name: "phase mode auto, 9 kW surplus", run: 5 * time.Minute, surplus: true,
 			plant: surplus, lp: surplusPhase("auto")},
-		{name: "9 kW surplus, readback 10 s late", known: "surplus adds back the charger's late readback, surplus_reserve.go:128", run: 5 * time.Minute, surplus: true,
+		{name: "9 kW surplus, readback 10 s late", run: 5 * time.Minute, surplus: true,
 			plant: func(p *sitesim.Plant) { surplus(p); p.EVSE.ReadbackLag = 10 * time.Second }, lp: surplusPhase("3p")},
 		{name: "surplus_unlock_bat_soc saved, Charge now", run: 5 * time.Minute,
 			plant: func(p *sitesim.Plant) {

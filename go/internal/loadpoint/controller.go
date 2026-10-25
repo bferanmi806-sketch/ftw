@@ -118,6 +118,8 @@ type Controller struct {
 	// transient surplus spike can't ratchet the EV up a step it can't hold
 	// (which would whipsaw the home battery's PI). See computeSurplusCmd.
 	surplusStepW map[string]float64
+	// surplusOrders is each loadpoint's latest order as surplus reads it.
+	surplusOrders map[string]surplusOrder
 
 	// vehicleStatus is the bound vehicle driver and its charging state.
 	// nil disables auto-wake.
@@ -1657,6 +1659,7 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 	if w, ok := cmd["power_w"].(float64); ok {
 		offerW, haveOffer = w, true
 		c.manager.setCommandedForManual(lpCfg.ID, w, cmdReason, manualCommandUpdatedAt)
+		c.noteSurplusOrder(lpCfg.ID, now, w)
 		mode, _ := cmd["phase_mode"].(string)
 		split, _ := cmd["phase_split_w"].(float64)
 		c.manager.setCommandedPhases(lpCfg.ID, c.commandPhases(mode, w, split))
@@ -1958,8 +1961,10 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 	// `−pvW − loadW`, i.e. PV-magnitude minus house load — invariant
 	// under whatever the home battery is currently doing with the
 	// surplus. The EV's own draw is part of that closure already, so
-	// we don't add it here.
-	instant := surplusW
+	// we don't add it here. The chargers' readings lag their draw, so the
+	// closure's EV draw is replaced by what our orders let the meter show.
+	adjW, raisingW := c.surplusOrderAdjustW(now, lpCfg.ID)
+	instant := surplusW + adjW
 	if instant < 0 {
 		instant = 0
 	}
@@ -2032,8 +2037,70 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 			}
 		}
 	}
+	// A raise on its way already claims its room: no further raise until a
+	// reading shows it.
+	if raisingW > 0 && snapped > raisingW {
+		snapped = math.Max(prev, raisingW)
+	}
 	c.setSurplusStepW(lpCfg.ID, snapped)
 	return snapped
+}
+
+// surplusRaiseSettle bounds how long a raise counts as on its way when no
+// reading shows it: the slowest charger we know, Easee Cloud's 180 s.
+const surplusRaiseSettle = 3 * time.Minute
+
+// surplusOrder is a loadpoint's latest order and what its readings have
+// shown of it since. A reading lags the draw, so one that reaches the order
+// shows it only after one under it.
+type surplusOrder struct {
+	w, prevW     float64
+	at           time.Time
+	below, shown bool
+}
+
+func (c *Controller) noteSurplusOrder(id string, now time.Time, w float64) {
+	if c.surplusOrders == nil {
+		c.surplusOrders = map[string]surplusOrder{}
+	}
+	if o, ok := c.surplusOrders[id]; !ok || o.w != w {
+		c.surplusOrders[id] = surplusOrder{w: w, prevW: o.w, at: now}
+	}
+}
+
+// surplusOrderAdjustW is what surplus adds to the closure's EV readings so
+// it counts each charger at what the meter may show of our orders, and the
+// raise this loadpoint has on its way (0 for none). A raise counts at its
+// order until a reading shows it: the meter shows its room as export until
+// it lands, then the draw while the reading still lags, so only import
+// lowers it. A charger ordered off counts at 0: its reading still shows the
+// draw after the stop has landed. A smaller cut keeps the reading, which
+// shows the draw the meter still has until the cut lands.
+func (c *Controller) surplusOrderAdjustW(now time.Time, id string) (adjW, raisingW float64) {
+	for _, st := range c.manager.States() {
+		o, ok := c.surplusOrders[st.ID]
+		if !st.PluggedIn || !ok || !finite(st.CurrentPowerW) {
+			continue
+		}
+		reading, order := math.Max(0, st.CurrentPowerW), math.Max(0, o.w)
+		if reading < 0.9*order {
+			o.below = true
+		} else if o.below {
+			o.shown = true
+		}
+		c.surplusOrders[st.ID] = o
+		if order > o.prevW && !o.shown && now.Sub(o.at) < surplusRaiseSettle {
+			adjW += order - reading
+			if st.ID == id {
+				raisingW = order
+			}
+			continue
+		}
+		if order == 0 {
+			adjW -= reading // A charger ordered off is leaving.
+		}
+	}
+	return adjW, raisingW
 }
 
 // pickSurplusSteps returns the step set surplus_only should snap to
