@@ -233,6 +233,10 @@ func (w *surplusWindow) push(v float64) float64 {
 	if w.n < surplusWindowSize {
 		w.n++
 	}
+	return w.mean()
+}
+
+func (w *surplusWindow) mean() float64 {
 	var sum float64
 	for i := 0; i < w.n; i++ {
 		sum += w.buf[i]
@@ -2037,10 +2041,10 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 }
 
 // pickSurplusSteps returns the step set surplus_only should snap to
-// for this loadpoint. Default is 3Φ-eligible only (the no-flap rule);
-// when the day's peak forecast surplus can't sustain a 3Φ minimum,
-// we fall back to all allowed steps and STICK there for the session
-// — re-upgrading would just cycle the contactor when clouds shift.
+// for this loadpoint. Default is 3Φ-eligible only: three phases from 6 A
+// each. Below that minimum surplus may use all allowed steps, so one
+// phase. A switch either way holds for phaseSwitchMinHold, or the
+// contactor cycles when clouds shift.
 //
 // `now` is the dispatch tick's time, threaded down from Tick →
 // computeSurplusCmd / wake-kick so day-rollover unlock + lock-set
@@ -2048,7 +2052,7 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 // can drive it deterministically.
 func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 	if c == nil {
-		return surplus3PhaseSteps(lpCfg)
+		return surplus3PhaseSteps(lpCfg, SiteFuse{})
 	}
 	if len(lpCfg.AllowedStepsW) == 0 {
 		// No step table, no one-phase ladder to fall back to: a one-phase
@@ -2062,7 +2066,7 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 		c.phaseLockMu.Unlock()
 		return nil
 	}
-	steps3 := surplus3PhaseSteps(lpCfg)
+	steps3 := surplus3PhaseSteps(lpCfg, c.siteFuse())
 	minStep3 := surplusMinStepW(lpCfg, steps3)
 
 	// 3Φ-only charger: an operator who pinned "3p" is telling us the
@@ -2081,6 +2085,10 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 		c.phaseLockMu.Unlock()
 		return steps3
 	}
+
+	// The surplus measured now. Each forecast below starts now, so its
+	// peak is never less than this.
+	live, liveOK := c.liveSurplusW(lpCfg.ID)
 
 	c.phaseLockMu.Lock()
 	locked := c.phaseLocked1P[lpCfg.ID]
@@ -2104,6 +2112,17 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 			return steps3
 		}
 	}
+	// Measured surplus above the 3Φ minimum ends the lock once it has
+	// held for phaseSwitchMinHold. Three phases then hold as long.
+	if locked && minStep3 > 0 && liveOK && live >= minStep3 && now.Sub(lockedAt) >= phaseSwitchMinHold {
+		delete(c.phaseLocked1P, lpCfg.ID)
+		delete(c.phaseLockedAt, lpCfg.ID)
+		c.selectPhaseLocked(lpCfg.ID, true, now)
+		c.phaseLockMu.Unlock()
+		slog.Info("loadpoint surplus_only unlocked: live surplus covers 3Φ",
+			"lp", lpCfg.ID, "live_surplus_w", live, "min_3p_step_w", minStep3)
+		return steps3
+	}
 	c.phaseLockMu.Unlock()
 
 	if locked {
@@ -2125,26 +2144,17 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 	// Gated on "no prior decision" so we don't flap mid-session: once
 	// we've committed to a phase, the dwell-hold + forecast logic
 	// downstream keep us there for the session.
-	if minStep3 > 0 && c.siteSurplusForEVW != nil {
+	if liveOK && live >= minStep3 {
 		c.phaseLockMu.Lock()
 		_, hasPrev := c.phaseSelected3P[lpCfg.ID]
+		if !hasPrev {
+			c.selectPhaseLocked(lpCfg.ID, true, now)
+		}
 		c.phaseLockMu.Unlock()
 		if !hasPrev {
-			if liveSurplus, ok := c.siteSurplusForEVW(); ok &&
-				!math.IsNaN(liveSurplus) && !math.IsInf(liveSurplus, 0) &&
-				liveSurplus >= minStep3 {
-				c.phaseLockMu.Lock()
-				if c.phaseSelected3P == nil {
-					c.phaseSelected3P = map[string]bool{}
-					c.phaseSelectedAt = map[string]time.Time{}
-				}
-				c.phaseSelected3P[lpCfg.ID] = true
-				c.phaseSelectedAt[lpCfg.ID] = now
-				c.phaseLockMu.Unlock()
-				slog.Info("loadpoint surplus_only: 3Φ at session start (live surplus override)",
-					"lp", lpCfg.ID, "live_surplus_w", liveSurplus, "min_3p_step_w", minStep3)
-				return steps3
-			}
+			slog.Info("loadpoint surplus_only: 3Φ at session start (live surplus override)",
+				"lp", lpCfg.ID, "live_surplus_w", live, "min_3p_step_w", minStep3)
+			return steps3
 		}
 	}
 
@@ -2166,6 +2176,9 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 	if c.nearTermPeakSurplusW != nil {
 		const nearTermWindow = 30 * time.Minute
 		nearPeak, peakOK := c.nearTermPeakSurplusW(nearTermWindow)
+		if peakOK && liveOK && live > nearPeak {
+			nearPeak = live
+		}
 
 		c.phaseLockMu.Lock()
 		prevSelected3P, hasPrev := c.phaseSelected3P[lpCfg.ID]
@@ -2199,12 +2212,7 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 			recordDecision = selected3P != prevSelected3P
 		}
 		if recordDecision {
-			if c.phaseSelected3P == nil {
-				c.phaseSelected3P = map[string]bool{}
-				c.phaseSelectedAt = map[string]time.Time{}
-			}
-			c.phaseSelected3P[lpCfg.ID] = selected3P
-			c.phaseSelectedAt[lpCfg.ID] = now
+			c.selectPhaseLocked(lpCfg.ID, selected3P, now)
 		}
 		c.phaseLockMu.Unlock()
 
@@ -2236,6 +2244,9 @@ afterNearTerm:
 	if !ok {
 		return steps3
 	}
+	if liveOK && live > peak {
+		peak = live
+	}
 	if peak >= minStep3 {
 		return steps3
 	}
@@ -2250,8 +2261,12 @@ afterNearTerm:
 	if !lpCfg.SurplusOnly {
 		return lpCfg.AllowedStepsW
 	}
-	// Lock to 1Φ for the rest of the day.
+	// Lock to 1Φ for the rest of the day, once a 3Φ choice has held.
 	c.phaseLockMu.Lock()
+	if c.phaseSelected3P[lpCfg.ID] && now.Sub(c.phaseSelectedAt[lpCfg.ID]) < phaseSwitchMinHold {
+		c.phaseLockMu.Unlock()
+		return steps3
+	}
 	if c.phaseLocked1P == nil {
 		c.phaseLocked1P = map[string]bool{}
 		c.phaseLockedAt = map[string]time.Time{}
@@ -2348,34 +2363,50 @@ func sameLocalDay(a, b time.Time) bool {
 	return la.Year() == lb.Year() && la.Month() == lb.Month() && la.Day() == lb.Day()
 }
 
-// surplus3PhaseSteps returns AllowedStepsW filtered down to entries
-// at or above the loadpoint's PhaseSplitW (default 3680 W) — i.e. the
-// steps the driver will deliver on 3Φ. 0 is always included so
-// "pause" is still a representable command.
+// surplus3PhaseSteps returns the steps the driver will deliver on 3Φ:
+// those planned charging gets, from 6 A on each phase. 3,680 W is 16 A on
+// one phase, not 5.3 A on three. 0 is always included so "pause" is still
+// a representable command.
 //
 // When PhaseMode is "1p" we don't filter — the operator explicitly
 // locked the install to 1Φ, so a 3Φ-only set would just wedge the
 // loadpoint at 0.
-func surplus3PhaseSteps(lpCfg Config) []float64 {
+func surplus3PhaseSteps(lpCfg Config, site SiteFuse) []float64 {
 	if lpCfg.PhaseMode == "1p" || len(lpCfg.AllowedStepsW) == 0 {
 		// Without a step table the charger takes any power from its
 		// minimum to its maximum, as SnapChargeW reads no steps.
 		return lpCfg.AllowedStepsW
 	}
-	split := lpCfg.PhaseSplitW
-	if split <= 0 {
-		split = defaultPhaseSplitW
+	return PlanningSteps(lpCfg, site)
+}
+
+// liveSurplusW is the EV-available surplus now, never above the average
+// the pause gate keeps: one high reading must not switch to three phases,
+// and a drop shows at once.
+func (c *Controller) liveSurplusW(id string) (float64, bool) {
+	if c.siteSurplusForEVW == nil {
+		return 0, false
 	}
-	out := []float64{0}
-	for _, s := range lpCfg.AllowedStepsW {
-		if s == 0 {
-			continue
-		}
-		if s >= split {
-			out = append(out, s)
-		}
+	w, ok := c.siteSurplusForEVW()
+	if !ok || !finite(w) {
+		return 0, false
 	}
-	return out
+	c.surplusMu.Lock()
+	defer c.surplusMu.Unlock()
+	if win := c.surplusWin[id]; win != nil && win.n > 0 {
+		w = math.Min(w, win.mean())
+	}
+	return w, true
+}
+
+// selectPhaseLocked records a surplus phase choice; phaseLockMu is held.
+func (c *Controller) selectPhaseLocked(id string, threePhase bool, now time.Time) {
+	if c.phaseSelected3P == nil {
+		c.phaseSelected3P = map[string]bool{}
+		c.phaseSelectedAt = map[string]time.Time{}
+	}
+	c.phaseSelected3P[id] = threePhase
+	c.phaseSelectedAt[id] = now
 }
 
 // surplusMinStepW is the least surplus may order: the smallest step, or
