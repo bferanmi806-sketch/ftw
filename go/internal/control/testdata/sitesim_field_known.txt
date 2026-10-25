@@ -16,6 +16,7 @@
 pr1763/25A/3p/3p-15A/cloud60s/car3p/6-2-2/chargenow+battery own-raise relief
 pr1763/25A/3p/3p-15A/cloud60s/car3p/6-2-2/pause+battery own-raise relief
 pr1763/25A/3p/3p-15A/easee120s/car3p/6-2-2/chargenow+battery own-raise relief
+pr1763/25A/3p/3p-15A/easee120s/car3p/6-2-2/pause+battery own-raise relief
 pr1763/25A/3p/3p-15A/easee40s/car3p/6-2-2/chargenow+battery own-raise relief
 pr1763/25A/3p/3p-15A/easee40s/car3p/6-2-2/pause+battery own-raise relief
 pr1763/25A/3p/3p-15A/fast2s/car3p/6-2-2/pause+battery own-raise relief
