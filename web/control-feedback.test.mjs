@@ -68,12 +68,15 @@ test('expected limits stay calm and explain themselves', () => {
   assert.equal(balanced.next, 'If this happens often, compare the charger’s load balancing settings with FTW’s main fuse setting.');
   assert.equal(balanced.tone, 'neutral');
   assert.equal(controlStatus(row(lb)).text, 'The charger’s load balancing limits it to 13 A. FTW asked for 15 A; the car takes 8.8 kW.');
-  assert.deepEqual(controlNumbers(row(lb)).filter(([label]) => /current|offer|limit|Allocated/.test(label)), [
-    ['Requested current', '15 A'], ['Charger offer', '15 A'], ['Charger limit', '16 A'], ['Allocated by load balancing', '13 A']]);
-  // A lower offer with no cause shown says what the charger offers, no more.
+  assert.deepEqual(controlNumbers(row(lb)).filter(([label]) => /current|offer|limit|allows/i.test(label)), [
+    ['Requested current', '15 A'], ['Charger offer', '15 A'], ['Charger limit', '16 A'], ['Load balancing allows', '13 A']]);
+  // A lower current with no cause shown says what the charger does, no more.
   const unexplained = {...lb, reason: 'offered_current_lower', severity: 'warning', limited_by: undefined};
-  assert.equal(controlStatus(row(unexplained)).text, 'The charger offers 13 A, below the 15 A FTW asked for.');
-  assert.deepEqual(controlNumbers(row(unexplained)).at(-1), ['Offered to the car', '13 A']);
+  assert.equal(controlStatus(row(unexplained)).text, 'The charger lets the car take 13 A, below the 15 A FTW asked for.');
+  assert.deepEqual(controlNumbers(row(unexplained)).at(-1), ['Charger lets the car take', '13 A']);
+  // A charger holding a lower order than FTW sent.
+  const lower = controlStatus(row({kind: 'ev', status: 'limited', reason: 'offered_current_lower', severity: 'warning', offered_a: 12, requested_a: 15}));
+  assert.equal(lower.text, 'The charger offers 12 A, below the 15 A FTW asked for.');
   const onePhase = controlStatus(row({kind: 'ev', mode: 'plan', status: 'limited', reason: 'one_phase', severity: 'info',
     sent_w: 3680, actual_w: 3650, charging_phase: 'L1', charging_phase_max_w: 3680}));
   assert.equal(onePhase.title, 'Charging on one phase');

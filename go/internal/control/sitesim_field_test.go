@@ -478,6 +478,7 @@ func (s *simSite) evData() map[string]any {
 	// while that is below the order in force.
 	f, e, limitA := s.field, s.p.EVSE, 0.0
 	if e.LoadBalancerA > 0 && s.ev.Plugged && e.OfferA > 0 {
+		d["max_a"] = e.OfferA // the order the charger holds, Easee's observation 48
 		a := e.OfferA
 		for i := range min(max(e.OfferPhases, 1), e.Phases, s.p.Car.Phases) {
 			a = math.Min(a, e.LoadBalancerA-s.p.HouseW[i]/s.p.Voltage)

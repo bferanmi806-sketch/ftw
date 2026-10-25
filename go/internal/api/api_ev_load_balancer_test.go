@@ -20,22 +20,29 @@ import (
 // "Not following". The driver now reports the limit and, when its
 // allocation shows it, names the load balancing.
 func TestEaseeLoadBalancingReadsAsLimited(t *testing.T) {
-	const named = `,"current_limit_a":13,"current_limited_by":"load_balancer"`
+	// The driver always reads back the order it holds (max_a, observation 48).
+	const held = `,"max_a":15`
+	const named = held + `,"current_limit_a":13,"current_limited_by":"load_balancer"`
 	for _, tc := range []struct {
 		name, extra              string
 		drawW                    float64
 		status, reason, severity string
 	}{
 		{"named", named, 8850, "limited", "load_balancer_limit", "info"},
-		{"cause not shown", `,"current_limit_a":13`, 8850, "limited", "offered_current_lower", "warning"},
-		{"no limit reported", ``, 8850, "not_following", "power_below_target", "warning"},
+		{"cause not shown", held + `,"current_limit_a":13`, 8850, "limited", "offered_current_lower", "warning"},
+		{"no limit reported", held, 8850, "not_following", "power_below_target", "warning"},
 		{"a 13 A limit does not explain zero", named, 0, "not_following", "no_power_response", "warning"},
 		{"nor a car taking far less", named, 4000, "not_following", "power_below_target", "warning"},
-		{"limit at the order", `,"current_limit_a":15,"current_limited_by":"load_balancer"`, 8850, "not_following", "power_below_target", "warning"},
+		{"nor a car at the order", named, 10300, "following", "power_observed", "info"},
+		{"limit at the order", held + `,"current_limit_a":15,"current_limited_by":"load_balancer"`, 8850, "not_following", "power_below_target", "warning"},
+		{"a zero limit", held + `,"current_limit_a":0,"current_limited_by":"load_balancer"`, 0, "not_following", "no_power_response", "warning"},
+		// A charger that holds a lower order than FTW sent says so first.
+		{"charger holds 12 A", `,"max_a":12,"current_limit_a":10,"current_limited_by":"load_balancer"`, 6900, "limited", "offered_current_lower", "warning"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				e := newEVTrace(10370)
+				e.extra = held
 				for range 5 * 60 / 5 {
 					e.tick(10350, "plan")
 				}
@@ -59,13 +66,41 @@ func TestEaseeLoadBalancingReadsAsLimited(t *testing.T) {
 					return
 				}
 				// Requested, allocated and delivered stay apart.
-				if f.RequestedA == nil || math.Abs(*f.RequestedA-15) > 0.01 || f.LimitA == nil || *f.LimitA != 13 ||
-					f.LimitedBy != "load_balancer" || f.ActualW == nil || *f.ActualW != 8850 {
-					t.Fatalf("numbers: requested %v, limit %v by %q, actual %v", f.RequestedA, f.LimitA, f.LimitedBy, f.ActualW)
+				if f.RequestedA == nil || math.Abs(*f.RequestedA-15) > 0.01 || f.OfferedA == nil || *f.OfferedA != 15 ||
+					f.LimitA == nil || *f.LimitA != 13 || f.LimitedBy != "load_balancer" || f.ActualW == nil || *f.ActualW != 8850 {
+					t.Fatalf("numbers: requested %v, offer %v, limit %v by %q, actual %v", f.RequestedA, f.OfferedA, f.LimitA, f.LimitedBy, f.ActualW)
 				}
 			})
 		})
 	}
+}
+
+// The trace's balancer stepped between 12, 14 and 13 A. When it lets the
+// car take more, the cloud reports the car's old draw for a while; that is
+// the balancer's limit, not a charger that stopped following.
+func TestEaseeLoadBalancingStepsUp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		e := newEVTrace(8280)
+		e.extra = `,"max_a":15,"current_limit_a":12,"current_limited_by":"load_balancer"`
+		for range 5 * 60 / 5 {
+			e.tick(10350, "plan")
+		}
+		if f := e.verdict(t); f.Reason != "load_balancer_limit" {
+			t.Fatalf("at 12 A: %s/%s", f.Status, f.Reason)
+		}
+		e.extra = `,"max_a":15,"current_limit_a":14,"current_limited_by":"load_balancer"`
+		for range 4 {
+			e.tick(10350, "plan")
+			if f := e.verdict(t); f.Reason != "load_balancer_limit" {
+				t.Fatalf("after the step to 14 A, car still at 8,280 W: %s/%s", f.Status, f.Reason)
+			}
+		}
+		e.drawW, e.changedAt = 9660, time.Now()
+		e.tick(10350, "plan")
+		if f := e.verdict(t); f.Reason != "load_balancer_limit" || *f.LimitA != 14 {
+			t.Fatalf("at 14 A: %s/%s", f.Status, f.Reason)
+		}
+	})
 }
 
 // The sentence names the charger's make with its limit, from the identity
