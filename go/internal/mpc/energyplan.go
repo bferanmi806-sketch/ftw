@@ -35,6 +35,9 @@ const (
 	energyplanFleetBudget = 5 * time.Second
 	// Leave time for ValidatePlan and publication before firstSlotExpired.
 	energyplanPublishMargin = 50 * time.Millisecond
+	// A worker that spends its whole budget must still answer before the
+	// call's deadline: 5 % of the time to it, at least this.
+	energyplanReplyMargin = 30 * time.Millisecond
 )
 
 func energyplanTimeBudget(slots []Slot, p Params) time.Duration {
@@ -65,8 +68,8 @@ func energyplanBudget(slots []Slot, p Params, hours bool) time.Duration {
 	if remaining < energyplanSmallBudget {
 		return 0
 	}
-	available := remaining - energyplanPublishMargin
-	if available < budget {
+	deadline := remaining - energyplanPublishMargin
+	if available := deadline - max(deadline/20, energyplanReplyMargin); available < budget {
 		return available
 	}
 	return budget
