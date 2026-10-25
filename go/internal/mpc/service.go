@@ -133,6 +133,10 @@ type Service struct {
 	// watts. Nil or 0 plans against the aggregate fuse alone. Called
 	// without s.mu; it may take the control lock.
 	PhaseImbalanceW func() float64
+	// ImportCeiling returns the owner's hourly import ceiling as Core
+	// enforces it. Nil or zero W plans without it. Called without s.mu; it
+	// may take the control lock.
+	ImportCeiling func() ImportCeiling
 	// Set before Start. Called without s.mu; must not acquire the control lock.
 	PVExecutionAllowed func(PVCurtailment) bool
 	Load               LoadPredictor // optional — overrides flat BaseLoad
@@ -1694,6 +1698,10 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	}
 	limitNearImportForPhases(slots, now, fuseMaxW, phaseImbalanceW)
 	limitNearImportForPhases(fallbackSlots, now, fuseMaxW, phaseImbalanceW)
+	var importCeiling ImportCeiling
+	if s.ImportCeiling != nil {
+		importCeiling = s.ImportCeiling()
+	}
 
 	if s.PVCurtailmentProbe != nil {
 		p.PVCurtailment = s.PVCurtailmentProbe()
@@ -1741,6 +1749,10 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 	p.ExportFloorOreKwh = site.ExportFloorOreKwh
 	p.PVForecastSafetyK = request.safetyK
 	p.DemandCharges = s.demandChargesFor(site, slots, executionNow)
+	p.ImportHours = importHours(slots, importCeiling)
+	if p.ImportHours != nil {
+		p.ImportMeanW = importCeiling.MeanW
+	}
 	if pvUncertainty != nil || s.ForecastSnapshot != nil {
 		p.PVUncertaintyW = pvUncertaintyW
 	}

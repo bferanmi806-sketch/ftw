@@ -55,6 +55,14 @@ func (o *EnergyplanOptimizer) prepareEnergyplanRequest(ctx context.Context, requ
 			request.Slots[i].Confidence = 0
 		}
 	}
+	// A worker without the hours plans past them; Core's check rejects
+	// such a plan and uses its own.
+	if optimizerHasFeature(info, "hourly_import_caps") {
+		for _, h := range p.ImportHours {
+			request.HourlyImportCaps = append(request.HourlyImportCaps, externalImportCap{
+				StartMs: h.StartMs, EndMs: h.EndMs, MaxMeanW: p.ImportMeanW, ElapsedImportWh: h.ElapsedImportWh})
+		}
+	}
 	loads := p.activeLoadpoints()
 	needed := false
 	for _, lp := range loads {

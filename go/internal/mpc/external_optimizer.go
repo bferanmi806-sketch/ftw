@@ -75,6 +75,8 @@ type externalRequest struct {
 	FlexLoads     []externalFlexLoad     `json:"flex_loads"`
 	ThermalLoads  []map[string]any       `json:"thermal_loads"`
 	DemandCharges []externalDemandCharge `json:"demand_charges,omitempty"`
+	// Sent only to a worker that announces hourly_import_caps.
+	HourlyImportCaps []externalImportCap `json:"hourly_import_caps,omitempty"`
 }
 
 type externalSettings struct {
@@ -129,6 +131,16 @@ type externalDemandCharge struct {
 	TopN       int                  `json:"top_n"`
 	AlreadyKW  []float64            `json:"already_kw,omitempty"`
 	Hours      []externalDemandHour `json:"hours,omitempty"`
+}
+
+// externalImportCap is one clock hour of the owner's import ceiling: the
+// plan's import in it may reach MaxMeanW over the hour less what the hour
+// had used before the plan starts.
+type externalImportCap struct {
+	StartMs         int64   `json:"start_ms"`
+	EndMs           int64   `json:"end_ms"`
+	MaxMeanW        float64 `json:"max_mean_w"`
+	ElapsedImportWh float64 `json:"elapsed_import_wh"`
 }
 
 type externalDemandHour struct {
@@ -663,6 +675,9 @@ func validatePlan(slots []Slot, p Params, plan *Plan, vehicleRules bool) error {
 			return fmt.Errorf("slot %d cost %.4f, want %.4f", i, a.CostOre, wantCost)
 		}
 		totalCost += wantCost
+	}
+	if err := validateImportHours(slots, p, plan.Actions); err != nil {
+		return err
 	}
 	// Derive the departure deficit from replay, not from a worker claim.
 	plan.LoadpointShortfallWh = deadlineShortfall

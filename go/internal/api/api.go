@@ -1934,6 +1934,11 @@ func (s *Server) handleSetPeakImportCeiling(w http.ResponseWriter, r *http.Reque
 	s.deps.CtrlMu.Lock()
 	s.deps.Ctrl.PeakImportCeilingW = req.PeakImportCeilingW
 	s.deps.CtrlMu.Unlock()
+	// The plan spreads each hour's import under the ceiling; a new ceiling
+	// changes what the plan may deliver.
+	if s.deps.MPC != nil && req.PeakImportCeilingW != prevW {
+		s.deps.MPC.RequestReplan("import_ceiling_changed")
+	}
 	writeJSON(w, 200, map[string]any{"status": "ok", "peak_import_ceiling_w": req.PeakImportCeilingW})
 }
 

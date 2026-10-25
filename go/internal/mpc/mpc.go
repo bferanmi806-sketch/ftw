@@ -248,6 +248,14 @@ type Params struct {
 	// DemandCharges are peak-power tariffs Core expanded to clock hours.
 	// Empty leaves Energyplan on energy prices only.
 	DemandCharges []DemandCharge
+
+	// ImportHours carry the owner's hourly import ceiling: each clock hour
+	// the plan spans may import ImportMeanW over its length, less what it had
+	// used. ValidatePlan holds every plan to them, Core's own planners spread
+	// each hour over its slots, and a worker that announces
+	// hourly_import_caps gets them on its wire.
+	ImportMeanW float64
+	ImportHours []ImportHour
 }
 
 // StorageAssetSpec is one independently constrained home battery in the
@@ -660,6 +668,7 @@ func OptimizeContext(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 
 	// The mean price scales the EV deadline penalty and labels reasons.
 	meanPrice := horizonMeanPrice(slots)
+	importCaps := importHourCapsW(slots, p)
 
 	// Action grid spans −MaxDischargeW … +MaxChargeW and always contains
 	// 0 W. With asymmetric charge/discharge limits, an odd number of evenly
@@ -866,8 +875,12 @@ func OptimizeContext(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 							continue
 						}
 
-						// Per-slot power limits.
+						// Per-slot power limits, and the slot's share of
+						// its clock hour's import budget.
 						if !slot.Limits.allowsImport(gridW) || !slot.Limits.allowsExport(gridW) {
+							continue
+						}
+						if importCaps != nil && gridW > importCaps[t] {
 							continue
 						}
 
