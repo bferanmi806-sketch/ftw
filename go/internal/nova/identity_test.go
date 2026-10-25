@@ -279,11 +279,13 @@ func TestLoadExistingIdentityConcurrentMissingCreateIsReadOnly(t *testing.T) {
 	if createErr != nil {
 		t.Fatal(createErr)
 	}
+	// The read-only loader may also land in the install window, where it
+	// refuses the key (see TestLoadExistingIdentityDuringInstallFailsClosed).
 	if loadErr == nil {
 		if loaded.PublicKeyHex() != created.PublicKeyHex() {
 			t.Fatal("concurrent existing loader returned a different key")
 		}
-	} else if !errors.Is(loadErr, fs.ErrNotExist) {
+	} else if !errors.Is(loadErr, fs.ErrNotExist) && !isInstallWindowRefusal(loadErr) {
 		t.Fatalf("concurrent missing load error = %v", loadErr)
 	}
 	entries, err := os.ReadDir(filepath.Dir(path))
@@ -295,6 +297,45 @@ func TestLoadExistingIdentityConcurrentMissingCreateIsReadOnly(t *testing.T) {
 			t.Fatalf("existing loader left temp entry %q", entry.Name())
 		}
 	}
+}
+
+// The creator links the finished key into place and removes its temp name
+// only after a directory sync, so for that long the key has two links. A
+// read-only load then refuses it, as it refuses any hard-linked key, and
+// leaves the install alone.
+func TestLoadExistingIdentityDuringInstallFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nova.key")
+	ops := defaultIdentityFileOps()
+	syncDirectory := ops.syncDirectory
+	linked, loaded := false, false
+	var during error
+	ops.link = func(root *os.Root, oldName, newName string) error {
+		err := root.Link(oldName, newName)
+		linked = err == nil && newName == filepath.Base(path)
+		return err
+	}
+	ops.syncDirectory = func(dir *os.File) error {
+		if linked && !loaded {
+			loaded = true
+			_, during = LoadExistingIdentity(path)
+		}
+		return syncDirectory(dir)
+	}
+	created, err := loadOrCreateIdentity(path, testIdentityFilePolicy(t), ops)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded || !isInstallWindowRefusal(during) {
+		t.Fatalf("load inside the install window = %v (ran %v), want the two-link refusal", during, loaded)
+	}
+	after, err := LoadExistingIdentity(path)
+	if err != nil || after.PublicKeyHex() != created.PublicKeyHex() {
+		t.Fatalf("load after the install = %v, %v", after, err)
+	}
+}
+
+func isInstallWindowRefusal(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "nova: key has 2 links")
 }
 
 func TestGuardedCreateRejectsReservedStateBeforeAnyKeyWrite(t *testing.T) {
