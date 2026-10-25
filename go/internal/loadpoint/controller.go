@@ -56,6 +56,7 @@ type Controller struct {
 
 	// tickFuseCaps belongs to the serial tick, after one shared budget read.
 	tickFuseCaps        map[string]float64
+	tickFuseRooms       map[string]fuseRoom // serial tick, beside tickFuseCaps
 	tickFuseReason      string
 	tickChoices         map[string]tickChoice // serial tick
 	tickDirectiveActive bool
@@ -1235,7 +1236,11 @@ func (c *Controller) TickWithDispatch(ctx context.Context, now time.Time, dispat
 	if dispatchAllowed {
 		c.tickDirective, c.tickDirectiveOK = c.currentDirective(now)
 		c.tickDirectiveActive = true
-		defer func() { c.tickFuseCaps, c.tickFuseReason = nil, ""; c.tickChoices = nil; c.tickDirectiveActive = false }()
+		defer func() {
+			c.tickFuseCaps, c.tickFuseRooms, c.tickFuseReason = nil, nil, ""
+			c.tickChoices = nil
+			c.tickDirectiveActive = false
+		}()
 	}
 	choices := make(map[string]tickChoice, len(observations))
 	for _, observed := range observations {
@@ -1636,6 +1641,12 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 	}
 	if applyCurrentCeiling(cmd) {
 		cmdReason = "fuse_limit"
+	}
+	// cap_amps_per_phase is how far this order may rise on its phases. A
+	// driver that briefly offers more than the order, as easee_cloud does to
+	// start a car at 6 A, must stay within it. Absent: Core knows no cap.
+	if capA, known := c.capAmpsPerPhase(lpCfg, cmd); known {
+		cmd["cap_amps_per_phase"] = capA
 	}
 	// Tell the manager what was ordered, after every clamp has spoken.
 	// The interruption latch reads this to keep a pause the box chose —
@@ -2506,14 +2517,30 @@ func (c *Controller) computeCommandForBudget(now time.Time, lpCfg Config, curren
 	}
 	maxW := lpCfg.MaxChargeW
 	if ceiling, ok := d.LoadpointMaxPowerW[lpCfg.ID]; ok {
+		// A duty plan commands its legal on-power for its on-time, the slot's
+		// energy at that power, and on until the energy is spent. A car that
+		// draws more than its step, as on a mains above 230 V, spends the
+		// energy early but keeps running for the on-time; a car stopped by
+		// then stays stopped. An off-time shorter than CommandSettle would
+		// reach the charger only in the next slot, so the car runs to the
+		// slot's end. The energy and the ceiling are both the plan's watts,
+		// before a one-phase car's order is scaled.
+		onUntil := now
+		if ceiling > 0 && budgetWh > 0 && !now.Before(d.SlotStart) && !d.LoadpointFallback[lpCfg.ID] {
+			onUntil = d.SlotStart.Add(time.Duration(budgetWh / ceiling * float64(time.Hour)))
+			if d.SlotEnd.Sub(onUntil) < CommandSettle {
+				onUntil = d.SlotEnd
+			}
+		}
+		st, _ := c.manager.State(lpCfg.ID)
+		running := st.CommandedKnown && st.CommandedW > 0
 		if onePhaseCar {
 			ceiling *= 3
 		}
 		maxW = min(maxW, ceiling)
-		if maxW <= 0 || remainingWh <= 1e-6 || remainingS <= 0 {
+		if maxW <= 0 || remainingS <= 0 || (remainingWh <= 1e-6 && (!running || !now.Before(onUntil))) {
 			return 0, true, false
 		}
-		// A duty plan commands its legal on-power until the Wh budget is spent.
 		wantW = maxW
 	}
 	// Joint fuse allocator (dispatch.go) caps EV demand when battery + EV

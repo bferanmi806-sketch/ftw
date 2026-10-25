@@ -1898,7 +1898,7 @@ func main() {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = mpcSvc.Replan(ctx)
+			_ = mpcSvc.ReplanWithReason(ctx, "startup")
 			slog.Info("mpc: startup replan completed")
 		}()
 	}
@@ -2473,11 +2473,13 @@ func main() {
 	// signed, readable copy of the house, off until an owner turns it on.
 	// Both use the one FTW Cloud connection.
 	var appTunnel *appuplink.Tunnel
+	var appExchange *appuplink.Exchange
 	if appUplink != nil {
 		appTunnel = appUplink.Tunnel()
+		appExchange = appUplink.Exchange()
 	}
 	cloudLink := startCloudLink(ctx, statePath, Version, st, appEnroll,
-		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, liveMeasurementOptions, priceSvc, appAPI, cloudNotify, appTunnel, carsRT, webPush)
+		tel, ctrl, ctrlMu, controlRev, appLinkWatchdog, liveMeasurementOptions, priceSvc, appAPI, cloudNotify, appTunnel, appExchange, carsRT, webPush)
 	appCloud.bind(cloudLink)
 	if cloudLink != nil {
 		agents.home = cloudLink.Home
@@ -2490,12 +2492,17 @@ func main() {
 	// The bundled drivers dir is deliberately not passed: which drivers this
 	// build ships with is compiled in, not discovered on disk. See
 	// fleetCatalogue for what that buys.
+	migrateStatistics(cfg, cfgMu, st, cloudLink)
+	answer := statsAnswer{st: st, link: cloudLink}
 	fleetPinger, fleetPingErr := startFleetPing(
-		ctx, cfg, cfgMu, st, Version, config.ManagedDriversDirOverride,
+		ctx, cfg, cfgMu, st, answer, tel, selfUpdater, Version, config.ManagedDriversDirOverride,
 	)
 	if fleetPingErr != nil {
 		slog.Warn("fleet ping unavailable", "err", fleetPingErr)
 	}
+	// The anonymous daily energy report, under the same answer, through an
+	// independent relay so that FTW Cloud never learns which box sent it.
+	energyReport := startEnergyReport(ctx, cfg, cfgMu, st, answer)
 
 	mutationPolicy := apiMutationPolicy()
 	mutationPolicy.LANAuthEnabled = func() bool {
@@ -2518,6 +2525,7 @@ func main() {
 		AppEnroll:       appEnrollForAPI(appEnroll, appUplink, st, appLinkEnabled, agents),
 		Agents:          agentsForAPI(agents),
 		FleetPing:       fleetPinger,
+		EnergyReport:    energyReport,
 		Cloud:           cloudForAPI(cloudLink),
 		CfgMu:           cfgMu, Cfg: cfg, ConfigPath: *configPath,
 		ConfigApplier:       applyConfigChange,
@@ -2829,13 +2837,6 @@ func main() {
 	ticker := time.NewTicker(controlInterval)
 	defer ticker.Stop()
 	var saveCount uint64
-	// Track FuseSaturated edge so we replan once when the joint allocator
-	// kicks in — the plan was made without knowledge of the live overage,
-	// and a replan with current EV/PV/load state usually finds a feasible
-	// schedule that doesn't fight the fuse.
-	var prevFuseSaturated bool
-	var lastFuseReplan time.Time
-	const fuseReplanCooldown = 60 * time.Second
 	var lastMissingPlanReplan time.Time
 	const missingPlanReplanCooldown = 5 * time.Second
 	// One-shot replan when the FIRST DerVehicle reading arrives. The
@@ -3239,22 +3240,6 @@ func main() {
 
 			// LP dispatch ran at the top of this tick — see the
 			// "EV dispatch first" block above.
-
-			// ---- Trigger MPC replan on fuse-saturation rising edge ----
-			// The joint allocator (control.dispatch) just throttled
-			// battery and EV to fit under the fuse. The plan was built
-			// without seeing this overage, so let MPC redraw with current
-			// state — usually it finds a slot allocation that doesn't
-			// require both battery charge and full-bore EV simultaneously.
-			ctrlMu.Lock()
-			fuseSatNow := ctrl.FuseSaturated
-			ctrlMu.Unlock()
-			if mpcSvc != nil && fuseSatNow && !prevFuseSaturated && time.Since(lastFuseReplan) > fuseReplanCooldown {
-				lastFuseReplan = time.Now()
-				go mpcSvc.Replan(ctx)
-				slog.Info("fuse-saturated → MPC replan triggered")
-			}
-			prevFuseSaturated = fuseSatNow
 
 			// Missing-plan retry: plans are in-memory only, so after an
 			// update/restart the first dispatch cycles can see nil/stale
