@@ -27,6 +27,7 @@ func TestLoadPowerBucketsLaysFixedBuckets(t *testing.T) {
 		{base + step, -2000, -500}, // on the boundary: the second bucket's
 		// nothing in the third bucket
 		{base + 3*step + 1_000, -100, 700},
+		{base + 4*step, -9000, 9000}, // at `to`: outside the range
 	} {
 		if err := s.RecordHistory(HistoryPoint{TsMs: r.at, PVW: r.pv, GridW: r.grid}); err != nil {
 			t.Fatal(err)

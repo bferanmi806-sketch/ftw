@@ -2,14 +2,18 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
 
 // PowerBucket is the measured mean power over one fixed bucket, site-signed,
-// from the same stored rows /api/history draws. Missing marks the flows that
-// some row in the bucket did not measure; their mean is not a value then.
+// from the same stored rows /api/history draws. Each flow's mean is over the
+// rows that measured it. Missing marks a flow left unmeasured for more than
+// maxSourceDayUnknownShare of the bucket's rows, or for all of them: its mean
+// is not a value then, as a source-era day's total is not.
 type PowerBucket struct {
 	StartMS int64
 	GridW   float64
@@ -35,10 +39,18 @@ func (s *Store) LoadPowerBuckets(ctx context.Context, fromMs, toMs, bucketMs int
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	// Per flow: the mean over the rows that measured it, and how many rows
+	// did not.
+	flow := func(column string, bit HistoryMissing) string {
+		b := strconv.Itoa(int(bit))
+		return `SUM(CASE WHEN missing&` + b + `=0 THEN COALESCE(` + column + `,0)*n END)/SUM(CASE WHEN missing&` + b + `=0 THEN n END),
+		       SUM(CASE WHEN missing&` + b + `<>0 THEN n ELSE 0 END)`
+	}
 	rows, err := s.history.QueryContext(ctx, halfOpenHistoryRange(historyTierUnion)+`
-		SELECT (ts_ms - ?) / ? AS bucket,
-		       SUM(COALESCE(grid_w, 0)*n)/SUM(n), SUM(COALESCE(pv_w, 0)*n)/SUM(n), SUM(COALESCE(bat_w, 0)*n)/SUM(n),
-		       `+historyMissingAggregate+`
+		SELECT (ts_ms - ?) / ? AS bucket, SUM(n),
+		       `+flow("grid_w", MissingGrid)+`,
+		       `+flow("pv_w", MissingPV)+`,
+		       `+flow("bat_w", MissingBattery)+`
 		FROM deduped GROUP BY bucket ORDER BY bucket`,
 		fromMs, toMs, fromMs, toMs, fromMs, toMs, fromMs, toMs, fromMs, toMs, fromMs, bucketMs)
 	if err != nil {
@@ -48,11 +60,23 @@ func (s *Store) LoadPowerBuckets(ctx context.Context, fromMs, toMs, bucketMs int
 	var out []PowerBucket
 	for rows.Next() {
 		var b PowerBucket
-		var index int64
-		if err := rows.Scan(&index, &b.GridW, &b.PVW, &b.BatW, &b.Missing); err != nil {
+		var index, total int64
+		var grid, pv, bat sql.NullFloat64
+		var gridOff, pvOff, batOff int64
+		if err := rows.Scan(&index, &total, &grid, &gridOff, &pv, &pvOff, &bat, &batOff); err != nil {
 			return nil, err
 		}
 		b.StartMS = fromMs + index*bucketMs
+		take := func(mean sql.NullFloat64, off int64, bit HistoryMissing) float64 {
+			if !mean.Valid || off*100 > total*maxSourceDayUnknownShare {
+				b.Missing |= bit
+				return 0
+			}
+			return mean.Float64
+		}
+		b.GridW = take(grid, gridOff, MissingGrid)
+		b.PVW = take(pv, pvOff, MissingPV)
+		b.BatW = take(bat, batOff, MissingBattery)
 		out = append(out, b)
 	}
 	return out, rows.Err()

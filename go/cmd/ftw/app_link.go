@@ -317,15 +317,23 @@ func (a *appHistory) Window(
 		"battery_w": {state.MissingBattery, func(b state.PowerBucket) float64 { return b.BatW }},
 	}
 
-	points, _, err := a.st.LoadEnergyHistoryContext(ctx, state.EnergyHistoryQuery{
-		SinceMS:  fromMs,
-		UntilMS:  toMs,
-		BucketMS: stepMs,
-		// One tile is at most 168 buckets; the ledger's own cap is 2000.
-		Limit: 2000,
-	})
-	if err != nil {
-		return nil, err
+	wantLedger := false
+	for _, name := range names {
+		wantLedger = wantLedger || termsByName[name] != nil
+	}
+	var points []state.EnergyLedgerPoint
+	var err error
+	if wantLedger {
+		points, _, err = a.st.LoadEnergyHistoryContext(ctx, state.EnergyHistoryQuery{
+			SinceMS:  fromMs,
+			UntilMS:  toMs,
+			BucketMS: stepMs,
+			// One tile is at most 168 buckets; the ledger's own cap is 2000.
+			Limit: 2000,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// A bucket exists on the wire only if some term reported it. A bucket
