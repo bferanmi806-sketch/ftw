@@ -1115,6 +1115,20 @@ func OptimizeContext(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 			}
 		}
 		gridW := loadpoint.GridW(slot.LoadW, slot.PVW, actW, evW)
+		// The real SoC can leave the battery short of the policy's
+		// discharge. The car then gives way to the hour's import, as
+		// Core's live limit cuts the car first.
+		if evW > 0 && carImportCaps != nil && gridW > carImportCaps[t] {
+			evW = 0
+			for k := len(evSteps) - 1; k > 0; k-- {
+				if loadpoint.GridW(slot.LoadW, slot.PVW, actW, evSteps[k]) <= carImportCaps[t] {
+					evW = evSteps[k]
+					break
+				}
+			}
+			evSoc2 = evSoc + evW*dtH*evChargeEff/lp.CapacityWh
+			gridW = loadpoint.GridW(slot.LoadW, slot.PVW, actW, evW)
+		}
 		gridKWh := gridW * dtH / 1000.0
 		// Report the ACTUAL expected cost using the raw (un-blended)
 		// prices so the UI summary reflects "what we'd actually pay

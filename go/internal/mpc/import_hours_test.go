@@ -533,3 +533,20 @@ func TestNoCarOnTheHouseFloor(t *testing.T) {
 		t.Fatalf("car on the house floor passed: %v", err)
 	}
 }
+
+// The DP plans on a SoC grid. Replayed from the real SoC, the battery can run
+// short of the discharge that kept an hour under its budget, here at 12:45
+// in the field case: the car gives way rather than the hour overrunning.
+func TestOptimizeCarGivesWayWhenTheBatteryRunsShort(t *testing.T) {
+	svc, _ := importCeilingFieldService(t, nil, true)
+	if svc.Replan(context.Background()) == nil {
+		t.Fatal("no plan published")
+	}
+	svc.mu.RLock()
+	slots, p := append([]Slot(nil), svc.lastSlots...), svc.lastParams
+	svc.mu.RUnlock()
+	plan := Optimize(slots, p)
+	if err := ValidatePlan(slots, p, &plan); err != nil {
+		t.Fatal(err)
+	}
+}
