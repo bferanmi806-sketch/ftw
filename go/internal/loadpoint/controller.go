@@ -2052,13 +2052,13 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 	}
 	if len(lpCfg.AllowedStepsW) == 0 {
 		// No step table, no one-phase ladder to fall back to: a one-phase
-		// order would cap the charger under its minimum. A lock or phase
-		// choice from before the table went is cleared.
+		// order would cap the charger under its minimum. The charger holds
+		// three phases, through a pause too, and a one-phase lock from
+		// before the table went is cleared. A pin still wins.
 		c.phaseLockMu.Lock()
 		delete(c.phaseLocked1P, lpCfg.ID)
 		delete(c.phaseLockedAt, lpCfg.ID)
-		delete(c.phaseSelected3P, lpCfg.ID)
-		delete(c.phaseSelectedAt, lpCfg.ID)
+		c.selectPhaseLocked3P(lpCfg.ID, now)
 		c.phaseLockMu.Unlock()
 		return nil
 	}
@@ -2308,6 +2308,18 @@ func (c *Controller) surplusLockedTo1P(id string) bool {
 // to override the operator's "auto" so the driver doesn't auto-flip
 // phase on a transient cmd_w=0 (pause), which would defeat the
 // 30-min minimum-dwell guarantee.
+// selectPhaseLocked3P records three phases as the session's phase choice.
+// Caller holds phaseLockMu.
+func (c *Controller) selectPhaseLocked3P(id string, now time.Time) {
+	if c.phaseSelected3P == nil {
+		c.phaseSelected3P = map[string]bool{}
+		c.phaseSelectedAt = map[string]time.Time{}
+	}
+	if !c.phaseSelected3P[id] {
+		c.phaseSelected3P[id], c.phaseSelectedAt[id] = true, now
+	}
+}
+
 func (c *Controller) dwellSelectedPhaseMode(id string) string {
 	if c == nil {
 		return ""

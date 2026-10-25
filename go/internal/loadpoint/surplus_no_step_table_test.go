@@ -59,8 +59,8 @@ func TestSurplusWithoutAStepTableNeverLocksToOnePhase(t *testing.T) {
 }
 
 // An owner who removes the step table on a day the charger was locked to
-// one phase, or held on one, leaves no lock behind: the next surplus order
-// is three-phase without a restart.
+// one phase, or held on one, leaves no lock behind: the charger holds
+// three phases from the next tick, without a restart.
 func TestRemovingTheStepTableClearsTheOnePhaseLock(t *testing.T) {
 	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
 	cfg := Config{ID: "garage", DriverName: "evse", MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto", SurplusOnly: true}
@@ -72,7 +72,48 @@ func TestRemovingTheStepTableClearsTheOnePhaseLock(t *testing.T) {
 	if steps := c.pickSurplusSteps(now, cfg); steps != nil {
 		t.Fatalf("steps %v, want none without a table", steps)
 	}
-	if c.surplusLockedTo1P(cfg.ID) || c.dwellSelectedPhaseMode(cfg.ID) != "" {
-		t.Fatalf("lock %v, phase held %q after the table went; want neither", c.surplusLockedTo1P(cfg.ID), c.dwellSelectedPhaseMode(cfg.ID))
+	if c.surplusLockedTo1P(cfg.ID) || c.dwellSelectedPhaseMode(cfg.ID) != "3p" {
+		t.Fatalf("lock %v, phase held %q after the table went; want no lock and 3p", c.surplusLockedTo1P(cfg.ID), c.dwellSelectedPhaseMode(cfg.ID))
+	}
+}
+
+// Through a pause and back, a no-table charger on auto keeps three phases:
+// an "auto" order at 0 W lets the charger flip to one phase and cycle its
+// contactor at every cloud.
+func TestSurplusWithoutAStepTableHoldsThreePhasesThroughAPause(t *testing.T) {
+	now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
+	cfg := Config{ID: "garage", DriverName: "evse", MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: "auto", SurplusOnly: true}
+	samples := map[string]EVSample{cfg.DriverName: {Connected: true, RequestActive: true}}
+	sender := &fakeSender{}
+	c := newTestController(t, []Config{cfg}, nil, samples, sender)
+	c.SetSiteFuse(SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
+	surplusW := 9310.0
+	c.SetSiteSurplusForEV(func() (float64, bool) { return surplusW, true })
+	c.SetNearTermPeakSurplusW(func(time.Duration) (float64, bool) { return 0, true })
+	c.SetPeakRemainingSurplusW(func() (float64, bool) { return 0, true })
+	for tick := 0; tick < 60; tick++ {
+		switch tick {
+		case 10:
+			surplusW = 1000
+		case 30:
+			surplusW = 9310
+		}
+		c.Tick(context.Background(), now)
+		cmd, _ := lastSetCurrent(sender.calls)
+		samples[cfg.DriverName] = EVSample{Connected: true, RequestActive: true, PowerW: cmd.power}
+		now = now.Add(5 * time.Second)
+	}
+	paused := false
+	for _, cmd := range sender.calls {
+		if cmd.action != "ev_set_current" {
+			continue
+		}
+		paused = paused || cmd.power == 0
+		if cmd.phaseMode != "3p" {
+			t.Fatalf("offer %+v: want three phases through the pause", cmd)
+		}
+	}
+	if !paused {
+		t.Fatal("surplus never paused at 1000 W")
 	}
 }
