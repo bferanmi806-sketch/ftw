@@ -500,3 +500,39 @@ func TestStartLevelReadsHeatOnlyOverTheLimit(t *testing.T) {
 		})
 	}
 }
+
+// A phase's current takes its direction from the same phase's power: P1
+// reports current as a magnitude, Pixii signs it. Without the power the
+// current counts as import.
+func TestPhaseCurrentsTakeDirectionFromPhasePower(t *testing.T) {
+	_, state := fuseHeatState()
+	for _, tc := range []struct {
+		name string
+		data map[string]float64
+		want []float64
+	}{
+		{"p1", map[string]float64{"l1_a": 20, "l2_a": 3, "l3_a": 5, "l1_w": -4600, "l2_w": 690, "l3_w": 0}, []float64{-20, 3, 5}},
+		{"signed", map[string]float64{"l1_a": -20, "l2_a": -3, "l3_a": 5, "l1_w": -4600, "l2_w": -690, "l3_w": 1150}, []float64{-20, -3, 5}},
+		{"no phase power", map[string]float64{"l1_a": -20, "l2_a": 3, "l3_a": 5}, []float64{20, 3, 5}},
+	} {
+		raw, _ := json.Marshal(tc.data)
+		amps, present, valid := phaseCurrentsA(&telemetry.DerReading{Data: raw}, state)
+		if !present || !valid || len(amps) != 3 || amps[0] != tc.want[0] || amps[1] != tc.want[1] || amps[2] != tc.want[2] {
+			t.Errorf("%s: %v (present %v, valid %v), want %v", tc.name, amps, present, valid, tc.want)
+		}
+	}
+}
+
+// An exporting phase counts at its reading for a rise and a start: new load
+// lowers its current, and its heat from an earlier import does not count.
+func TestExportingPhaseLevelIsItsReading(t *testing.T) {
+	h := fuseHeat{set: true}
+	h.sq = [3]float64{20 * 20, 4, 4}
+	amps := []float64{-12, 2, 2}
+	if got := h.levelA(amps, [3]float64{3, 3, 3}); got != 5 {
+		t.Fatalf("rise level %.1f A, want L2's 2 A plus 3 A on its way", got)
+	}
+	if got := h.startLevelA(amps, [3]float64{}, 24); got != 2 {
+		t.Fatalf("start level %.1f A, want L2's 2 A", got)
+	}
+}

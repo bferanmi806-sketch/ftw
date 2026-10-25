@@ -608,8 +608,10 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 	return r
 }
 
-// worstPhaseA reads the site's configured phases. present is false when the
-// meter reports no phase currents; valid is false when they cannot be used.
+// worstPhaseA is the highest import on the site's configured phases, with
+// direction (phaseCurrentsA), and 0 when every phase exports. present is
+// false when the meter reports no phase currents; valid is false when they
+// cannot be used.
 func worstPhaseA(meter *telemetry.DerReading, state *State) (worstA float64, present, valid bool) {
 	amps, present, valid := phaseCurrentsA(meter, state)
 	for _, a := range amps {
