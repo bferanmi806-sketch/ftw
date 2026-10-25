@@ -261,7 +261,9 @@ func TestHistoryMaintenanceWaitsForCancelledRollback(t *testing.T) {
 			if lockErr == nil {
 				t.Fatal("maintenance released the writer mutex before SQLite rollback finished")
 			}
-			if !errors.Is(err, context.Canceled) {
+			// The archive write also has its own 1 s limit, which a stalled
+			// test goroutine can let expire before it cancels.
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("cancelled maintenance: %v", err)
 			}
 			if err := run(context.Background()); err != nil {
