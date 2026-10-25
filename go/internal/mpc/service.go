@@ -160,6 +160,10 @@ type Service struct {
 	// LoadpointStates supplies current saved goals without taking the control
 	// lock. It is independent of forecasts, prices and battery qualification.
 	LoadpointStates func() []loadpoint.State
+	// PlanningLimits is the power range and the steps the plan gets for a
+	// session (loadpoint.PlanningLimits); the deadline reserve holds to them
+	// too. Nil holds the reserve to the charger's own table (LimitPower).
+	PlanningLimits func(loadpoint.State) (minW, maxW float64, steps []float64)
 
 	// SaveDiag is called synchronously after every successful replan that
 	// remains the newest request, with the same Diagnostic the

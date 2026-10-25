@@ -1702,6 +1702,11 @@ func main() {
 			}
 			return states
 		}
+		// The deadline reserve holds to the plan's limits. The controller
+		// reads them under its own locks; it is assigned further down.
+		mpcSvc.PlanningLimits = func(st loadpoint.State) (minW, maxW float64, steps []float64) {
+			return lpController.PlanningLimits(st)
+		}
 		mpcSvc.Loadpoints = func(slotLenMin int) []*mpc.LoadpointSpec {
 			specs := make([]*mpc.LoadpointSpec, 0)
 			for _, st := range lpMgr.States() {
