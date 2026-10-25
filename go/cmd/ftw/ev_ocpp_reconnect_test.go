@@ -16,6 +16,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/events"
 	"github.com/srcfl/ftw/go/internal/loadpoint"
 	"github.com/srcfl/ftw/go/internal/ocpp"
+	"github.com/srcfl/ftw/go/internal/ocpp/chargersocket"
 	"github.com/srcfl/ftw/go/internal/telemetry"
 )
 
@@ -56,7 +57,7 @@ func TestOCPPReconnectDoesNotUnplugOrResumeOldStart(t *testing.T) {
 				})
 				connect := func() ocpp16.ChargePoint {
 					t.Helper()
-					cp := ocpp16.NewChargePoint("garage", nil, nil)
+					cp := chargersocket.ChargePoint16("garage", nil)
 					if e := cp.Start("ws://" + addr); e != nil {
 						t.Fatal(e)
 					}
