@@ -54,6 +54,7 @@ import (
 	"github.com/srcfl/ftw/go/internal/drivers"
 	"github.com/srcfl/ftw/go/internal/events"
 	"github.com/srcfl/ftw/go/internal/forecast"
+	"github.com/srcfl/ftw/go/internal/ftwcli"
 	"github.com/srcfl/ftw/go/internal/gatewayidentity"
 	"github.com/srcfl/ftw/go/internal/ha"
 	"github.com/srcfl/ftw/go/internal/loadmodel"
@@ -324,6 +325,12 @@ func main() {
 		case "nova-claim":
 			// Shift os.Args so the subcommand's flag.FlagSet sees its own flags.
 			runNovaClaim(os.Args[2:])
+			return
+		case "password":
+			// A container has no separate ftw command, so Core's own binary
+			// resets the house password: docker compose exec ftw /app/ftw
+			// password reset. It asks the running Core on loopback.
+			exitCode = ftwcli.Run(os.Args[1:], os.Stdout, os.Stderr)
 			return
 		}
 	}
@@ -1662,6 +1669,13 @@ func main() {
 			ctrlMu.Lock()
 			defer ctrlMu.Unlock()
 			return control.PhaseImbalanceW(tel, ctrl, timeout, time.Now())
+		}
+		// The planner keeps each clock hour under the owner's import
+		// ceiling, from the budget Core's live limit counts.
+		mpcSvc.ImportCeiling = func() mpc.ImportCeiling {
+			ctrlMu.Lock()
+			defer ctrlMu.Unlock()
+			return control.PlanningImportCeiling(ctrl)
 		}
 		// Cap planned export below the fuse when the operator set a site
 		// export ceiling, so the DP never schedules a discharge that would
