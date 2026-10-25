@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.157.0
+
+### Minor Changes
+
+- c56fccf: Connecting an assistant no longer needs a terminal. When the box has no house password, Settings → Access asks you to choose one right above the assistant's code, and choosing it signs that browser in. Any browser that reaches the box may set the first one, also through a Docker port or on the box itself. A new box asks for it on the setup wizard's last step. Any password will do: a short one gets a warning, not a refusal. The Home Assistant app still needs none.
+  
+  The password, not the address, now proves the owner: a browser on the box itself can let an assistant in once it is signed in. Settings → System calls it the house password and explains it without developer words. If you forget it, or someone else set it first, run `ftw password reset` on the box (`docker compose exec ftw /app/ftw password reset` on Docker), then choose a new one on the box's page. On a native box whose `ftw` command predates this release, run `/opt/ftw/releases/<release>/ftw password reset` instead.
+
+### Patch Changes
+
+- e39e7b8: The app's history for solar, grid and battery now shows the measured power, the same as the box's own charts. Before, it came from the energy counters, which on a Sungrow move in 0.1 kWh steps, so each five minutes read 0 or 1.2 kW while the sun gave 0.4 kW. Home use is unchanged. Five minutes in which a flow went unmeasured for more than half the time is now a gap for that flow, not a lower value.
+- e5edf34: Update the bundled Energyplan planner to 0.6.0. With an hourly import limit set, Energyplan keeps every clock hour under it, lets the battery cover the house so the car fits, and shows a car goal it cannot reach as short instead of promising it. Plans without a limit are unchanged. Core still validates every plan.
+- 792ef29: A car whose own charger takes less than the charger's three-phase levels now charges toward its goal when no plan is available. On a step table with both one-phase and three-phase levels, the reserve FTW falls back to without a plan gave such a car a one-phase level, which no three-phase order has, and the charger was ordered 0 W. An example is a 3.7 kW plug-in hybrid on a charger whose table runs 1.4-3.7 kW on one phase and 4.1-11 kW on three. The reserve now holds to the same limits as the plan: such a car is ordered the lowest three-phase level, and once FTW sees it draw on one phase, three times the level it takes.
+- 286ac14: The box's dashboard now uses the phone app's colours. The grid is one pink colour both ways, and the sign and the word say whether you buy or sell. The battery is cyan when it stores power and orange when it gives power, and the car is violet. Green now only means live or confirmed, and red only means refused, failed or blocked. Prices are shades of ink, not red and green.
+- b0ce810: The plan now keeps each clock hour under the hourly import limit. The planner used to see only the fuse. With a 4.5 kW limit it could plan the car at 4.8 kW for four hours, import 5.5 kWh in an hour and show a charging goal as met that FTW could not deliver. Each plan now gets every clock hour in the box's local time and what the hour in progress has used, and FTW rejects a plan that imports more in an hour than it may. A planned hour keeps a little under the limit, because the car charges in whole amps and FTW raises it only with a step to spare; the plan then promises about what the car gets. When the limit puts a goal out of reach, the plan says how much is missing. The home battery covers the house so the car gets more of the hour. The bundled Energyplan worker does not take the hours yet: when its plan breaks them, FTW uses its own plan. Where FTW cannot plan the site itself, it keeps the worker's plan, says the plan may break the limit, and still holds each hour to it live. A new limit replans at once.
+
 ## 0.156.0
 
 ### Minor Changes
