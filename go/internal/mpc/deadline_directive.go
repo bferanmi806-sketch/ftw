@@ -14,6 +14,12 @@ func (s *Service) withDeadlineReserve(now time.Time, d SlotDirective, accepted b
 		return d, accepted
 	}
 	states := s.LoadpointStates() // No control lock: the caller may hold it.
+	limits := s.PlanningLimits
+	if limits == nil {
+		limits = func(st loadpoint.State) (float64, float64, []float64) {
+			return loadpoint.LimitPower(st, st.AllowedStepsW)
+		}
+	}
 	if !accepted {
 		d = SlotDirective{SlotStart: now, SlotEnd: now.Add(time.Minute), EVOnly: true}
 	}
@@ -21,7 +27,8 @@ func (s *Service) withDeadlineReserve(now time.Time, d SlotDirective, accepted b
 		if _, hasBudget := d.LoadpointEnergyWh[st.ID]; hasBudget && !st.ManualActive {
 			continue // An accepted zero budget is a price decision, too.
 		}
-		need, peak, ok := loadpoint.DeadlineNeed(st)
+		minW, maxW, steps := limits(st)
+		need, peak, ok := loadpoint.DeadlineNeed(st, minW, maxW, steps)
 		if st.ManualActive && st.PluggedIn {
 			// Manual intent has already passed the charger's own clamps.
 			// Reserve its ceiling, including an explicit Stop, without
@@ -38,8 +45,12 @@ func (s *Service) withDeadlineReserve(now time.Time, d SlotDirective, accepted b
 		if !st.ManualActive {
 			// Near the goal use the smallest legal offer that can deliver
 			// this minute's need, rather than reserving the charger's full
-			// rating for a final few Wh.
-			peak = loadpoint.SnapChargeW(need/d.SlotEnd.Sub(now).Hours(), st.MinChargeW, peak, st.AllowedStepsW)
+			// rating for a final few Wh. A charger without a table takes
+			// any power in its range.
+			if len(st.AllowedStepsW) == 0 {
+				steps = nil
+			}
+			peak = loadpoint.SnapChargeW(need/d.SlotEnd.Sub(now).Hours(), minW, peak, steps)
 		}
 		if d.LoadpointFallback == nil {
 			d.LoadpointFallback = map[string]bool{}

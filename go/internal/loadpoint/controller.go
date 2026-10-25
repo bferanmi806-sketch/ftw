@@ -2626,7 +2626,8 @@ func (c *Controller) computeCommandForBudget(now time.Time, lpCfg Config, curren
 	}
 	if d.LoadpointFallback[lpCfg.ID] {
 		st, known := c.manager.State(lpCfg.ID)
-		if _, _, needed := DeadlineNeed(st); !known || !needed {
+		minW, maxW, steps := c.PlanningLimits(st)
+		if _, _, needed := DeadlineNeed(st, minW, maxW, steps); !known || !needed {
 			return 0, true, false
 		}
 	}
