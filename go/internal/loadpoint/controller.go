@@ -2051,8 +2051,8 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 const surplusRaiseSettle = 3 * time.Minute
 
 // surplusOrder is a loadpoint's latest order and what its readings have
-// shown of it since. A reading lags the draw, so one that reaches the order
-// shows it only after one under it.
+// shown of it since. A reading lags the draw, so one past halfway from the
+// order before to this one shows it only after one short of halfway.
 type surplusOrder struct {
 	w, prevW     float64
 	at           time.Time
@@ -2083,7 +2083,7 @@ func (c *Controller) surplusOrderAdjustW(now time.Time, id string) (adjW, raisin
 			continue
 		}
 		reading, order := math.Max(0, st.CurrentPowerW), math.Max(0, o.w)
-		if reading < 0.9*order {
+		if reading < (math.Max(0, o.prevW)+order)/2 {
 			o.below = true
 		} else if o.below {
 			o.shown = true

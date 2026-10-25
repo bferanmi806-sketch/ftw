@@ -21,6 +21,9 @@ func TestSurplusCountsOurOrdersNotALateReading(t *testing.T) {
 		{"ordered off, the reading still shows the draw", []float64{6210, 0}, []float64{6210}, -6210, 0},
 		{"a raise on its way", []float64{4830, 6900}, []float64{4830}, 2070, 6900},
 		{"a raise the reading has shown", []float64{4830, 6900}, []float64{4830, 6900}, 0, 0},
+		{"one step up from 9 A, on its way", []float64{6210, 6900}, []float64{6210}, 690, 6900},
+		{"one step up from 9 A, shown", []float64{6210, 6900}, []float64{6210, 6900}, 0, 0},
+		{"a raise after a cut that has not landed", []float64{8970, 4830, 6210}, []float64{8970}, -2760, 6210},
 		{"a restart under the draw read before the stop", []float64{6210, 0, 4830}, []float64{6210}, -1380, 4830},
 		{"a cut on its way keeps the reading", []float64{8970, 3450}, []float64{8970}, 0, 0},
 	} {
