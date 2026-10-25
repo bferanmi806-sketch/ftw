@@ -500,8 +500,8 @@ func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first
 	if !r.hourly {
 		perReadingW = math.Min(perReadingW, r.riseW)
 	} else {
-		// The start test below holds an idle car to the ceiling itself,
-		// whatever slack the hour has: name it by this reading.
+		// The start test below holds an idle car to the start level:
+		// name it by this reading.
 		lim.byImport = r.startLevelW-gridW-pending < r.fuseW
 	}
 	room := 0.0
@@ -557,7 +557,7 @@ type evMeterRoom struct {
 	overLimit      bool    // a phase, or the total without phases, reads over the fuse's working limit
 	limitW         float64 // below the hour's import limit; negative is an overage
 	riseW          float64 // below the level an increase may reach, less what we sent
-	startLevelW    float64 // import an idle start may reach: the rise level, at most the ceiling
+	startLevelW    float64 // import an idle start may reach: the rise level, in the hour's last quarter at most the ceiling
 	hourly         bool    // the hour's import is measured, so a short overage may wait
 	measured       bool    // false when the meter reports phase currents that cannot be read
 	worstA         float64
@@ -570,9 +570,13 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 	r := evMeterRoom{fuseW: totalW - sent.w, fuseOverW: math.Max(0, -totalW), overLimit: totalW < 0, limitW: inf, riseW: inf, startLevelW: inf}
 	if limitW, riseW, ok := s.importHourLimitsW(); ok {
 		r.limitW, r.riseW = limitW-gridW, riseW-gridW-sent.w
-		// A car that could run only on one hour's slack would stop when
-		// the next hour starts at the ceiling.
-		r.startLevelW = math.Min(riseW, s.PeakImportCeilingW)
+		// The ceiling caps the hour's mean, so an idle car may start on the
+		// hour's slack, as a rise may. In the hour's last quarter it may
+		// not: the next hour starts again at the ceiling and would stop it.
+		r.startLevelW = riseW
+		if now := s.now(); s.importHourStart(now).Add(time.Hour).Sub(now) < importHourRiseMinLeft {
+			r.startLevelW = math.Min(riseW, s.PeakImportCeilingW)
+		}
 		r.hourly = s.importHourMeasured()
 	}
 	amps, present, valid := phaseCurrentsA(meter, s)
