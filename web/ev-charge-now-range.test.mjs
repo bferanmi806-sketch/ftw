@@ -88,3 +88,36 @@ test('without a table the top is max_charge_w, as before', () => {
   assert.equal(ui.slider.max, '16');
   assert.equal(ui.readout.textContent, '16 A · 11.0 kW');
 });
+
+// A top step off whole amps: 10,400 W at 3 × 230 V is 15.07 A. Sending
+// 15 A = 10,350 W made Core floor the hold to 9,700 W, so the top step
+// could not be ordered (Codex, #1808).
+const offWholeAmps = {
+  id: 'garage', phases: 3, voltage_v: 230, plugged_in: true,
+  min_charge_w: 4140, max_charge_w: 11000, allowed_steps_w: [0, 4140, 6900, 9700, 10400],
+};
+
+test('the top orders a step that is not on whole amps', () => {
+  const ui = build(offWholeAmps);
+  assert.equal(ui.slider.max, '15');
+  assert.equal(ui.readout.textContent, '15 A · 10.4 kW');
+  assert.match(ui.status.textContent, /^Starts at up to 15 A · 10\.4 kW\./);
+  ui.start.fire('click');
+  assert.deepEqual(ui.sent, [{ power_w: 10400, hold_s: 0, phase_mode: '3p' }]);
+});
+
+test('below the top the slider still sends its amps', () => {
+  // 14 A = 9,660 W lies between steps; Core floors it to 6,900 W, as before.
+  const ui = build(offWholeAmps);
+  ui.slider.value = '14';
+  ui.slider.fire('input');
+  assert.equal(ui.readout.textContent, '14 A · 9.7 kW');
+  ui.start.fire('click');
+  assert.deepEqual(ui.sent, [{ power_w: 9660, hold_s: 0, phase_mode: '3p' }]);
+});
+
+test('a hold at the top step reads as the top', () => {
+  const ui = build({ ...offWholeAmps, manual_active: true, manual_charge_w: 10400 });
+  assert.equal(ui.slider.value, '15');
+  assert.equal(ui.readout.textContent, '15 A · 10.4 kW');
+});

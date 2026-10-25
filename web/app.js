@@ -3590,8 +3590,14 @@
     function aToW(a) { return Math.round(a * perA); }
 
     var minA = Math.max(1, Math.round(wToA((lp && lp.min_charge_w) || 0)) || 6);
-    var maxA = Math.round(wToA(evChargeNowTopW(lp))) || 16;
+    var topW = evChargeNowTopW(lp);
+    var maxA = Math.round(wToA(topW)) || 16;
     if (maxA <= minA) { maxA = minA + 1; }
+    // orderW is the hold a slider position sends. The top sends the top step
+    // itself: a step off whole amps rounds down, and Core floors the rounded
+    // watts to the step below (10,400 W at 3 × 230 V reads 15 A, and
+    // 15 A = 10,350 W orders 9,700 W).
+    function orderW(a) { return a >= maxA && topW > 0 ? topW : aToW(a); }
 
     var active = !!(lp && lp.manual_active);
     var curA = active ? Math.round(wToA((lp && lp.manual_charge_w) || 0)) : maxA;
@@ -3645,7 +3651,7 @@
     readout.style.color = "var(--fg)";
     function renderReadout() {
       var a = parseInt(slider.value, 10) || minA;
-      readout.textContent = a + " A · " + (aToW(a) / 1000).toFixed(1) + " kW";
+      readout.textContent = a + " A · " + (orderW(a) / 1000).toFixed(1) + " kW";
     }
     renderReadout();
     var currentEditingUntil = 0;
@@ -3665,7 +3671,7 @@
     status.style.minHeight = "1em";
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    var idleText = "Starts at up to " + maxA + " A · " + (aToW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
+    var idleText = "Starts at up to " + maxA + " A · " + (orderW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
     status.textContent = active ? "Changes apply when you release the slider." : idleText;
     box.appendChild(status);
 
@@ -3777,7 +3783,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          power_w: pause ? 0 : aToW(a),
+          power_w: pause ? 0 : orderW(a),
           hold_s: 0,
           phase_mode: phases === 1 ? "1p" : "3p",
         }),
