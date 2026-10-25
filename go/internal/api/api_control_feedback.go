@@ -40,6 +40,7 @@ type ControlFeedback struct {
 	VerificationLost bool     `json:"-"`
 	Escalated        bool     `json:"-"` // not following long enough to be an alarm
 	Response         string   `json:"-"`
+	LimitedBy        string   `json:"-"`
 	SiteBeforeW      *float64 `json:"-"`
 	SiteAfterW       *float64 `json:"-"`
 	SiteBeforeAtMs   int64    `json:"-"`
@@ -72,6 +73,7 @@ type feedbackReading struct {
 	DeviceLimitA    *float64 `json:"device_limit_a"`
 	DeviceLimitAgeS *float64 `json:"device_limit_age_s"`
 	Reason          string   `json:"reason_no_current_label"`
+	LimitedBy       string   `json:"current_limited_by"`
 	Connected       *bool    `json:"connected"`
 	Online          *bool    `json:"is_online"`
 }
@@ -147,7 +149,7 @@ func (s *Server) controlFeedback(now time.Time) []ControlFeedback {
 			f := ControlFeedback{Driver: rd.Driver, Kind: kind.String(), Mode: mode, State: "waiting", Reason: "no_command", Severity: "info", Response: "unconfirmed"}
 			var d feedbackReading
 			_ = json.Unmarshal(rd.Data, &d)
-			f.ReadbackW, f.OfferedA, f.DeviceReason = d.SetpointW, d.MaxA, d.Reason
+			f.ReadbackW, f.OfferedA, f.DeviceReason, f.LimitedBy = d.SetpointW, d.MaxA, d.Reason, d.LimitedBy
 			if d.DeviceLimitAgeS != nil && *d.DeviceLimitAgeS >= 0 && *d.DeviceLimitAgeS <= 120 {
 				f.DeviceLimitA = d.DeviceLimitA
 			}
@@ -357,7 +359,7 @@ func setControlStatus(f *ControlFeedback) {
 		"vehicle_complete", "vehicle_limit_completion", "vehicle_not_requesting":
 		status = "following"
 	case "battery_full", "battery_nearly_full", "battery_nearly_empty", "core_limit",
-		"fuse_limit", "fuse_cooldown", "charger_limit", "one_phase":
+		"fuse_limit", "fuse_cooldown", "charger_limit", "load_balancer_limit", "one_phase":
 		status = "limited"
 	case "import_limit":
 		status = "limited"
@@ -450,10 +452,13 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		return
 	}
 	// A positive clamp explains the lower offer, not prolonged zero delivery.
-	// Keep known safety pauses and unconfirmed/stale commands authoritative.
+	// An explicit load-balancer reason can explain zero delivery. Keep known
+	// safety pauses and unconfirmed/stale commands authoritative.
 	evMismatchObserved := !cmd.PowerMismatchSince.IsZero() && cmd.LastObservation.Sub(cmd.PowerMismatchSince) >= evMismatchWait
 	noPowerObserved := evMismatchObserved || !cmd.NoPowerSince.IsZero() && cmd.NoPowerAt.Sub(cmd.NoPowerSince) >= evMismatchWait
+
 	if f.Kind == "ev" && commanded && cmd.Result == "accepted" &&
+		f.LimitedBy != "load_balancer" &&
 		coreReason != "site_meter_stale" && coreReason != "site_phase_currents_stale" && coreReason != "fuse_cooldown" &&
 		f.SentW != nil && *f.SentW > 100 && f.ActualW != nil && math.Abs(*f.ActualW) < 100 &&
 		f.OfferedA != nil && *f.OfferedA > 0 && noPowerObserved {
@@ -531,6 +536,12 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	if mismatchSettled && gap > telemetry.ControlToleranceW(*f.SentW) {
 		if reason := batteryChargeLevelLimit(f); reason != "" {
 			set("limited", reason, "info")
+			return
+		}
+		// The charger names its load balancer only while it holds the car
+		// back. More power than asked still warns.
+		if f.Kind == "ev" && f.LimitedBy == "load_balancer" && *f.SentW > 100 && *f.ActualW > -100 && *f.ActualW < *f.SentW {
+			set("limited", "load_balancer_limit", "info")
 			return
 		}
 		reason := "power_above_target"

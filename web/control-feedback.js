@@ -66,7 +66,9 @@ const REASON_TITLES = {
   core_limit: 'Limited by FTW', fuse_limit: 'Limited by the main fuse', fuse_cooldown: 'Waiting after a site power limit',
   import_limit: 'Limited by the hourly import limit',
   charger_limit: 'Limited by FTW’s charger setting', device_limit: 'Charger limit', offered_current_lower: 'Charger offers less current',
+  load_balancer_limit: 'Limited by the charger’s load balancer',
   one_phase: 'Charging on one phase',
+
   device_fault: 'Device fault', telemetry_stale: 'No fresh readings', readings_lost: 'Lost control',
   command_failed: 'Commands failing', command_unconfirmed: 'Command not confirmed', default_failed: 'Cannot hand back control',
   response_unknown: 'No power reading', observe_only: 'Monitoring only', disabled: 'Disabled', device_control: 'Own control',
@@ -100,7 +102,11 @@ function sentence(row) {
     case 'charger_limit': return 'The charger limit in FTW’s settings caps the rate.';
     case 'device_limit': return `The charger’s own limit is ${amps(row.device_limit_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
     case 'offered_current_lower': return `The charger offers ${amps(row.offered_a)}, below the ${amps(row.requested_a)} FTW asked for.`;
+    case 'load_balancer_limit': return num(actual) && actual >= 100
+      ? `Asked for ${target(row)}, delivering ${controlPower(actual)}. The charger’s load balancer is limiting the car.`
+      : `Asked for ${target(row)}, but the charger’s load balancer gives the car no current.`;
     case 'one_phase': return `The car charges on ${row.charging_phase || 'one phase'} only${num(row.charging_phase_max_w) ? `, at most ${controlPower(row.charging_phase_max_w)}` : ''}. FTW plans with what it takes.`;
+
     case 'power_below_target': case 'power_above_target': return `Asked for ${target(row)}, delivering ${controlPower(actual)}.`;
     case 'power_wrong_direction': return `Asked for ${target(row)}, but it is ${doing(row, actual)} ${controlPower(actual)}.`;
     case 'no_power_response': return `Asked for ${target(row)}, but it delivers no power.`;
@@ -137,6 +143,7 @@ function nextStep(row) {
     case 'site_meter_stale': case 'site_phase_currents_stale': return 'Check the grid meter’s connection.';
     case 'device_limit': return 'Raise the limit in the charger’s app if you want faster charging.';
     case 'offered_current_lower': return 'Check the charger’s load balancing and limits.';
+    case 'load_balancer_limit': return 'The load balancer raises the current again when the house uses less. If this happens often, check that FTW’s main fuse setting matches the load balancer’s.';
     case 'observe_only': return 'Turn on control in the device settings if you want FTW to steer it.';
     default: return '';
   }
