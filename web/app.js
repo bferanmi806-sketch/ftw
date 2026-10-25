@@ -3556,7 +3556,7 @@
   }
 
   // buildManualChargeSection renders the Tesla-style manual override: an
-  // amp slider (range = the charger's min/max charge current) plus Start /
+  // amp slider (range = the charger's minimum up to evChargeNowTopW) plus Start /
   // Stop. Start pins a persistent manual hold at the slider's amps,
   // which overrides surplus_only and the plan (the fuse clamp still
   // applies); Stop clears the hold and drops back to whatever mode the
@@ -3568,6 +3568,20 @@
       lp.manual && (lp.manual.requested_w === 0 || lp.manual.state === "paused" || lp.manual.state === "pausing")));
   }
 
+  // evChargeNowTopW is the most a hold can order. Core treats the hold as a
+  // ceiling and floors it to the step table within max_charge_w, so a
+  // one-phase charger rated 7,360 W with a table that stops at 3,680 W
+  // charges at 16 A, not 32.
+  function evChargeNowTopW(lp) {
+    var maxW = (lp && lp.max_charge_w) || 0;
+    var steps = lp && Array.isArray(lp.allowed_steps_w) ? lp.allowed_steps_w : [];
+    var topW = 0;
+    steps.forEach(function (w) {
+      if (w > topW && (maxW <= 0 || w <= maxW)) topW = w;
+    });
+    return topW || maxW;
+  }
+
   function buildManualChargeSection(lp) {
     var phases = (lp && lp.phases) || 3;
     var voltage = (lp && lp.voltage_v) || 230;
@@ -3576,8 +3590,14 @@
     function aToW(a) { return Math.round(a * perA); }
 
     var minA = Math.max(1, Math.round(wToA((lp && lp.min_charge_w) || 0)) || 6);
-    var maxA = Math.round(wToA((lp && lp.max_charge_w) || 0)) || 16;
+    var topW = evChargeNowTopW(lp);
+    var maxA = Math.round(wToA(topW)) || 16;
     if (maxA <= minA) { maxA = minA + 1; }
+    // orderW is the hold a slider position sends. The top sends the top step
+    // itself: a step off whole amps rounds down, and Core floors the rounded
+    // watts to the step below (10,400 W at 3 × 230 V reads 15 A, and
+    // 15 A = 10,350 W orders 9,700 W).
+    function orderW(a) { return a >= maxA && topW > 0 ? topW : aToW(a); }
 
     var active = !!(lp && lp.manual_active);
     var curA = active ? Math.round(wToA((lp && lp.manual_charge_w) || 0)) : maxA;
@@ -3631,7 +3651,7 @@
     readout.style.color = "var(--fg)";
     function renderReadout() {
       var a = parseInt(slider.value, 10) || minA;
-      readout.textContent = a + " A · " + (aToW(a) / 1000).toFixed(1) + " kW";
+      readout.textContent = a + " A · " + (orderW(a) / 1000).toFixed(1) + " kW";
     }
     renderReadout();
     var currentEditingUntil = 0;
@@ -3651,7 +3671,7 @@
     status.style.minHeight = "1em";
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    var idleText = "Starts at up to " + maxA + " A · " + (aToW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
+    var idleText = "Starts at up to " + maxA + " A · " + (orderW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
     status.textContent = active ? "Changes apply when you release the slider." : idleText;
     box.appendChild(status);
 
@@ -3763,7 +3783,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          power_w: pause ? 0 : aToW(a),
+          power_w: pause ? 0 : orderW(a),
           hold_s: 0,
           phase_mode: phases === 1 ? "1p" : "3p",
         }),

@@ -1570,7 +1570,7 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 		// After the surplus clamp, a wake-kick still offers the minimum
 		// step. A 0 A wallbox cannot finish the session the wake started.
 		if c.wakeKickActive(lpCfg.ID, now) {
-			minKick := smallestNonZero(c.pickSurplusSteps(now, lpCfg))
+			minKick := surplusMinStepW(lpCfg, c.pickSurplusSteps(now, lpCfg))
 			if minKick > 0 && cmdW < minKick {
 				slog.Info("loadpoint wake-kick", "lp", lpCfg.ID,
 					"prev_cmd_w", cmdW, "kick_w", minKick)
@@ -1973,7 +1973,7 @@ func (c *Controller) computeSurplusCmd(now time.Time, lpCfg Config, wantW float6
 	if steps == nil {
 		steps = c.pickSurplusSteps(now, lpCfg) // A hold ended after chooseTick.
 	}
-	minStep := smallestNonZero(steps)
+	minStep := surplusMinStepW(lpCfg, steps)
 
 	// Compatibility variables for the rest of the function — the
 	// pause/resume hysteresis and wake-kick reuse these names.
@@ -2117,8 +2117,20 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 	if c == nil {
 		return surplus3PhaseSteps(lpCfg)
 	}
+	if len(lpCfg.AllowedStepsW) == 0 {
+		// No step table, no one-phase ladder to fall back to: a one-phase
+		// order would cap the charger under its minimum. The charger holds
+		// three phases, through a pause too, and a one-phase lock from
+		// before the table went is cleared. A pin still wins.
+		c.phaseLockMu.Lock()
+		delete(c.phaseLocked1P, lpCfg.ID)
+		delete(c.phaseLockedAt, lpCfg.ID)
+		c.selectPhaseLocked3P(lpCfg.ID, now)
+		c.phaseLockMu.Unlock()
+		return nil
+	}
 	steps3 := surplus3PhaseSteps(lpCfg)
-	minStep3 := smallestNonZero(steps3)
+	minStep3 := surplusMinStepW(lpCfg, steps3)
 
 	// 3Φ-only charger: an operator who pinned "3p" is telling us the
 	// wallbox can't fall back to single-phase (e.g. CTEK Chargestorm —
@@ -2356,6 +2368,18 @@ func (c *Controller) surplusLockedTo1P(id string) bool {
 	return c.phaseLocked1P[id]
 }
 
+// selectPhaseLocked3P records three phases as the session's phase choice.
+// Caller holds phaseLockMu.
+func (c *Controller) selectPhaseLocked3P(id string, now time.Time) {
+	if c.phaseSelected3P == nil {
+		c.phaseSelected3P = map[string]bool{}
+		c.phaseSelectedAt = map[string]time.Time{}
+	}
+	if !c.phaseSelected3P[id] {
+		c.phaseSelected3P[id], c.phaseSelectedAt[id] = true, now
+	}
+}
+
 // dwellSelectedPhaseMode returns the phase_mode string ("1p"/"3p")
 // implied by the near-term dwell selection for this loadpoint, or the
 // empty string when no dwell decision is on file (first-tick, fresh
@@ -2400,7 +2424,9 @@ func sameLocalDay(a, b time.Time) bool {
 // locked the install to 1Φ, so a 3Φ-only set would just wedge the
 // loadpoint at 0.
 func surplus3PhaseSteps(lpCfg Config) []float64 {
-	if lpCfg.PhaseMode == "1p" {
+	if lpCfg.PhaseMode == "1p" || len(lpCfg.AllowedStepsW) == 0 {
+		// Without a step table the charger takes any power from its
+		// minimum to its maximum, as SnapChargeW reads no steps.
 		return lpCfg.AllowedStepsW
 	}
 	split := lpCfg.PhaseSplitW
@@ -2417,6 +2443,15 @@ func surplus3PhaseSteps(lpCfg Config) []float64 {
 		}
 	}
 	return out
+}
+
+// surplusMinStepW is the least surplus may order: the smallest step, or
+// the charger's minimum when it has no step table.
+func surplusMinStepW(lpCfg Config, steps []float64) float64 {
+	if len(steps) == 0 {
+		return lpCfg.MinChargeW
+	}
+	return smallestNonZero(steps)
 }
 
 func smallestNonZero(steps []float64) float64 {
