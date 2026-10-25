@@ -2,6 +2,7 @@ package mpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -2071,6 +2072,17 @@ func (s *Service) runReplan(request replanRequest) *Plan {
 			}
 
 			plan = candidate
+		} else if overrun := (*importHourOverrun)(nil); errors.As(err, &overrun) && (recoveryRequired && !downsidePrimary || coreDPModelError(p) != nil) {
+			// Core cannot plan this site itself. The worker's plan keeps
+			// every rule but the hours, as before the hours existed; the
+			// live limit still holds each hour.
+			if request.wasCanceledByService() {
+				return s.canceledReplan(request, "primary-fallback")
+			}
+			s.recordPlanningFailure(request, "primary_optimizer", err.Error(), slots, p, optimizerErr)
+			plan = overrun.plan
+			p.ImportHours, p.ImportMeanW = nil, 0
+			warnings = append(warnings, "Core cannot plan this site itself, so the plan may import more in an hour than the limit allows; Core still holds each hour to it: "+err.Error())
 		} else {
 			if request.wasCanceledByService() {
 				return s.canceledReplan(request, "primary-fallback")

@@ -3,6 +3,7 @@ package mpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
@@ -368,13 +369,13 @@ func (*importCapTransport) Close() error { return nil }
 func TestEnergyplanRequestCarriesHourlyImportCaps(t *testing.T) {
 	slots, p := externalTestFixture()
 	transport := &importCapTransport{}
-	external := &ExternalOptimizer{cfg: ExternalOptimizerConfig{Timeout: time.Second}, transport: transport}
+	external := &ExternalOptimizer{cfg: ExternalOptimizerConfig{Timeout: 7 * time.Second}, transport: transport, timeBudget: energyplanTimeBudget}
 	o := &EnergyplanOptimizer{ExternalOptimizer: external}
 	request := func(p Params) string {
 		t.Helper()
 		r := external.buildRequest(slots, p)
 		r.RequestID = "fixed"
-		if err := o.prepareEnergyplanRequest(context.Background(), &r, p); err != nil {
+		if err := o.prepareEnergyplanRequest(context.Background(), &r, slots, p); err != nil {
 			t.Fatal(err)
 		}
 		raw, err := json.Marshal(r)
@@ -386,7 +387,8 @@ func TestEnergyplanRequestCarriesHourlyImportCaps(t *testing.T) {
 	off := p
 	on := p
 	on.ImportMeanW = 3810
-	on.ImportHours = []ImportHour{{StartMs: 0, EndMs: hourMs, ElapsedImportWh: 125}, {StartMs: hourMs, EndMs: 2 * hourMs}}
+	// The third hour lies past the slots: it is not sent.
+	on.ImportHours = []ImportHour{{StartMs: 0, EndMs: hourMs, ElapsedImportWh: 125}, {StartMs: hourMs, EndMs: 2 * hourMs}, {StartMs: 3 * hourMs, EndMs: 4 * hourMs}}
 	for _, caps := range []bool{true, false} {
 		transport.caps = caps
 		if request(on) == request(off) != !caps {
@@ -397,7 +399,95 @@ func TestEnergyplanRequestCarriesHourlyImportCaps(t *testing.T) {
 	if got, want := request(on), `"hourly_import_caps":[{"start_ms":0,"end_ms":3600000,"max_mean_w":3810,"elapsed_import_wh":125},{"start_ms":3600000,"end_ms":7200000,"max_mean_w":3810,"elapsed_import_wh":0}]`; !strings.Contains(got, want) {
 		t.Fatalf("request %s\nwant %s", got, want)
 	}
+	// With the hours the worker gets the fleet budget; without them its own.
+	if got := request(on); !strings.Contains(got, `"time_limit_s":5,`) || !strings.Contains(request(off), `"time_limit_s":0.5,`) {
+		t.Fatalf("time limits: with hours %s; without %s", got, request(off))
+	}
 	if strings.Contains(request(off), "hourly_import_caps") {
 		t.Fatal("the ceiling off sent caps")
+	}
+}
+
+// ceilinglessOptimizer plans as a worker without the hours does: its plan
+// keeps every rule but the hours, and Core's check names the hour.
+type ceilinglessOptimizer struct{}
+
+func (ceilinglessOptimizer) Optimize(ctx context.Context, slots []Slot, p Params) (Plan, error) {
+	free := p
+	free.ImportHours, free.ImportMeanW = nil, 0
+	plan, err := coreReservePlan(ctx, slots, free)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err := ValidatePlan(slots, p, &plan); err != nil {
+		return Plan{}, fmt.Errorf("optimizer plan rejected: %w", err)
+	}
+	return plan, nil
+}
+
+func (ceilinglessOptimizer) Close() error { return nil }
+
+// A worker plan that overruns an hour falls back to Core's own plan. When
+// Core cannot plan the site itself, here a battery below its floor, the
+// worker's plan is published as before the hours, with a warning, rather
+// than no plan at all.
+func TestImportCeilingWorkerPlanOverrunsAnHour(t *testing.T) {
+	for _, soc := range []float64{.5, .05} {
+		t.Run(fmt.Sprintf("battery %.0f %%", soc*100), func(t *testing.T) {
+			svc, start := importCeilingFieldService(t, ceilinglessOptimizer{}, true)
+			svc.Tele.Update("sungrow", telemetry.DerBattery, 0, &soc, nil)
+			if svc.Replan(context.Background()) == nil {
+				t.Fatalf("no plan published: %+v", svc.PlanSnapshot())
+			}
+			snap := svc.PlanSnapshot()
+			got := planImportWh(*snap.Plan, start.UnixMilli(), start.Add(time.Hour).UnixMilli())
+			warned := strings.Contains(strings.Join(snap.Warnings, " "), "Core cannot plan this site itself")
+			if soc == .5 {
+				if !snap.Plan.Solver.Fallback || got > 4155 || warned {
+					t.Fatalf("solver %+v, 09:00 imports %.0f Wh, warned %v; want Core's plan inside the hour", snap.Plan.Solver, got, warned)
+				}
+				return
+			}
+			if snap.Plan.Solver.Fallback || got <= 4155 || !warned {
+				t.Fatalf("solver %+v, 09:00 imports %.0f Wh, warnings %q; want the worker's plan with a warning", snap.Plan.Solver, got, snap.Warnings)
+			}
+		})
+	}
+}
+
+func TestNativeImportCeilingWhenCoreCannotPlan(t *testing.T) {
+	worker := nativeWorker(t, 1500*time.Millisecond)
+	t.Cleanup(func() { _ = worker.Close() })
+	svc, _ := importCeilingFieldService(t, worker, true)
+	soc := .05
+	svc.Tele.Update("sungrow", telemetry.DerBattery, 0, &soc, nil)
+	if svc.Replan(context.Background()) == nil {
+		t.Fatalf("no plan published: %+v", svc.PlanSnapshot())
+	}
+	if w := strings.Join(svc.PlanSnapshot().Warnings, " "); !strings.Contains(w, "Core cannot plan this site itself") {
+		t.Fatalf("warnings %q", w)
+	}
+}
+
+// A car step that needs the battery to discharge past the house fits the
+// fuse only while it runs. When the hour makes it part-time, the battery
+// would drive export beside the car: the reserve plan takes a smaller step.
+func TestReservePlanUnderAnHourNeverChargesTheCarFromExport(t *testing.T) {
+	first := time.Date(2026, 10, 26, 10, 40, 0, 0, time.UTC)
+	for _, fuse := range []float64{6900, 8280} {
+		slots := make([]Slot, 12)
+		for i := range slots {
+			slots[i] = Slot{StartMs: first.Add(time.Duration(i) * 15 * time.Minute).UnixMilli(), LenMin: 15, LoadW: 500, PriceOre: 100, SpotOre: 50,
+				Limits: PowerLimits{MaxImportW: fuse, MaxExportW: fuse}}
+		}
+		p := Params{Mode: ModeArbitrage, SoCLevels: 21, ActionLevels: 21, CapacityWh: 10000, InitialSoC: .8, SoCMin: .1, SoCMax: .95,
+			MaxChargeW: 5000, MaxDischargeW: 5000, ChargeEfficiency: .95, DischargeEfficiency: .95,
+			Loadpoint: &LoadpointSpec{ID: "car", CapacityWh: 60000, InitialSoC: .3, SoCMax: 1, Levels: 21, PluggedIn: true, MinChargeW: 4140, MaxChargeW: 11040,
+				AllowedStepsW: []float64{0, 4140, 6900, 11040}, ChargeEfficiency: .9, TargetSoC: .5, TargetSlotIdx: 10}}
+		c := ImportCeiling{W: 4500, MeanW: 4155, HourStart: first.Add(-40 * time.Minute), ElapsedWh: 3800}
+		p.ImportHours, p.ImportMeanW = importHours(slots, c), c.MeanW
+		if _, used, err := corePlanWithRecovery(context.Background(), slots, p); err != nil || len(used) != len(slots) {
+			t.Errorf("fuse %.0f W: %d of %d slots, err %v", fuse, len(used), len(slots), err)
+		}
 	}
 }

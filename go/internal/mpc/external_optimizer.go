@@ -50,7 +50,7 @@ type ExternalOptimizer struct {
 	cfg            ExternalOptimizerConfig
 	transport      OptimizerTransport
 	timeBudget     func([]Slot, Params) time.Duration
-	prepareRequest func(context.Context, *externalRequest, Params) error
+	prepareRequest func(context.Context, *externalRequest, []Slot, Params) error
 }
 
 func NewExternalOptimizer(cfg ExternalOptimizerConfig) (*ExternalOptimizer, error) {
@@ -225,7 +225,7 @@ func (o *ExternalOptimizer) Optimize(ctx context.Context, slots []Slot, p Params
 	}
 	request := o.buildRequest(slots, p)
 	if o.prepareRequest != nil {
-		if err := o.prepareRequest(ctx, &request, p); err != nil {
+		if err := o.prepareRequest(ctx, &request, slots, p); err != nil {
 			return Plan{}, fmt.Errorf("prepare optimizer request: %w", err)
 		}
 	}
@@ -676,13 +676,14 @@ func validatePlan(slots []Slot, p Params, plan *Plan, vehicleRules bool) error {
 		}
 		totalCost += wantCost
 	}
-	if err := validateImportHours(slots, p, plan.Actions); err != nil {
-		return err
-	}
 	// Derive the departure deficit from replay, not from a worker claim.
 	plan.LoadpointShortfallWh = deadlineShortfall
 	if math.Abs(plan.TotalCostOre-totalCost) > 0.1 {
 		return fmt.Errorf("total cost %.4f, want %.4f", plan.TotalCostOre, totalCost)
+	}
+	// Last, so an overrun hour is the only rule the plan breaks.
+	if err := validateImportHours(slots, p, plan.Actions); err != nil {
+		return &importHourOverrun{plan: *plan, err: err}
 	}
 	return nil
 }

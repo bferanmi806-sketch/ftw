@@ -111,8 +111,10 @@ func coreReservePlan(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 					}
 				}
 				avg := min(want, evAverageRoomW(capW, house+b, step))
-				if avg <= 1e-6 && !math.IsInf(capW, 1) {
-					continue // The hour leaves this step no room.
+				if !math.IsInf(capW, 1) && (avg <= 1e-6 || b < -solverZeroPowerToleranceW && house+b+avg < -50) {
+					// The hour leaves this step no room, or only part of the
+					// slot while the battery the step needs drives export.
+					continue
 				}
 				peak, battery, average = step, b, avg
 				break

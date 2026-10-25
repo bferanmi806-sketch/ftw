@@ -59,6 +59,15 @@ func importLeftWh(h ImportHour, meanW float64) float64 {
 	return meanW*float64(h.EndMs-h.StartMs)/float64(hourMs) - h.ElapsedImportWh
 }
 
+// importHourPlannedH is how much of h the slots plan.
+func importHourPlannedH(slots []Slot, h ImportHour) float64 {
+	var spanH float64
+	for _, s := range slots {
+		spanH += importHourOverlapH(s, h)
+	}
+	return spanH
+}
+
 func importHourOverlapH(s Slot, h ImportHour) float64 {
 	end, ok := slotEndMs(s)
 	if !ok {
@@ -113,6 +122,16 @@ func evAverageRoomW(capW, baseW, peakW float64) float64 {
 	}
 	return max(0, min(peakW, (capW-off)*peakW/(on-off)))
 }
+
+// importHourOverrun is a plan that keeps every rule but a clock hour's
+// import. Core plans the site itself instead; when it cannot, it publishes
+// this plan, and the live limit still holds each hour.
+type importHourOverrun struct {
+	plan Plan
+	err  error
+}
+
+func (e *importHourOverrun) Error() string { return e.err.Error() }
 
 // validateImportHours checks the plan's import in each clock hour against
 // what the hour has left. The house's own import never fails it: Core cannot

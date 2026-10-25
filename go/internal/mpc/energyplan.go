@@ -38,6 +38,12 @@ const (
 )
 
 func energyplanTimeBudget(slots []Slot, p Params) time.Duration {
+	return energyplanBudget(slots, p, false)
+}
+
+// energyplanBudget is the solve budget; hours says the request carries
+// hourly import caps.
+func energyplanBudget(slots []Slot, p Params, hours bool) time.Duration {
 	batteries := len(p.Storages)
 	if batteries == 0 && p.CapacityWh > 0 {
 		batteries = 1
@@ -52,7 +58,7 @@ func energyplanTimeBudget(slots []Slot, p Params) time.Duration {
 	// 1 battery + 1 EV is 5 "assets". A 193-slot villa with demand charges
 	// routes to fleet MILP; 193*6 would leave it on the 500 ms budget. The
 	// hourly import caps route there too.
-	if len(slots)*assets >= 193*5 || p.PVCurtailment.MinW > 0 || len(p.DemandCharges) > 0 || len(p.ImportHours) > 0 {
+	if len(slots)*assets >= 193*5 || p.PVCurtailment.MinW > 0 || len(p.DemandCharges) > 0 || hours {
 		budget = energyplanFleetBudget
 	}
 	remaining := remainingFirstSlot(slots)

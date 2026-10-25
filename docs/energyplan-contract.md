@@ -100,14 +100,17 @@ in W, and the import in Wh the hour has already used before the plan starts
 (0 for later hours). Core sends one entry per clock hour that overlaps the
 plan, from the first slot's execution start to the horizon end; a
 daylight-saving day has 23 or 25. The hour in progress may start before the
-first slot and the last may end after the horizon. Entries must not overlap,
-last 1 minute to 25 hours, and number at most 512. Import is `max(0, grid)`
-per pulse state: a duty slot imports `duty * max(0, grid on)` plus
-`(1 - duty) * max(0, grid off)`, at the cut points between the cars' duties.
-In every scenario, the plan's import inside an hour from execution start must
-not exceed `max_mean_w * hours - elapsed_import_wh`, or what the house alone
-imports there, `max(0, load_w + pv_w)` per slot with the battery idle and
-every car off, if that is more. The cap wins over EV goals, whose miss shows
+first slot and the last may end after the horizon; an entry outside the plan
+is ignored. Entries must not overlap, last 1 minute to 25 hours, and number
+at most 512. Import is `max(0, grid)` per pulse state: a duty slot imports
+`duty * max(0, grid on)` plus `(1 - duty) * max(0, grid off)`, at the cut
+points between the cars' duties. In every scenario, the plan's import inside
+an hour from execution start must not exceed
+`max_mean_w * hours - elapsed_import_wh`, or what the house alone imports
+there, `max(0, load_w + pv_w)` per slot with the battery idle and every car
+off, if that is more. The worker counts more in one case: while a car pulses
+into solar surplus and the battery charges, it counts the car's on-step
+import plus the whole charge. The cap wins over EV goals, whose miss shows
 in `flex_shortfall_wh`. The plan reports each hour in
 `plan.hourly_import_caps` as `{start_ms, end_ms, import_wh, max_wh}` on the
 published forecast, `import_wh` including the elapsed part.
