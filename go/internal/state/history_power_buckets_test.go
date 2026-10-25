@@ -2,6 +2,8 @@ package state
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -53,4 +55,42 @@ func TestLoadPowerBucketsLaysFixedBuckets(t *testing.T) {
 	if _, err := s.LoadPowerBuckets(context.Background(), base, base, step); err == nil {
 		t.Fatal("an empty range must be refused")
 	}
+}
+
+// One stale reading keeps its five minutes, and keeps them the same after
+// the day-old ticks roll up into minutes that carry its flag.
+func TestPowerBucketSurvivesTheMinuteRollup(t *testing.T) {
+	s := freshStore(t)
+	if err := s.EnableHistoryAggregation(); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(24 * time.Hour)
+	ms := base.UnixMilli()
+	const step = int64(300_000)
+	for i := int64(0); i < 150; i++ {
+		// As Core writes them: Load comes from the source accounting, so
+		// every tick is a partial row, and the roll-up merges the stale
+		// reading's flag into its whole minute.
+		p := HistoryPoint{TsMs: ms + i*2_000, PVW: -300, GridW: 100, Missing: MissingLoad}
+		if i == 40 {
+			p.PVW = 0
+			p.Missing |= MissingPV
+		}
+		dashboardTick(t, s, fmt.Sprint(i), &p)
+	}
+	check := func(when string) {
+		t.Helper()
+		got, err := s.LoadPowerBuckets(context.Background(), ms, ms+step, step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Missing&MissingPV != 0 || math.Abs(got[0].PVW+300) > 1e-6 {
+			t.Fatalf("%s: %+v, want -300 W measured", when, got)
+		}
+	}
+	check("ten-second rows")
+	if err := s.maintainDashboard(context.Background(), base.Add(48*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	check("minute rows")
 }

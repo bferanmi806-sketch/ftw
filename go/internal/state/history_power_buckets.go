@@ -11,9 +11,9 @@ import (
 
 // PowerBucket is the measured mean power over one fixed bucket, site-signed,
 // from the same stored rows /api/history draws. Each flow's mean is over the
-// rows that measured it. Missing marks a flow left unmeasured for more than
-// maxSourceDayUnknownShare of the bucket's rows, or for all of them: its mean
-// is not a value then, as a source-era day's total is not.
+// rows that measured it. Missing marks a flow left unmeasured in more than
+// maxPowerBucketUnknownShare of the bucket's rows, or in all of them: its
+// mean is not a value then.
 type PowerBucket struct {
 	StartMS int64
 	GridW   float64
@@ -68,7 +68,7 @@ func (s *Store) LoadPowerBuckets(ctx context.Context, fromMs, toMs, bucketMs int
 		}
 		b.StartMS = fromMs + index*bucketMs
 		take := func(mean sql.NullFloat64, off int64, bit HistoryMissing) float64 {
-			if !mean.Valid || off*100 > total*maxSourceDayUnknownShare {
+			if !mean.Valid || off*100 > total*maxPowerBucketUnknownShare {
 				b.Missing |= bit
 				return 0
 			}
@@ -81,6 +81,13 @@ func (s *Store) LoadPowerBuckets(ctx context.Context, fromMs, toMs, bucketMs int
 	}
 	return out, rows.Err()
 }
+
+// maxPowerBucketUnknownShare is the share of a bucket's rows, by weight, a
+// flow may miss and still have a mean. Rows roll up after a day into minutes
+// that carry any tick's flag, so one stale reading in five minutes grows
+// from 3 % of the rows to 20 %. A majority rule keeps a closed bucket the
+// same before and after; a tenth would turn it into a hole a day later.
+const maxPowerBucketUnknownShare = 50 // percent
 
 // halfOpenHistoryRange turns historyTierUnion's closed ranges into [from, to),
 // so a row on a bucket boundary belongs to one bucket only.
