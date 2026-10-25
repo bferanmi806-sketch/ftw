@@ -9,7 +9,8 @@ car on them. FTW talks to it over Modbus and OCPP as on a real site. Each
 scenario starts a fresh house and a fresh `state.db`, drives the house and
 FTW, and judges the run against fixed criteria from what flowed through the
 fuse (the house's record) and what FTW said (its API, once a second). FTW
-runs `planner_self` with the Core planner and SE3 prices.
+runs `planner_self` with SE3 prices and the Core planner, or Energyplan
+with `FTW_SITE_ENGINE=energyplan`, the engine a beta box runs.
 
 The house lives in device-simulator; this directory keeps only what is
 FTW's: the scenarios, FTW's configuration, the criteria and the pinned
@@ -32,6 +33,7 @@ make siterig-judge DIR=/tmp/ftw-site-123  # judge a recorded run again
 | `FTW_SITE_PORT_BASE` | first port on 127.0.0.1 (default 18700): the house on base+0..59, FTW on base+90 and +91 |
 | `FTW_SITE_SHARD` | `k/n`: shard k of n, for several machines |
 | `FTW_SITE_OUT` | run directories, `summary.md` and `summary.json` (default: a new temporary directory) |
+| `FTW_SITE_ENGINE` | the planner: `core` (default) or `energyplan`, the worker in `optimizer/native/bundle` |
 | `FTW_SITE_DEVSIM_SRC` | a device-simulator checkout at the pinned commit; without it the test clones the pin into the user cache |
 | `FTW_SITE_FTW_BIN`, `FTW_SITE_DEVSIM_BIN` | prebuilt binaries |
 | `FTW_SITE_CATALOG` | the fault catalog, for `TestCatalogCoverage` |
@@ -98,3 +100,5 @@ tick as 2 s more.
 | `s15bat-16` One-phase charger, battery rising | 16 A, 3 A per phase, the s15 charger, battery at 50 % following its EMS 8 s late; PV 2.1 kW rising every 30 s (+2.5 kW, then 1.5 kW) so Core charges the battery in steps; Charge now 6 s after the second step, while the raise is on its way | the battery order rose over 1 150 W in the 20 s before (setup check); car charging within 10 s; fuse holds; over the limit at most 3 s | |
 | `s15p-25` One-phase charger, planned | as s15, a plan for 600 Wh by the first quarter hour 15 min out | fuse holds; 90 % of the plan by the ready time; never called not following | |
 | `s14-25` One-phase car | an 11 kW charger with a one-phase car, a plan it cannot meet, 20 min | 3.4–3.8 kW over the last 10 min; never called not following | |
+| `s16-25` Import ceiling | 25 A, house 1.3 kW, battery idle at its floor, `peak_import_ceiling_w` 4 500, Charge now 16 A: house and the car's 4 140 W minimum are above the ceiling. Starts in an hour's first minutes or waits for :56, then runs one whole clock hour and 3 min | the car starts on the hour's room before :45; every clock hour's recorded import averages at most the ceiling + 1 %; the next hour stops the car within 60 s; while held it says `import_limit` 90 % of the time and never `fuse_limit`; fuse holds | |
+| `s17-25` Two equal batteries | 25 A, house 3 kW, no PV, two hybrids with 10 kWh at 74 % and 60 %, Energyplan whatever `FTW_SITE_ENGINE` says (Core DP plans one battery), a 6 h horizon (over 48 h the plan keeps the batteries for tomorrow's dearer hours). Waits up to an hour for a quarter the plan discharges, then 15 min | Energyplan's plan moves the batteries in half the polls (setup; tolerated, the day's prices decide); while the fleet moves 500 W or more, each battery takes at least a quarter of it 90 % of the time; while the plan moves them, the charge gap shrinks by over 0.2 points; fuse holds | |
