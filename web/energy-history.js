@@ -184,17 +184,21 @@
       });
     });
     upWh = Math.max(1000, upWh);
-    var whToPx = plotH / (upWh + downWh);
-    var zeroY = pad.top + upWh * whToPx;
+    // One step for both sides, a quarter of the taller one, and whole steps
+    // each way, so the highest bar and the lowest export bar both reach a
+    // gridline with a label.
+    var stepWh = Math.max(upWh, downWh) / 4;
+    var upSteps = Math.ceil(upWh / stepWh - 1e-9);
+    var downSteps = Math.ceil(downWh / stepWh - 1e-9);
+    var whToPx = plotH / ((upSteps + downSteps) * stepWh);
+    var zeroY = pad.top + upSteps * stepWh * whToPx;
     var textColor = C.dim;
     var borderColor = C.line;
     ctx.font = '11px system-ui, sans-serif';
     ctx.fillStyle = textColor;
     ctx.strokeStyle = borderColor;
     ctx.lineWidth = 1;
-    // Four steps above zero, and the same steps below while export reaches.
-    var stepWh = upWh / 4;
-    for (var tick = 4; tick >= -4 && -tick * stepWh <= downWh + 1; tick -= 1) {
+    for (var tick = upSteps; tick >= -downSteps; tick -= 1) {
       var y = zeroY - tick * stepWh * whToPx;
       ctx.beginPath();
       ctx.moveTo(pad.left, y);
@@ -202,6 +206,14 @@
       ctx.stroke();
       ctx.textAlign = 'right';
       ctx.fillText((Math.abs(tick) * stepWh / 1000).toFixed(0) + ' kWh', pad.left - 7, y + 4);
+    }
+    // The labels below zero carry no sign; this word says what they count.
+    if (downSteps > 0) {
+      ctx.fillStyle = C.dim;
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('sold', pad.left + 3, zeroY + 11);
+      ctx.font = '11px system-ui, sans-serif';
     }
 
     var groupW = plotW / days.length;

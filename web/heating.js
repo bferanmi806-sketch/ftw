@@ -226,7 +226,8 @@
   var TCHART = [
     { key: 'outdoor', label: 'Outdoor (BT1)', color: 'var(--fg-muted)', dash: 'dashed' },
     { key: 'supply',  label: 'Supply (BT2)',  color: 'var(--fg)', dash: 'solid' },
-    { key: 'ret',     label: 'Return (BT3)',  color: 'var(--fg-dim)', dash: 'solid' },
+    // Supply and return run close together, so return also takes a dash.
+    { key: 'ret',     label: 'Return (BT3)',  color: 'var(--fg-dim)', dash: 'dashed' },
     { key: 'extract', label: 'Extract air (BT20)', color: 'var(--fg-muted)', dash: 'dotted' },
   ];
   // SVG dash patterns for the legend's border styles.

@@ -54,7 +54,7 @@ import {
 
   // A price is a level of ink, the dearer the stronger, as Theme.price on
   // the phone. The grid tariff and VAT are fixed parts, fainter still.
-  const PRICE_INK = { cheap: 0.32, flat: 0.5, dear: 0.8, tariff: 0.25, vat: 0.12 };
+  const PRICE_INK = { cheap: 0.32, flat: 0.5, dear: 0.8, tariff: 0.35, vat: 0.2 };
   const inkSwatch = (role, alpha) =>
     `color-mix(in srgb, var(${role}) ${Math.round(alpha * 100)}%, transparent)`;
   // A plan's marks take their hue at this strength, weaker than the full
@@ -361,7 +361,7 @@ import {
       alert = document.createElement('div');
       alert.id = 'plan-optimizer-fallback';
       alert.setAttribute('role', 'alert');
-      alert.style.cssText = 'margin:8px 0;padding:9px 11px;border:1px solid color-mix(in srgb, var(--alarm) 45%, transparent);border-radius:6px;background:color-mix(in srgb, var(--alarm) 12%, transparent);font-size:12px;line-height:1.45;overflow-wrap:anywhere';
+      alert.style.cssText = 'margin:8px 0;padding:9px 11px;border:1px solid color-mix(in srgb, var(--fg) 30%, transparent);border-radius:6px;background:color-mix(in srgb, var(--fg) 6%, transparent);font-size:12px;line-height:1.45;overflow-wrap:anywhere';
       const help = section.querySelector('.plan-help');
       section.insertBefore(alert, help || section.firstChild);
     }

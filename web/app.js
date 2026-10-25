@@ -1114,7 +1114,8 @@
       function toKwh(arr) { return arr.map(function(x){ return x == null ? null : x / 1000; }); }
       series = [
         { data: toKwh(chartHistory.e_import),     color: C.grid,   width: 2, dash: [], name: "Import",     fill: true },
-        { data: toKwh(chartHistory.e_export),     color: C.grid,   width: 2, dash: [], name: "Export",     fill: true },
+        // One pink both ways: export is told apart by its dash, not a hue.
+        { data: toKwh(chartHistory.e_export),     color: C.grid,   width: 2, dash: [6, 4], name: "Export", fill: false },
         { data: toKwh(chartHistory.e_pv),         color: C.solar,  width: 2, dash: [], name: "PV",         fill: true },
         { data: toKwh(chartHistory.e_charged),    color: C.stores, width: 2, dash: [], name: "Charged",    fill: false },
         { data: toKwh(chartHistory.e_discharged), color: C.gives,  width: 2, dash: [], name: "Discharged", fill: false },
@@ -1561,7 +1562,7 @@
     // Tooltip box — labels match current view
     var labels = chartView === "energy" ? [
       { name: "Import",     data: chartHistory.e_import,     color: C.grid },
-      { name: "Export",     data: chartHistory.e_export,     color: C.grid },
+      { name: "Export",     data: chartHistory.e_export,     color: C.grid, dash: true },
       { name: "PV",         data: chartHistory.e_pv,         color: C.solar },
       { name: "Charged",    data: chartHistory.e_charged,    color: C.stores },
       { name: "Discharged", data: chartHistory.e_discharged, color: C.gives },
@@ -1610,8 +1611,20 @@
     labels.forEach(function (lab, idx) {
       if (i >= lab.data.length) return;
       var y = boxY + (idx + 2) * lineHeight - 4;
-      ctx.fillStyle = lab.color;
-      ctx.fillRect(boxX + 6, y - 8, 8, 8);
+      if (lab.dash) {
+        // A dashed series gets a dashed mark, as in the legend.
+        ctx.strokeStyle = lab.color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([3, 2]);
+        ctx.beginPath();
+        ctx.moveTo(boxX + 6, y - 4);
+        ctx.lineTo(boxX + 14, y - 4);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      } else {
+        ctx.fillStyle = lab.color;
+        ctx.fillRect(boxX + 6, y - 8, 8, 8);
+      }
       ctx.fillStyle = lab.dim ? C.muted : C.text;
       ctx.fillText(lab.name, boxX + 18, y);
       ctx.textAlign = "right";
@@ -4886,14 +4899,17 @@
     var legend = document.getElementById("chart-legend");
     if (!legend) return;
     var items = chartView === "energy" ? [
-      ["var(--red-e)", "Import"], ["var(--green-e)", "Export"], ["var(--amber)", "PV"],
+      ["var(--red-e)", "Import"], ["var(--green-e)", "Export", true], ["var(--amber)", "PV"],
       ["var(--cyan)", "Charged"], ["var(--energy-gives)", "Discharged"], ["var(--white-s)", "Load"],
     ] : [
       ["var(--red-e)", "Grid"], ["var(--amber)", "PV"], ["var(--white-s)", "Load"],
       [stepSwatch("--cyan", 1), "Ferroamp"], [stepSwatch("--cyan", 0.72), "Sungrow"],
     ];
     legend.innerHTML = items.map(function(it) {
-      return '<span class="legend-item"><span class="legend-color" style="background:'+it[0]+'"></span> '+it[1]+'</span>';
+      var swatch = it[2]
+        ? '<span class="legend-color legend-dash" style="border-color:'+it[0]+'"></span>'
+        : '<span class="legend-color" style="background:'+it[0]+'"></span>';
+      return '<span class="legend-item">'+swatch+' '+it[1]+'</span>';
     }).join('');
   }
 
@@ -5134,7 +5150,9 @@
   // compact stacked canvas of (battery action bars, SoC line) over
   // the last 24 h. Mirrors the Plan card's lower charts so the two
   // cards have matching visual weight. Read-only — no interaction.
+  var lastLiveHistoryItems = null;
   function renderLiveHistory(items) {
+    lastLiveHistoryItems = items;
     var canvas = document.getElementById("live-history-chart");
     if (!canvas || !items || !items.length) return;
     // Normalise the /api/history payload: `ts` for the timestamp and
@@ -5310,8 +5328,10 @@
     // shared; renderLiveHistory still re-measures the canvas each call.
     fetchLiveHistory();
   });
-  // The 24h chart draws in theme roles, so it redraws when the theme flips.
-  // The live chart redraws every frame and needs no listener.
-  window.addEventListener("ftw-theme-change", function () { fetchLiveHistory(); });
+  // The 24h chart draws in theme roles, so it redraws from what it last
+  // showed when the theme flips. The live chart redraws every frame.
+  window.addEventListener("ftw-theme-change", function () {
+    if (lastLiveHistoryItems) renderLiveHistory(lastLiveHistoryItems);
+  });
   requestAnimationFrame(animationFrame);
 })();
