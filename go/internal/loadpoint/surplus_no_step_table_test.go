@@ -1,6 +1,7 @@
 package loadpoint
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -20,5 +21,39 @@ func TestSurplusWithoutAStepTableOrdersTheSurplus(t *testing.T) {
 		if got := c.computeSurplusCmd(now, cfg, cfg.MaxChargeW, nil); got != tc.want {
 			t.Errorf("%.0f W of surplus: order %.0f W, want %.0f W", tc.surplusW, got, tc.want)
 		}
+	}
+}
+
+// With phase_mode unset or auto and no step table, as on the home box,
+// surplus has no one-phase ladder to lock to. A day forecast under the
+// three-phase minimum must not lock the charger to one phase, where an
+// order is capped at 3,680 W, under its 4,140 W minimum.
+func TestSurplusWithoutAStepTableNeverLocksToOnePhase(t *testing.T) {
+	for _, mode := range []string{"", "auto"} {
+		t.Run("phase_mode "+mode, func(t *testing.T) {
+			now := time.Date(2026, 10, 21, 12, 0, 0, 0, time.Local)
+			cfg := Config{ID: "garage", DriverName: "evse", MinChargeW: 4140, MaxChargeW: 11000, PhaseMode: mode, SurplusOnly: true}
+			samples := map[string]EVSample{cfg.DriverName: {Connected: true, RequestActive: true}}
+			sender := &fakeSender{}
+			c := newTestController(t, []Config{cfg}, nil, samples, sender)
+			c.SetSiteFuse(SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
+			c.SetSiteSurplusForEV(func() (float64, bool) { return 9310, true })
+			c.SetNearTermPeakSurplusW(func(time.Duration) (float64, bool) { return 0, true })
+			c.SetPeakRemainingSurplusW(func() (float64, bool) { return 0, true })
+			for tick := 0; tick < 10; tick++ {
+				c.Tick(context.Background(), now)
+				cmd, _ := lastSetCurrent(sender.calls)
+				samples[cfg.DriverName] = EVSample{Connected: true, RequestActive: true, PowerW: cmd.power}
+				now = now.Add(5 * time.Second)
+			}
+			for _, cmd := range sender.calls {
+				if cmd.action == "ev_set_current" && (cmd.phaseMode == "1p" || cmd.power > 0 && cmd.power < cfg.MinChargeW) {
+					t.Fatalf("offer %+v: want no one-phase order and none under 4140 W", cmd)
+				}
+			}
+			if last, _ := lastSetCurrent(sender.calls); last.power < 9000 {
+				t.Fatalf("last offer %.0f W of 9310 W surplus", last.power)
+			}
+		})
 	}
 }

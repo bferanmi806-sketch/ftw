@@ -2051,6 +2051,11 @@ func (c *Controller) pickSurplusSteps(now time.Time, lpCfg Config) []float64 {
 		return surplus3PhaseSteps(lpCfg)
 	}
 	steps3 := surplus3PhaseSteps(lpCfg)
+	if len(lpCfg.AllowedStepsW) == 0 {
+		// No step table, no one-phase ladder to fall back to: a one-phase
+		// order would cap the charger under its minimum.
+		return nil
+	}
 	minStep3 := surplusMinStepW(lpCfg, steps3)
 
 	// 3Φ-only charger: an operator who pinned "3p" is telling us the

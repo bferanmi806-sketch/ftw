@@ -81,7 +81,7 @@ tick as 2 s more.
 | `s2-16` Charge now during export | 16 A, 1 A house, 7 kW PV, full battery: 9.1 A export per phase | car starts within 60 s (**known**: export counted as import); fuse holds | |
 | `s3-16`, `s3-25` Load step | car and a 3 kW battery hold charging, then 13 A (16 A) or 21 A (25 A) per phase for 180 s | fuse holds; over the limit at most 7 s after the step | yes |
 | `s4-25`, `s4b-25` Saved unlock | `surplus_unlock_bat_soc` 0.9 saved, not armed; Charge now 3p, and bare (s4b) | no stops; no offer drops to 0 W; full power over the last minute | |
-| `s5-25`, `s5s-25` Surplus only | 25 A, 9.3 kW surplus, `auto`; s5 without steps, s5s with Easee's | no offer above 16 A; fuse holds; only 6–16 A; ≥ 4 140 W 90 % of the time (**known** in both) | |
+| `s5-25`, `s5s-25` Surplus only | 25 A, 9.3 kW surplus, `auto`; s5 without steps, s5s with Easee's | no offer above 16 A; fuse holds; only 6–16 A; ≥ 4 140 W 90 % of the time (**known** in s5s) | |
 | `s5t-25` Surplus with a goal | as s5s with a goal, 3.8 kW of export, a charger that switches phases | no offer above 16 A; fuse holds; ≥ 6 A on one phase 90 % of the time | |
 | `s6-25` Inverter offline | 1.5 kW PV, the inverter silent for 300 s | Home use shown and marked estimated throughout; measured before and after; never estimated while every driver reads | |
 | `s7-25` Restart | Charge now, 15 min, Core down 20 s, 420 s after | the day's Home use is kept; Home use back within 30 s; Charge now never below 4 140 W; full power within 420 s | |
