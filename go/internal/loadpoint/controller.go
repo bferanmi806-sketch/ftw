@@ -2301,13 +2301,6 @@ func (c *Controller) surplusLockedTo1P(id string) bool {
 	return c.phaseLocked1P[id]
 }
 
-// dwellSelectedPhaseMode returns the phase_mode string ("1p"/"3p")
-// implied by the near-term dwell selection for this loadpoint, or the
-// empty string when no dwell decision is on file (first-tick, fresh
-// day, no near-term peak source). Used by the dispatch command builder
-// to override the operator's "auto" so the driver doesn't auto-flip
-// phase on a transient cmd_w=0 (pause), which would defeat the
-// 30-min minimum-dwell guarantee.
 // selectPhaseLocked3P records three phases as the session's phase choice.
 // Caller holds phaseLockMu.
 func (c *Controller) selectPhaseLocked3P(id string, now time.Time) {
@@ -2320,6 +2313,13 @@ func (c *Controller) selectPhaseLocked3P(id string, now time.Time) {
 	}
 }
 
+// dwellSelectedPhaseMode returns the phase_mode string ("1p"/"3p")
+// implied by the near-term dwell selection for this loadpoint, or the
+// empty string when no dwell decision is on file (first-tick, fresh
+// day, no near-term peak source). Used by the dispatch command builder
+// to override the operator's "auto" so the driver doesn't auto-flip
+// phase on a transient cmd_w=0 (pause), which would defeat the
+// 30-min minimum-dwell guarantee.
 func (c *Controller) dwellSelectedPhaseMode(id string) string {
 	if c == nil {
 		return ""

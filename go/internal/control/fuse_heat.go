@@ -187,8 +187,8 @@ func SitePhases(store *telemetry.Store, state *State) (loadpoint.SitePhases, boo
 		return loadpoint.SitePhases{}, false
 	}
 	meter := store.Get(state.SiteMeterDriver, telemetry.DerMeter)
-	totalW, _, online := store.OnlineMeterW(state.SiteMeterDriver)
-	if meter == nil || !online {
+	totalW, at, online := store.OnlineMeterW(state.SiteMeterDriver)
+	if meter == nil || !online || !at.Equal(meter.UpdatedAt) { // One reading's phases and total.
 		return loadpoint.SitePhases{}, false
 	}
 	amps, _, valid := phaseCurrentsA(meter, state, totalW)
