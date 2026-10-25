@@ -106,12 +106,15 @@ at most 512. Import is `max(0, grid)` per pulse state: a duty slot imports
 `duty * max(0, grid on)` plus `(1 - duty) * max(0, grid off)`, at the cut
 points between the cars' duties. In every scenario, the plan's import inside
 an hour from execution start must not exceed
-`max_mean_w * hours - elapsed_import_wh`, or what the house alone imports
-there, `max(0, load_w + pv_w)` per slot with the battery idle and every car
-off, if that is more. The worker counts more in one case: while a car pulses
-into solar surplus and the battery charges, it counts the car's on-step
-import plus the whole charge. The cap wins over EV goals, whose miss shows
-in `flex_shortfall_wh`. The plan reports each hour in
+`max_mean_w * hours - elapsed_import_wh`. In an hour where every car is off
+it may instead reach what the house alone imports there,
+`max(0, load_w + pv_w)` per slot with the battery idle, if that is more: Core
+cannot cut the house, but its live limit stops a car before the house.
+`max_mean_w` may be 0: the hour then has room for the house alone. The worker
+is stricter in one case: while a car pulses into solar surplus and the
+battery charges, it counts the car's on-step import plus the whole charge.
+The cap wins over EV goals, whose miss shows in
+`flex_shortfall_wh`. The plan reports each hour in
 `plan.hourly_import_caps` as `{start_ms, end_ms, import_wh, max_wh}` on the
 published forecast, `import_wh` including the elapsed part.
 

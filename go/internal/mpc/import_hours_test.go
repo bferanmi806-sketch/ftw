@@ -182,7 +182,7 @@ func TestImportHoursOnTheLongDay(t *testing.T) {
 		t.Fatalf("elapsed %+v", hours)
 	}
 	// Each of the two 02:00 hours holds its own 4.5 kWh.
-	caps := importHourCapsW(slots, Params{ImportMeanW: 4500, ImportHours: hours})
+	caps, _ := importHourCapsW(slots, Params{ImportMeanW: 4500, ImportHours: hours})
 	for i, s := range slots {
 		want := 4500.0
 		if s.StartMs < hourStart.Add(time.Hour).UnixMilli() {
@@ -209,13 +209,13 @@ func TestImportHoursAroundThePlan(t *testing.T) {
 		t.Fatalf("hours %+v", hours)
 	}
 	// 3 kWh left over the plan's 25 minutes of the hour.
-	if caps := importHourCapsW(slots, Params{ImportMeanW: c.MeanW, ImportHours: hours}); math.Abs(caps[0]-3000/(25./60)) > 1e-6 {
+	if caps, _ := importHourCapsW(slots, Params{ImportMeanW: c.MeanW, ImportHours: hours}); math.Abs(caps[0]-3000/(25./60)) > 1e-6 {
 		t.Fatalf("caps %v", caps)
 	}
 	c.ElapsedWh = 5000 // overrun: only the house may import
 	slots[1].LoadW = 600
-	if caps := importHourCapsW(slots, Params{ImportMeanW: c.MeanW, ImportHours: importHours(slots, c)}); caps[0] != 0 || caps[1] != 600 {
-		t.Fatalf("overrun caps %v", caps)
+	if caps, carCaps := importHourCapsW(slots, Params{ImportMeanW: c.MeanW, ImportHours: importHours(slots, c)}); caps[0] != 0 || caps[1] != 600 || !math.IsInf(carCaps[0], -1) || !math.IsInf(carCaps[1], -1) {
+		t.Fatalf("overrun caps %v, with a car %v", caps, carCaps)
 	}
 	if importHours(slots, ImportCeiling{MeanW: 4000, HourStart: start}) != nil {
 		t.Fatal("no ceiling gave hours")
@@ -234,18 +234,20 @@ func TestImportHourCapsSpreadTheRoom(t *testing.T) {
 		slots[i] = Slot{StartMs: start.Add(time.Duration(i) * 15 * time.Minute).UnixMilli(), LenMin: 15, LoadW: max(0, w), PVW: min(0, w)}
 	}
 	p := Params{ImportMeanW: 3000, ImportHours: []ImportHour{{StartMs: start.UnixMilli(), EndMs: start.Add(time.Hour).UnixMilli()}}}
-	caps := importHourCapsW(slots, p)
+	caps, carCaps := importHourCapsW(slots, p)
 	// The house takes 1.25 kWh and leaves 1.75 kWh: 1.75 kW on top of each
-	// slot's house, never above the 3 kW mean. The 4 kW slot keeps its house.
+	// slot's house, never above the 3 kW mean. The 4 kW slot keeps its house,
+	// but a car there gets only the mean.
 	for i, want := range []float64{4000, 2250, 2250, 1750} {
-		if math.Abs(caps[i]-want) > 1e-9 {
-			t.Errorf("slot %d: cap %.1f W, want %.1f W", i, caps[i], want)
+		if math.Abs(caps[i]-want) > 1e-9 || math.Abs(carCaps[i]-min(want, 3000)) > 1e-9 {
+			t.Errorf("slot %d: cap %.1f W, with a car %.1f W, want %.1f W", i, caps[i], carCaps[i], want)
 		}
 	}
-	p.ImportMeanW = 500 // less than the house
+	p.ImportMeanW = 500 // less than the house: no room for a car
+	caps, carCaps = importHourCapsW(slots, p)
 	for i, want := range []float64{4000, 500, 500, 0} {
-		if caps := importHourCapsW(slots, p); math.Abs(caps[i]-want) > 1e-9 {
-			t.Errorf("overrun hour, slot %d: cap %.1f W, want %.1f W", i, caps[i], want)
+		if math.Abs(caps[i]-want) > 1e-9 || !math.IsInf(carCaps[i], -1) {
+			t.Errorf("overrun hour, slot %d: cap %.1f W, with a car %.1f W, want %.1f W and none", i, caps[i], carCaps[i], want)
 		}
 	}
 }
@@ -489,5 +491,45 @@ func TestReservePlanUnderAnHourNeverChargesTheCarFromExport(t *testing.T) {
 		if _, used, err := corePlanWithRecovery(context.Background(), slots, p); err != nil || len(used) != len(slots) {
 			t.Errorf("fuse %.0f W: %d of %d slots, err %v", fuse, len(used), len(slots), err)
 		}
+	}
+}
+
+// The house may overrun an hour that has used its budget, but a car may not
+// charge there on the import the battery frees by covering the house: Core's
+// live limit stops the car. The plan holds the car to the next hour.
+func TestNoCarOnTheHouseFloor(t *testing.T) {
+	start := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	slots := make([]Slot, 8)
+	for i := range slots {
+		slots[i] = Slot{StartMs: start.Add(time.Duration(i) * 15 * time.Minute).UnixMilli(), LenMin: 15, LoadW: 800, PriceOre: 100, SpotOre: 50,
+			Limits: PowerLimits{MaxImportW: 13800, MaxExportW: 13800}}
+	}
+	lp := &LoadpointSpec{ID: "car", CapacityWh: 60000, InitialSoC: .3, SoCMax: 1, Levels: 21, PluggedIn: true, MinChargeW: 4140, MaxChargeW: 11040,
+		AllowedStepsW: []float64{0, 4140, 11040}, ChargeEfficiency: .9, TargetSoC: .5, TargetSlotIdx: 7}
+	p := Params{Mode: ModeArbitrage, SoCLevels: 21, ActionLevels: 21, CapacityWh: 10000, InitialSoC: .8, SoCMin: .1, SoCMax: .95,
+		MaxChargeW: 5000, MaxDischargeW: 5000, ChargeEfficiency: 1, DischargeEfficiency: 1, Loadpoint: lp, ImportMeanW: 4155,
+		ImportHours: []ImportHour{
+			{StartMs: start.UnixMilli(), EndMs: start.Add(time.Hour).UnixMilli(), ElapsedImportWh: 4000},
+			{StartMs: start.Add(time.Hour).UnixMilli(), EndMs: start.Add(2 * time.Hour).UnixMilli()},
+		}}
+	plan, used, err := corePlanWithRecovery(context.Background(), slots, p)
+	if err != nil || len(used) != len(slots) {
+		t.Fatalf("%d of %d slots, err %v", len(used), len(slots), err)
+	}
+	for i, a := range plan.Actions {
+		if i < 4 && a.LoadpointW > 0 {
+			t.Errorf("slot %d: car at %.0f W in the hour that has 155 Wh left for 800 W of house", i, a.LoadpointW)
+		}
+	}
+	if plan.Actions[4].LoadpointW <= 0 {
+		t.Errorf("the car waits past 10:00: %+v", plan.Actions[4])
+	}
+	// The same car beside a battery covering the house fails the check.
+	a := &plan.Actions[0]
+	a.BatteryW, a.LoadpointW = -800, 800
+	a.LoadpointPowerW, a.LoadpointMaxPowerW = map[string]float64{"car": 800}, map[string]float64{"car": 4140}
+	err = validateImportHours(slots, p, plan.Actions)
+	if err == nil || !strings.Contains(err.Error(), "clock hour") {
+		t.Fatalf("car on the house floor passed: %v", err)
 	}
 }

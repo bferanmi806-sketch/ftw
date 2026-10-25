@@ -50,7 +50,7 @@ func coreReservePlan(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 		target = min(lp.TargetSoC, ceiling) * lp.CapacityWh
 		steps = lp.normalizedSteps()
 	}
-	importCaps := importHourCapsW(slots, p)
+	_, importCaps := importHourCapsW(slots, p)
 	for i, slot := range slots {
 		if err := ctx.Err(); err != nil {
 			return Plan{}, err

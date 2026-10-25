@@ -73,7 +73,7 @@ func priceReserveCharging(ctx context.Context, slots []Slot, p Params, reserve P
 		a.LoadpointSoCByID = map[string]float64{lp.ID: lp.InitialSoC}
 	}
 	remaining := energyWh
-	importCaps := importHourCapsW(slots, p)
+	_, importCaps := importHourCapsW(slots, p)
 	for _, o := range offers {
 		if err := ctx.Err(); err != nil {
 			return Plan{}, err

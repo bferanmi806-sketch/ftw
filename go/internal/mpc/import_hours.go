@@ -77,17 +77,20 @@ func importHourOverlapH(s Slot, h ImportHour) float64 {
 }
 
 // importHourCapsW spreads each hour's import left over its slots: the most a
-// slot's mean import may be. Each slot keeps its own house import, so doing
-// nothing stays feasible, and they share the room left evenly, never above
-// the hour's mean: Core's live limit starts each hour at the mean, so it
-// lets an even spread through. Nil when no hour applies.
-func importHourCapsW(slots []Slot, p Params) []float64 {
+// slot's mean import may be, without a car charging (caps) and with one
+// (carCaps). Each slot keeps its own house import, so doing nothing stays
+// feasible, and they share the room left evenly, never above the hour's
+// mean: Core's live limit starts each hour at the mean, so it lets an even
+// spread through. A car gets no house floor. In an hour the house alone
+// overruns, the live limit holds the car, so no car charges there: its cap
+// is negative. Nil when no hour applies.
+func importHourCapsW(slots []Slot, p Params) (caps, carCaps []float64) {
 	if len(p.ImportHours) == 0 {
-		return nil
+		return nil, nil
 	}
-	caps := make([]float64, len(slots))
+	caps, carCaps = make([]float64, len(slots)), make([]float64, len(slots))
 	for i := range caps {
-		caps[i] = math.Inf(1)
+		caps[i], carCaps[i] = math.Inf(1), math.Inf(1)
 	}
 	for _, h := range p.ImportHours {
 		var spanH, houseWh float64
@@ -101,21 +104,29 @@ func importHourCapsW(slots []Slot, p Params) []float64 {
 			continue
 		}
 		leftWh := max(0, importLeftWh(h, p.ImportMeanW))
-		meanW, roomW := leftWh/spanH, max(0, leftWh-houseWh)/spanH
+		meanW, roomW := leftWh/spanH, (leftWh-houseWh)/spanH
 		for i, s := range slots {
 			if importHourOverlapH(s, h) > 0 {
 				house := max(0, s.LoadW+s.PVW)
-				caps[i] = min(caps[i], max(house, min(house+roomW, meanW)))
+				caps[i] = min(caps[i], max(house, min(house+max(0, roomW), meanW)))
+				carCaps[i] = min(carCaps[i], min(house+roomW, meanW))
+				if roomW < 0 {
+					carCaps[i] = math.Inf(-1)
+				}
 			}
 		}
 	}
-	return caps
+	return caps, carCaps
 }
 
 // evAverageRoomW is the most mean EV power a slot holds under capW of mean
 // import, with baseW the rest of its grid flow and the car pulsing at
 // peakW. A pulse imports while it runs even when the slot exports between.
+// A negative cap holds no car.
 func evAverageRoomW(capW, baseW, peakW float64) float64 {
+	if capW < 0 {
+		return 0
+	}
 	off, on := max(0, baseW), max(0, baseW+peakW)
 	if on <= off {
 		return peakW
@@ -133,12 +144,26 @@ type importHourOverrun struct {
 
 func (e *importHourOverrun) Error() string { return e.err.Error() }
 
+func actionChargesCar(a Action) bool {
+	if a.LoadpointW > solverZeroPowerToleranceW {
+		return true
+	}
+	for _, w := range a.LoadpointPowerW {
+		if w > solverZeroPowerToleranceW {
+			return true
+		}
+	}
+	return false
+}
+
 // validateImportHours checks the plan's import in each clock hour against
-// what the hour has left. The house's own import never fails it: Core cannot
-// cut the house, only the battery and the cars.
+// what the hour has left. In an hour where every car is off, the house's own
+// import never fails it: Core cannot cut the house. A car charges only in
+// the room the hour has left, since the live limit cuts the car first.
 func validateImportHours(slots []Slot, p Params, actions []Action) error {
 	for _, h := range p.ImportHours {
 		var spanH, importWh, houseWh float64
+		car := false
 		for i, s := range slots {
 			ov := importHourOverlapH(s, h)
 			if ov <= 0 {
@@ -147,9 +172,13 @@ func validateImportHours(slots []Slot, p Params, actions []Action) error {
 			spanH += ov
 			pulseGridW(actions[i], func(share, gridW float64) { importWh += share * max(0, gridW) * ov })
 			houseWh += max(0, s.LoadW+s.PVW) * ov
+			car = car || actionChargesCar(actions[i])
 		}
 		leftWh := importLeftWh(h, p.ImportMeanW)
-		if importWh > max(leftWh, houseWh)+solverGridLimitToleranceW*spanH {
+		if car {
+			houseWh = 0
+		}
+		if importWh > max(leftWh, houseWh, 0)+solverGridLimitToleranceW*spanH {
 			return fmt.Errorf("clock hour from %s imports %.0f Wh, over the %.0f Wh it has left",
 				time.UnixMilli(h.StartMs).UTC().Format(time.RFC3339), importWh, leftWh)
 		}

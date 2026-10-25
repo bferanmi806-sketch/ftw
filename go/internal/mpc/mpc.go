@@ -668,7 +668,7 @@ func OptimizeContext(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 
 	// The mean price scales the EV deadline penalty and labels reasons.
 	meanPrice := horizonMeanPrice(slots)
-	importCaps := importHourCapsW(slots, p)
+	importCaps, carImportCaps := importHourCapsW(slots, p)
 
 	// Action grid spans −MaxDischargeW … +MaxChargeW and always contains
 	// 0 W. With asymmetric charge/discharge limits, an odd number of evenly
@@ -880,7 +880,7 @@ func OptimizeContext(ctx context.Context, slots []Slot, p Params) (Plan, error) 
 						if !slot.Limits.allowsImport(gridW) || !slot.Limits.allowsExport(gridW) {
 							continue
 						}
-						if importCaps != nil && gridW > importCaps[t] {
+						if importCaps != nil && (gridW > importCaps[t] || evW > 0 && gridW > carImportCaps[t]) {
 							continue
 						}
 
