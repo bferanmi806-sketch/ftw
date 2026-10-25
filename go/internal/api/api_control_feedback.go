@@ -40,7 +40,6 @@ type ControlFeedback struct {
 	VerificationLost bool     `json:"-"`
 	Escalated        bool     `json:"-"` // not following long enough to be an alarm
 	Response         string   `json:"-"`
-	LimitedBy        string   `json:"-"`
 	SiteBeforeW      *float64 `json:"-"`
 	SiteAfterW       *float64 `json:"-"`
 	SiteBeforeAtMs   int64    `json:"-"`
@@ -57,7 +56,13 @@ type ControlFeedback struct {
 	RequestedA       *float64 `json:"requested_a"`
 	OfferedA         *float64 `json:"offered_a"`
 	DeviceLimitA     *float64 `json:"device_limit_a"`
-	DeviceReason     string   `json:"device_reason,omitempty"`
+	// LimitA is the current a charger lets the car take now, when its driver
+	// reports it below the order; LimitedBy names the cause when the driver
+	// shows it, and Make the charger for the sentence.
+	LimitA       *float64 `json:"limit_a,omitempty"`
+	LimitedBy    string   `json:"limited_by,omitempty"`
+	Make         string   `json:"make,omitempty"`
+	DeviceReason string   `json:"device_reason,omitempty"`
 	// ChargingPhase names the one phase (L1-L3) a one-phase car charges on
 	// under a three-phase order, and ChargingPhaseMaxW the most it takes.
 	ChargingPhase     string   `json:"charging_phase,omitempty"`
@@ -73,6 +78,7 @@ type feedbackReading struct {
 	DeviceLimitA    *float64 `json:"device_limit_a"`
 	DeviceLimitAgeS *float64 `json:"device_limit_age_s"`
 	Reason          string   `json:"reason_no_current_label"`
+	LimitA          *float64 `json:"current_limit_a"`
 	LimitedBy       string   `json:"current_limited_by"`
 	Connected       *bool    `json:"connected"`
 	Online          *bool    `json:"is_online"`
@@ -149,7 +155,15 @@ func (s *Server) controlFeedback(now time.Time) []ControlFeedback {
 			f := ControlFeedback{Driver: rd.Driver, Kind: kind.String(), Mode: mode, State: "waiting", Reason: "no_command", Severity: "info", Response: "unconfirmed"}
 			var d feedbackReading
 			_ = json.Unmarshal(rd.Data, &d)
-			f.ReadbackW, f.OfferedA, f.DeviceReason, f.LimitedBy = d.SetpointW, d.MaxA, d.Reason, d.LimitedBy
+			f.ReadbackW, f.OfferedA, f.DeviceReason = d.SetpointW, d.MaxA, d.Reason
+			if d.LimitA != nil {
+				f.LimitA, f.LimitedBy = d.LimitA, d.LimitedBy
+				if s.deps.Registry != nil {
+					if env := s.deps.Registry.Env(rd.Driver); env != nil {
+						f.Make, _ = env.Identity()
+					}
+				}
+			}
 			if d.DeviceLimitAgeS != nil && *d.DeviceLimitAgeS >= 0 && *d.DeviceLimitAgeS <= 120 {
 				f.DeviceLimitA = d.DeviceLimitA
 			}
@@ -427,7 +441,7 @@ const (
 func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, commanded, fresh bool, coreReason string, connected *bool, now time.Time) {
 	set := func(state, reason, severity string) { f.State, f.Reason, f.Severity = state, reason, severity }
 	if !fresh {
-		f.ActualW, f.ReadbackW, f.OfferedA, f.DeviceLimitA = nil, nil, nil, nil
+		f.ActualW, f.ReadbackW, f.OfferedA, f.DeviceLimitA, f.LimitA, f.LimitedBy = nil, nil, nil, nil, nil, ""
 		set("unknown", "telemetry_stale", "warning")
 		return
 	}
@@ -452,13 +466,10 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 		return
 	}
 	// A positive clamp explains the lower offer, not prolonged zero delivery.
-	// An explicit load-balancer reason can explain zero delivery. Keep known
-	// safety pauses and unconfirmed/stale commands authoritative.
+	// Keep known safety pauses and unconfirmed/stale commands authoritative.
 	evMismatchObserved := !cmd.PowerMismatchSince.IsZero() && cmd.LastObservation.Sub(cmd.PowerMismatchSince) >= evMismatchWait
 	noPowerObserved := evMismatchObserved || !cmd.NoPowerSince.IsZero() && cmd.NoPowerAt.Sub(cmd.NoPowerSince) >= evMismatchWait
-
 	if f.Kind == "ev" && commanded && cmd.Result == "accepted" &&
-		f.LimitedBy != "load_balancer" &&
 		coreReason != "site_meter_stale" && coreReason != "site_phase_currents_stale" && coreReason != "fuse_cooldown" &&
 		f.SentW != nil && *f.SentW > 100 && f.ActualW != nil && math.Abs(*f.ActualW) < 100 &&
 		f.OfferedA != nil && *f.OfferedA > 0 && noPowerObserved {
@@ -491,6 +502,23 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	if !cmd.ReadbackMismatchSince.IsZero() && now.Sub(cmd.ReadbackMismatchSince) >= 30*time.Second && f.ReadbackW != nil {
 		set("warning", "setpoint_changed", "warning")
 		return
+	}
+	// The charger's driver reports the current it lets the car take while
+	// that is below the order, and names its load balancing when the
+	// charger's own allocation shows it (easee_cloud 1.4.1). That explains a
+	// car taking about that much, not one taking far less or more than
+	// asked. A lower offer whose cause the driver does not show still asks
+	// for a look.
+	if f.Kind == "ev" && f.SentW != nil && f.RequestedW != nil && f.RequestedA != nil && f.LimitA != nil && f.ActualW != nil &&
+		*f.SentW > 100 && *f.RequestedA > 0 && *f.LimitA+0.5 < *f.RequestedA && *f.ActualW < *f.SentW && settled {
+		if limitW := *f.RequestedW * *f.LimitA / *f.RequestedA; *f.ActualW >= limitW-telemetry.ControlToleranceW(limitW) {
+			if f.LimitedBy == "load_balancer" {
+				set("limited", "load_balancer_limit", "info")
+			} else {
+				set("limited", "offered_current_lower", "warning")
+			}
+			return
+		}
 	}
 	if f.Kind == "ev" && f.SentW != nil && f.RequestedA != nil && f.OfferedA != nil && *f.SentW > 100 && *f.OfferedA+0.5 < *f.RequestedA && settled {
 		set("limited", "offered_current_lower", "warning")
@@ -536,12 +564,6 @@ func classifyControlFeedback(f *ControlFeedback, cmd telemetry.CommandEvidence, 
 	if mismatchSettled && gap > telemetry.ControlToleranceW(*f.SentW) {
 		if reason := batteryChargeLevelLimit(f); reason != "" {
 			set("limited", reason, "info")
-			return
-		}
-		// The charger names its load balancer only while it holds the car
-		// back. More power than asked still warns.
-		if f.Kind == "ev" && f.LimitedBy == "load_balancer" && *f.SentW > 100 && *f.ActualW > -100 && *f.ActualW < *f.SentW {
-			set("limited", "load_balancer_limit", "info")
 			return
 		}
 		reason := "power_above_target"
