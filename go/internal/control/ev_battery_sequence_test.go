@@ -489,7 +489,9 @@ func TestCeilingOverageWaitsOnceWhenTheCarDrawsLessThanItsOffer(t *testing.T) {
 // The fuse never waits for a car. A house step past the heat budget's
 // instant limit (31 A on the 25 A fuse) cuts the car at once and gets
 // battery relief on the first reading, which it keeps until the car's cut
-// shows on the meter. Then the battery lets go, and nothing exports.
+// shows on the meter. Then the battery lets go, and nothing exports. What it
+// lets go is our own raise, counted as on its way for evSettle, so the last
+// part goes once the first has had that time to show.
 func TestFuseOverageGetsBatteryReliefUntilEVCutShows(t *testing.T) {
 	s := newIdleBatteryEVSite(t, 3000, 0)
 	s.run(5 * time.Minute)
@@ -498,7 +500,7 @@ func TestFuseOverageGetsBatteryReliefUntilEVCutShows(t *testing.T) {
 	}
 	stepAt := s.now
 	s.houseW += 8000 // 21,350 W, 31 A on each phase.
-	s.run(15 * time.Second)
+	s.run(time.Second + s.chargerDelay + evSettle + 5*time.Second)
 	cutShows := stepAt.Add(time.Second + s.chargerDelay)
 	t.Logf("first battery target %.0f W; offer %.0f W", since(s.targetW, stepAt.Add(time.Second))[0].w, s.offer())
 	for _, b := range since(s.targetW, stepAt.Add(time.Second)) {
