@@ -157,9 +157,10 @@ func dialChargingStation201(t *testing.T, url, id string, setup func(ocpp201.Cha
 //
 // freePort hands back a port the kernel just released, and another socket can
 // take it before Start checks it, or between that check and the library's
-// bind. Start fails in the first case; in the second the library gives up on
-// that listener without an error, so a listener goroutine that exits early
-// means the port was lost. Either way, try fresh ones.
+// bind. In the first case Start fails, or for 2.0.1 starts without that
+// listener; in the second the library gives up on the listener without an
+// error, so a listener goroutine that exits early means the port was lost.
+// Either way, try fresh ones.
 func startOCPP(t *testing.T, cfg Config, tel *telemetry.Store, v201 bool) *Server {
 	t.Helper()
 	const attempts = 5
@@ -177,7 +178,7 @@ func startOCPP(t *testing.T, cfg Config, tel *telemetry.Store, v201 bool) *Serve
 		if err != nil {
 			t.Fatalf("start: %v", err)
 		}
-		if listening(t, srv) {
+		if (!v201 || srv.csms != nil) && listening(t, srv) {
 			t.Cleanup(srv.Stop)
 			return srv
 		}

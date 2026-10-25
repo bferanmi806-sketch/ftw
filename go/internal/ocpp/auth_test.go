@@ -244,7 +244,7 @@ func TestTLSMisconfigurationRefusesToStart(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{Enabled: true, Bind: "127.0.0.1", Port: freePort(t), TLS: tc.tls}
 			if _, err := Start(context.Background(), cfg, telemetry.NewStore()); err == nil {
-				t.Fatal("a broken TLS config started anyway, serving plaintext")
+				t.Fatal("a broken TLS config started anyway")
 			}
 		})
 	}
