@@ -39,9 +39,10 @@ func TestSocketPassesAMissedDisconnectToStop(t *testing.T) {
 // passes its own tests and fails CI weeks later; this finds it at once.
 func TestEveryChargerDialsThroughASocket(t *testing.T) {
 	root := moduleRoot(t)
-	clients := map[string]string{
-		"github.com/lorenzodonini/ocpp-go/ocpp1.6":   "NewChargePoint",
-		"github.com/lorenzodonini/ocpp-go/ocpp2.0.1": "NewChargingStation",
+	type client struct{ pkg, ctor string }
+	clients := map[string]client{
+		"github.com/lorenzodonini/ocpp-go/ocpp1.6":   {"ocpp16", "NewChargePoint"},
+		"github.com/lorenzodonini/ocpp-go/ocpp2.0.1": {"ocpp2", "NewChargingStation"},
 	}
 	here, err := filepath.Abs(".")
 	if err != nil {
@@ -53,7 +54,16 @@ func TestEveryChargerDialsThroughASocket(t *testing.T) {
 			return err
 		}
 		if d.IsDir() {
-			if path == here || d.Name() == "testdata" || d.Name() == "vendor" || (path != root && strings.HasPrefix(d.Name(), ".")) {
+			if path == root {
+				return nil
+			}
+			// The go tool skips the same directories, and a directory with
+			// its own go.mod is another module.
+			name := d.Name()
+			if path == here || name == "testdata" || name == "vendor" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, "go.mod")); err == nil {
 				return filepath.SkipDir
 			}
 			return nil
@@ -64,29 +74,38 @@ func TestEveryChargerDialsThroughASocket(t *testing.T) {
 		fset := token.NewFileSet()
 		f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
-			return err
+			return nil // the build reports a file that does not parse
 		}
-		names := map[string]string{} // local package name -> constructor
+		ctors := map[string]string{} // local package name, "." for a dot import -> constructor
 		for _, imp := range f.Imports {
 			p, _ := strconv.Unquote(imp.Path.Value)
-			ctor, ok := clients[p]
+			c, ok := clients[p]
 			if !ok {
 				continue
 			}
-			name := filepath.Base(p)
+			name := c.pkg
 			if imp.Name != nil {
 				name = imp.Name.Name
 			}
-			names[name] = ctor
+			ctors[name] = c.ctor
+		}
+		if len(ctors) == 0 {
+			return nil
+		}
+		report := func(pos token.Pos) {
+			rel, _ := filepath.Rel(root, path)
+			found = append(found, rel+":"+strconv.Itoa(fset.Position(pos).Line))
 		}
 		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if pkg, ok := sel.X.(*ast.Ident); ok && names[pkg.Name] == sel.Sel.Name {
-				rel, _ := filepath.Rel(root, path)
-				found = append(found, rel+":"+strconv.Itoa(fset.Position(sel.Pos()).Line))
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				if pkg, ok := n.X.(*ast.Ident); ok && ctors[pkg.Name] == n.Sel.Name {
+					report(n.Pos())
+				}
+			case *ast.CallExpr:
+				if id, ok := n.Fun.(*ast.Ident); ok && id.Name == ctors["."] {
+					report(n.Pos())
+				}
 			}
 			return true
 		})
