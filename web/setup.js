@@ -826,7 +826,7 @@
       })
       .then(function (res) {
         if (!res.ok) {
-          statusEl.style.color = 'var(--red-e)';
+          statusEl.style.color = 'var(--alarm)';
           statusEl.textContent = (res.body && res.body.error) || 'Failed to load chargers';
           return;
         }
@@ -844,11 +844,11 @@
           sel.appendChild(opt);
         });
         group.style.display = 'block';
-        statusEl.style.color = 'var(--green-e)';
+        statusEl.style.color = 'var(--live)';
         statusEl.textContent = chargers.length + ' charger' + (chargers.length === 1 ? '' : 's') + ' found';
       })
       .catch(function (e) {
-        statusEl.style.color = 'var(--red-e)';
+        statusEl.style.color = 'var(--alarm)';
         statusEl.textContent = 'Error: ' + e.message;
       })
       .finally(function () {

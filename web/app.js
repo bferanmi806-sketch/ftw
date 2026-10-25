@@ -319,31 +319,11 @@
     return Math.round(w) + " W";
   }
 
-  // Fuse bar color — smooth green→yellow→orange→red gradient across
-  // 0 %→100 %. Anchors land at the named color at each zone
-  // boundary: 0 %=green, 50 %=yellow, 75 %=orange, 90 %+=red. Between
-  // them the hue interpolates linearly so a bar at 45 % already reads
-  // yellow-leaning (h ≈ 100, close to yellow's 95), not solid green —
-  // matches the "45 % is more towards yellow than green" spec. Oklch
-  // holds lightness + chroma constant so the transitions don't muddy.
+  // Fuse bar color. The bar is grid power, so it takes the grid colour, as
+  // on the phone; from 90 % it takes the alarm, because operators just need
+  // to see "DANGER" there.
   function fuseFillColor(pct) {
-    var c = Math.max(0, Math.min(100, pct));
-    var h;
-    if (c < 50) {
-      // 0 → 50 : 150 (green) → 95 (yellow)
-      h = 150 - (c / 50) * (150 - 95);
-    } else if (c < 75) {
-      // 50 → 75 : 95 (yellow) → 50 (orange)
-      h = 95 - ((c - 50) / 25) * (95 - 50);
-    } else if (c < 90) {
-      // 75 → 90 : 50 (orange) → 22 (red)
-      h = 50 - ((c - 75) / 15) * (50 - 22);
-    } else {
-      // 90 → 100: solid red. Saturate rather than continue shifting
-      // hue — operators just need to see "DANGER", not a hue delta.
-      h = 22;
-    }
-    return "oklch(0.78 0.18 " + h.toFixed(1) + ")";
+    return pct >= 90 ? "var(--alarm)" : "var(--red-e)";
   }
 
   // Snap an axis range to "nice" round numbers. Returns { min, max, step }
@@ -3442,7 +3422,7 @@
     startBtn.style.cursor = "pointer";
     startBtn.style.fontWeight = "600";
     startBtn.style.background = "var(--accent-e)";
-    startBtn.style.color = "#0a0a0a";
+    startBtn.style.color = "var(--on-accent)";
     function renderStartLabel() { startBtn.textContent = "Boost for " + dur.options[dur.selectedIndex].textContent; }
     renderStartLabel();
     dur.addEventListener("change", renderStartLabel);
@@ -3692,7 +3672,7 @@
     startBtn.style.cursor = "pointer";
     startBtn.style.fontWeight = "600";
     startBtn.style.background = "var(--accent-e)";
-    startBtn.style.color = "#0a0a0a";
+    startBtn.style.color = "var(--on-accent)";
 
     var stopBtn = document.createElement("button");
     stopBtn.type = "button";
@@ -4376,7 +4356,7 @@
       dayChips.forEach(function (chip) {
         chip.setAttribute("aria-pressed", chip.on ? "true" : "false");
         chip.style.background = chip.on ? "var(--accent-e)" : "transparent";
-        chip.style.color = chip.on ? "#0a0a0a" : "var(--text-dim)";
+        chip.style.color = chip.on ? "var(--on-accent)" : "var(--text-dim)";
         chip.style.borderColor = chip.on ? "var(--accent-e)" : "var(--line)";
       });
     }
