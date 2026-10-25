@@ -2,4 +2,4 @@
 "ftw": patch
 ---
 
-A plan FTW made by itself no longer says it was asked for by hand. When the fuse held the battery or an EV back, Core made a new plan and labelled it "manual", so the Plan page, the plan history and the support report all named a manual request; on one night that came to three such plans in three minutes on a box nobody touched. These plans now carry the reason `fuse_saturated`, and the plan made at startup carries `startup`.
+FTW no longer makes a new plan each time the main fuse holds the battery or an EV back. That replan could not end the overage, which the live control already holds, and on a charging night it ran several times an hour, each labelled "manual" on the Plan page, in the plan history and in the support report, on a box nobody touched. The plan made at startup now carries the reason `startup`, and "manual" means only the Replan button.

@@ -13,8 +13,9 @@ import (
 // trigger. Only POST /api/mpc/replan in internal/api may use it. A replan Core
 // starts by itself names its cause.
 //
-// On 25 Oct 2026 the fuse edge in this package replanned three times in three
-// minutes on the home box as "manual" while nobody touched it.
+// On 25 Oct 2026 a fuse-saturation trigger in this package (since removed)
+// replanned three times in three minutes on the home box as "manual" while
+// nobody touched it.
 var unnamedReplan = regexp.MustCompile(`\.Replan\(`)
 
 func TestCoreReplansNameTheirCause(t *testing.T) {
