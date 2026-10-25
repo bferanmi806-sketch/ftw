@@ -294,7 +294,8 @@ func (s *State) offerPhaseA(w float64, phases int) (float64, int) {
 // EVFusePhaseRoomA is the current the chargers may still add on the
 // busiest phase: below the fuse less its margin, the last reading's
 // current or heat, and every charger's offers that reading may not show.
-// false when the site meter reports no phase currents.
+// For an idle pool the heat counts only over the working limit, as the
+// start reads it. false when the site meter reports no phase currents.
 func EVFusePhaseRoomA(state *State) (float64, bool) {
 	if state == nil || !state.evLimit.set || !state.evLimit.phaseRoomKnown {
 		return 0, false
@@ -313,7 +314,7 @@ type evMeterLimit struct {
 	readingAt      time.Time                // newest site reading seen
 	roomSince      time.Time                // first reading of the current run with room to start
 	offers         map[string]chargerOffers // each plugged charger's, by loadpoint
-	phaseRoomA     float64                  // below the working limit on the busiest phase at readingAt
+	phaseRoomA     float64                  // below the working limit on the busiest phase at readingAt; an idle pool's as a start reads it
 	phaseRoomKnown bool                     // the meter reports phase currents
 	overSince      time.Time                // first reading of a run over the hour's import limit
 	fuseOverAt     time.Time                // first reading of a run with a phase, or the total, over the fuse's working limit
@@ -359,7 +360,7 @@ func EVFuseBudget(store *telemetry.Store, state *State, points []loadpoint.State
 	if !finiteFuseValue(gridW) {
 		return 0, true
 	}
-	state.stepFuseHeat(meter)
+	state.stepFuseHeat(meter, gridW)
 	lim := &state.evLimit
 	pool, plugged := evPoolFor(state, points, configs)
 	if !plugged {
@@ -399,6 +400,9 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 	lim.phaseRoomA, lim.phaseRoomKnown = 0, r.phaseRoomKnown
 	if fresh {
 		lim.phaseRoomA = r.phaseRoomA
+		if pool.offerW <= 0 {
+			lim.phaseRoomA = r.startRoomA // The split between idle cars reads the start's room.
+		}
 	}
 	step := evPhaseMarginA * s.SiteFuseVoltage * pool.phases
 	// The label follows whichever limit leaves less room.
@@ -496,13 +500,14 @@ func (s *State) stepEVMeterLimit(meter *telemetry.DerReading, gridW float64, poo
 func (s *State) stepEVIdleStart(r evMeterRoom, gridW float64, pool evPool, first, gap, fresh bool, at, prevAt time.Time, pending, step float64) {
 	lim := &s.evLimit
 	lim.capW = 0
-	perReadingW := r.fuseW
+	perReadingW := r.startW
 	if !r.hourly {
 		perReadingW = math.Min(perReadingW, r.riseW)
+		lim.byImport = r.riseW < r.startW
 	} else {
 		// The start test below holds an idle car to the start level:
 		// name it by this reading.
-		lim.byImport = r.startLevelW-gridW-pending < r.fuseW
+		lim.byImport = r.startLevelW-gridW-pending < r.startW
 	}
 	room := 0.0
 	if fresh {
@@ -550,7 +555,7 @@ func EVLimitReason(state *State) string {
 // evMeterRoom is the measured room in EV watts. The fuse's part holds on
 // every reading. The import ceiling's parts are +Inf while it is off.
 type evMeterRoom struct {
-	fuseW          float64 // below the fuse less its margin and the worst phase, read or heat, and what we sent; rises and starts
+	fuseW          float64 // below the fuse less its margin and the worst phase, read or heat, and what we sent; rises
 	fuseOverW      float64 // the fuse's measured overage that cuts now, 0 under it; see fuseHeat
 	fuseOverA      float64 // the same on the worst phase, with perPhase
 	perPhase       bool    // the phase currents measure the fuse
@@ -563,11 +568,13 @@ type evMeterRoom struct {
 	worstA         float64
 	phaseRoomA     float64 // below the working limit on the busiest phase, read or heat
 	phaseRoomKnown bool    // the meter reports phase currents
+	startW         float64 // fuseW for an idle start: the worst phase read, its heat only over the working limit (startLevelA)
+	startRoomA     float64 // phaseRoomA the same way
 }
 
 func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW float64, sent pendingLoad) evMeterRoom {
 	inf, totalW := math.Inf(1), math.Max(0, fuseMaxW-s.fuseSafetyMarginW())-gridW
-	r := evMeterRoom{fuseW: totalW - sent.w, fuseOverW: math.Max(0, -totalW), overLimit: totalW < 0, limitW: inf, riseW: inf, startLevelW: inf}
+	r := evMeterRoom{fuseW: totalW - sent.w, startW: totalW - sent.w, fuseOverW: math.Max(0, -totalW), overLimit: totalW < 0, limitW: inf, riseW: inf, startLevelW: inf}
 	if limitW, riseW, ok := s.importHourLimitsW(); ok {
 		r.limitW, r.riseW = limitW-gridW, riseW-gridW-sent.w
 		// The ceiling caps the hour's mean, so an idle car may start on the
@@ -579,7 +586,7 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 		}
 		r.hourly = s.importHourMeasured()
 	}
-	amps, present, valid := phaseCurrentsA(meter, s)
+	amps, present, valid := phaseCurrentsA(meter, s, gridW)
 	if present && !valid {
 		r.phaseRoomKnown = true // No room on phases it cannot read.
 		return r
@@ -592,6 +599,8 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 		}
 		r.fuseW = math.Min(r.fuseW, (limitA-s.fuseHeat.levelA(amps, sent.phaseA))*s.SiteFuseVoltage*phases)
 		r.phaseRoomA, r.phaseRoomKnown = limitA-s.fuseHeat.levelA(amps, [3]float64{}), true
+		r.startW = math.Min(r.startW, (limitA-s.fuseHeat.startLevelA(amps, sent.phaseA, limitA))*s.SiteFuseVoltage*phases)
+		r.startRoomA = limitA - s.fuseHeat.startLevelA(amps, [3]float64{}, limitA)
 		// The phases measure the fuse itself; total import stands in only without them.
 		r.fuseOverA = s.fuseHeat.overA(amps, limitA, fuseInstantFactor*s.SiteFuseAmps)
 		r.fuseOverW, r.perPhase, r.overLimit = r.fuseOverA*s.SiteFuseVoltage*phases, true, r.worstA > limitA
@@ -599,10 +608,12 @@ func (s *State) evMeterRoom(meter *telemetry.DerReading, gridW, phases, fuseMaxW
 	return r
 }
 
-// worstPhaseA reads the site's configured phases. present is false when the
-// meter reports no phase currents; valid is false when they cannot be used.
-func worstPhaseA(meter *telemetry.DerReading, state *State) (worstA float64, present, valid bool) {
-	amps, present, valid := phaseCurrentsA(meter, state)
+// worstPhaseA is the highest import on the site's configured phases, with
+// direction (phaseCurrentsA), and 0 when every phase exports. present is
+// false when the meter reports no phase currents; valid is false when they
+// cannot be used.
+func worstPhaseA(meter *telemetry.DerReading, state *State, totalW float64) (worstA float64, present, valid bool) {
+	amps, present, valid := phaseCurrentsA(meter, state, totalW)
 	for _, a := range amps {
 		worstA = math.Max(worstA, a)
 	}

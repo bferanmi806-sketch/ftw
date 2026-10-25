@@ -64,7 +64,7 @@
           '<p style="margin-top:0;color:var(--text-dim);font-size:0.85rem">This box asks for the house password before settings and other writes. Live numbers stay visible.</p>' +
           '<label for="lan-auth-password">Password</label>' +
           '<input id="lan-auth-password" type="password" name="password" autocomplete="current-password" required>' +
-          '<p id="lan-auth-error" style="color:var(--red-e);font-size:0.85rem;min-height:1.2em"></p>' +
+          '<p id="lan-auth-error" style="color:var(--alarm);font-size:0.85rem;min-height:1.2em"></p>' +
           '<div class="modal-footer" style="padding:12px 0 0;border:0">' +
             '<button type="button" id="lan-auth-cancel" class="btn-ghost">Cancel</button>' +
             '<button type="submit" class="btn-send">Sign in</button>' +
