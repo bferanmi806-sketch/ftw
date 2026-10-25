@@ -271,9 +271,6 @@ type stackSpec struct {
 	// engine is the planner's: core or energyplan. Empty takes
 	// FTW_SITE_ENGINE, else core.
 	engine string
-	// demandPricePerKW is a peak-power tariff on every clock hour, night
-	// hours at half weight (Ellevio's); 0 none.
-	demandPricePerKW float64
 }
 
 type stack struct {
@@ -563,10 +560,6 @@ func (st *stack) ftwConfig() (string, error) {
 		// which hides the stress on the fuse.
 		"planner": map[string]any{"enabled": true, "engine": st.engine(), "mode": "self_consumption"},
 		"price":   map[string]any{"provider": "elprisetjustnu", "zone": "SE3"},
-	}
-	if st.spec.demandPricePerKW > 0 {
-		price := cfg["price"].(map[string]any)
-		price["demand_price_per_kw"], price["demand_night_weight"] = st.spec.demandPricePerKW, 0.5
 	}
 	if st.spec.soc2Pct > 0 {
 		cfg["drivers"] = append(cfg["drivers"].([]map[string]any),

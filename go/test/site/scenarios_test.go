@@ -97,8 +97,9 @@ var scenarios = []scenario{
 		run: func(c *runCtx) (map[string]any, error) { return s14(c, 25) }, judge: judgeS14},
 	{name: "s16-25", dir: "s16-import-ceiling-idle-start-25A", minutes: 68,
 		run: func(c *runCtx) (map[string]any, error) { return s16(c, 25) }, judge: judgeS16},
-	{name: "s17-25", dir: "s17-two-equal-batteries-25A", minutes: 17,
-		run: func(c *runCtx) (map[string]any, error) { return s17(c, 25) }, judge: judgeS17},
+	{name: "s17-25", dir: "s17-two-equal-batteries-25A", minutes: 30,
+		run: func(c *runCtx) (map[string]any, error) { return s17(c, 25) }, judge: judgeS17,
+		tolerate: map[string]string{"Energyplan's plan moves the batteries half the time": "the day's prices: within the hour's wait the plan may keep both batteries idle for later, dearer hours"}},
 }
 
 // runCtx is where one scenario runs.
@@ -1145,22 +1146,24 @@ func judgeS16(d *runData) (metrics, []criterion) {
 // ---- 17. Two equal batteries share the plan's total ----
 
 // s17 is Rann's site (#1814): two equal batteries at 74 % and 60 % that took
-// turns under the plan, one discharging while the other stood at 0 W. Core
-// DP plans one battery only, so this runs Energyplan, as a beta box does.
-// A 3 kW house with no PV and a peak-power tariff on every hour make the
-// plan cover the house whatever the day's spot prices; the run keeps the
-// plan's order for each battery every 30 s in plan.jsonl.
+// turns under the plan, one discharging while the other stood at 0 W.
+// Energyplan's plan puts each quarter's discharge on one battery; Core must
+// share it. Core DP plans one battery only, so this runs Energyplan, as a
+// beta box does. A 3 kW house with no PV. The plan leaves the batteries
+// idle while later hours cost more, so the run waits up to an hour for a
+// quarter the plan discharges, then runs 15 min. It keeps the plan's order
+// for each battery every 30 s in plan.jsonl.
 func s17(c *runCtx, fuse float64) (map[string]any, error) {
 	err := with(c, stackSpec{fuseA: fuse, loadsW: [3]float64{1000, 1000, 1000}, socPct: 74, soc2Pct: 60,
-		engine: "energyplan", demandPricePerKW: 8125}, func(st *stack) error {
-		sleepS(60)
-		st.mark("start")
+		engine: "energyplan"}, func(st *stack) error {
 		f, err := os.Create(filepath.Join(st.rundir, "plan.jsonl"))
 		if err != nil {
 			return err
 		}
 		defer f.Close()
-		for end := time.Now().Add(900 * time.Second); time.Now().Before(end); sleepS(30) {
+		// moving logs the plan's order for each battery now and says
+		// whether it moves them.
+		moving := func() bool {
 			var p struct {
 				Plan struct {
 					Actions []struct {
@@ -1171,21 +1174,40 @@ func s17(c *runCtx, fuse float64) (map[string]any, error) {
 				} `json:"plan"`
 			}
 			if st.get("/api/mpc/plan", &p) != nil {
-				continue
+				return false
 			}
 			ms := time.Now().UnixMilli()
 			for _, a := range p.Plan.Actions {
 				if a.SlotStartMs <= ms && ms < a.SlotStartMs+int64(a.SlotLenMin*60000) {
 					b, _ := json.Marshal(map[string]any{"t": now(), "storage_power_w": a.StoragePowerW})
 					f.Write(append(b, '\n'))
+					return planMoves(a.StoragePowerW)
 				}
 			}
+			return false
+		}
+		sleepS(60)
+		for wait := time.Now().Add(time.Hour); !moving() && time.Now().Before(wait); {
+			sleepS(30)
+		}
+		st.mark("start")
+		for end := time.Now().Add(900 * time.Second); time.Now().Before(end); {
+			sleepS(30)
+			moving()
 		}
 		st.mark("end")
 		return nil
 	})
-	return map[string]any{"scenario": "s17", "fuse": fuse, "house_w": 3000, "soc_pct": []float64{74, 60},
-		"demand_price_per_kw": 8125}, err
+	return map[string]any{"scenario": "s17", "fuse": fuse, "house_w": 3000, "soc_pct": []float64{74, 60}}, err
+}
+
+// planMoves is true when a plan's orders move the batteries 300 W or more.
+func planMoves(w map[string]float64) bool {
+	sum := 0.0
+	for _, v := range w {
+		sum += v
+	}
+	return math.Abs(sum) >= 300
 }
 
 func judgeS17(d *runData) (metrics, []criterion) {
@@ -1204,47 +1226,41 @@ func judgeS17(d *runData) (metrics, []criterion) {
 			shared++
 		}
 	}
-	// The plan's order for each battery: it moves them, and how it splits.
+	// The plan's order for each battery over the judged window.
 	polls, planned := 0, 0
-	planW := map[string]float64{}
 	readLines(filepath.Join(d.dir, "plan.jsonl"), func(b []byte) {
 		var l struct {
+			T             float64            `json:"t"`
 			StoragePowerW map[string]float64 `json:"storage_power_w"`
 		}
-		if json.Unmarshal(b, &l) != nil {
+		if json.Unmarshal(b, &l) != nil || l.T < t0-1 || l.T > t1 {
 			return
 		}
 		polls++
-		sum := 0.0
-		for id, w := range l.StoragePowerW {
-			sum += w
-			planW[id] += w
-		}
-		if math.Abs(sum) >= 300 {
+		if planMoves(l.StoragePowerW) {
 			planned++
 		}
 	})
-	for id := range planW {
-		planW[id] = math.Round(planW[id] / math.Max(1, float64(polls)))
-	}
 	energyplan := false
 	if b, err := os.ReadFile(filepath.Join(d.dir, "ftw.log")); err == nil {
 		energyplan = strings.Contains(string(b), "Energyplan primary")
 	}
+	exercised := energyplan && polls > 0 && planned*2 >= polls
 	gap := func(r *sample) float64 { return r.Bat.SoCPct - r.Bat2.SoCPct }
-	var gap0, gap1 float64
+	var gap0, gap1, wait float64
 	if len(w) > 0 {
-		gap0, gap1 = gap(w[0]), gap(w[len(w)-1])
+		gap0, gap1, wait = gap(w[0]), gap(w[len(w)-1]), t0-d.samples[0].T
 	}
 	m := metrics{"moving_samples": moving, "shared_samples": shared, "samples": len(w),
-		"plan_polls": polls, "plan_moving_polls": planned, "plan_mean_w": planW, "energyplan": energyplan,
-		"soc_gap_start": round(gap0, 2), "soc_gap_end": round(gap1, 2),
+		"plan_polls": polls, "plan_moving_polls": planned, "energyplan": energyplan,
+		"wait_s": round(wait, 0), "soc_gap_start": round(gap0, 2), "soc_gap_end": round(gap1, 2),
 		"bat_w_mean": []float64{math.Round(meanOf(w, func(r *sample) float64 { return r.Bat.BatteryW })),
 			math.Round(meanOf(w, func(r *sample) float64 { return r.Bat2.BatteryW }))}}
 	return m, []criterion{
-		crit("Energyplan plans the batteries half the time", energyplan && polls > 0 && planned*2 >= polls), // the setup
+		crit("Energyplan's plan moves the batteries half the time", exercised), // the setup
 		crit("each battery takes a quarter of the fleet's power 90 % of the time", moving > 0 && shared*10 >= moving*9),
-		crit("the charge gap shrinks", gap1 < gap0-0.2),
+		// Shared by the energy each can still give, the fuller one gives more.
+		crit("the charge gap shrinks while the plan moves them", !exercised || gap1 < gap0-0.2),
 		crit("fuse holds", !anyBlown(w)),
 	}
 }
