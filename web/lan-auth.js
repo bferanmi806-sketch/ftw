@@ -67,7 +67,7 @@
           '<p id="lan-auth-error" style="color:var(--red-e);font-size:0.85rem;min-height:1.2em"></p>' +
           '<div class="modal-footer" style="padding:12px 0 0;border:0">' +
             '<button type="button" id="lan-auth-cancel" class="btn-ghost">Cancel</button>' +
-            '<button type="submit" class="btn-send">Log in</button>' +
+            '<button type="submit" class="btn-send">Sign in</button>' +
           '</div>' +
         '</form>' +
       '</div>';
@@ -125,13 +125,16 @@
               var said = (body && body.error) || "";
               throw new Error(said === "invalid password" ?
                 "That is not the house password. After five wrong tries, wait 30 seconds." :
-                said || "Could not sign in. Try again in a moment.");
+                "Could not sign in. Try again in a moment.");
             }
             finish(true);
             if (typeof window.dispatchEvent === "function" && typeof window.Event === "function") window.dispatchEvent(new window.Event("ftw-owner-ready"));
           });
         }).catch(function (err) {
-          if (errEl) errEl.textContent = err.message || "login failed";
+          // Our own refusals are plain Errors; a network or parse failure
+          // is not, and its message is not written for a household.
+          if (errEl) errEl.textContent = err && err.name === "Error" && err.message ?
+            err.message : "Could not reach the box. Try again in a moment.";
           if (input) input.focus();
         });
       };

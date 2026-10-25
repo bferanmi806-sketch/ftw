@@ -63,6 +63,7 @@
     auth: null,      // GET /api/auth/status
     held: null,      // {raw, view, lookup, fetchedAt}
     note: null,      // {text, kind} under the code field
+    passwordNote: "", // shown once in the next house password form
     done: null,      // what the last grant gave
     editing: "",     // the row being changed
   };
@@ -255,7 +256,10 @@
     if (state.cloudChecked && (!state.cloud || state.cloud.link !== "on" || state.cloud.statisticsOnly || !state.cloud.cloudTermsAccepted)) return {kind:"cloud"};
     if (unavailable) return { kind: "unavailable" };
     if (!list) return { kind: "loading" };
-    if (!auth || (!auth.home_assistant && (!auth.lan_auth || !auth.configured))) return { kind: "choose" };
+    // A box that could not say offers no "choose": a signed-in owner would
+    // replace a password that is already set.
+    if (!auth) return { kind: "unknown" };
+    if (!auth.home_assistant && (!auth.lan_auth || !auth.configured)) return { kind: "choose" };
     var box = list.box || {};
     // The box's answer for this very request: is this browser signed in?
     if (!box.widen) return { kind: "signin" };
@@ -500,6 +504,10 @@
         box.appendChild(el("button", { type: "button", className: "btn-send", text: "Open FTW app settings",
           onclick: function () { ctx.navigateTab("app"); } }));
         return;
+      case "unknown":
+        box.appendChild(el("p", { text: "Could not check the house password on the box. " +
+          "Press Check requests and access to try again." }));
+        return;
       case "choose":
         box.className = "access-password";
         passwordForm(ctx, box, true);
@@ -580,7 +588,8 @@
     }
     var button = el("button", { type: "submit", className: "btn-send", text: choose ? "Set password and continue" : "Sign in" });
     form.appendChild(button);
-    var note = el("p", { className: "access-note", "aria-live": "polite" });
+    var note = el("p", { className: "access-note", "aria-live": "polite", text: state.passwordNote || "" });
+    state.passwordNote = "";
     form.appendChild(note);
     form.appendChild(el("p", { className: "access-quiet" }, [
       document.createTextNode(choose ? "Keep it somewhere safe. " : "Forgot it? "),
@@ -597,6 +606,11 @@
         choose ? { enabled: true, password: password } : { password: password })
         .then(function (r) {
           return readJSON(r).then(function (body) {
+            if (!r.ok && choose && r.status === 401) {
+              // Someone set a password meanwhile: ask for it instead.
+              state.passwordNote = "This box has a house password now. Sign in with it.";
+              return refresh(ctx);
+            }
             if (!r.ok) throw new Error(passwordFailureText(r.status, body));
             first.value = "";
             if (again) again.value = "";

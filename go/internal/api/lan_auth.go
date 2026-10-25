@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
@@ -232,7 +233,7 @@ func hashLANPassword(password string) (string, error) {
 // HashInitialLANPassword lets the first-run server establish the owner's
 // lock before the normal API starts. It grants no password-change authority.
 func HashInitialLANPassword(password string) (string, error) {
-	if password == "" || len(password) > maxLANPasswordLen {
+	if password == "" || utf8.RuneCountInString(password) > maxLANPasswordLen {
 		return "", fmt.Errorf("house password must be between 1 and %d characters", maxLANPasswordLen)
 	}
 	return hashLANPassword(password)
@@ -412,6 +413,15 @@ type lanAuthPasswordRequest struct {
 	Enabled  *bool  `json:"enabled"`
 }
 
+// localBrowser is a direct request on the home network or the box itself:
+// no app session, no proxy, and a local host name. Only such a request gets
+// the sign-in cookie.
+func localBrowser(r *http.Request) bool {
+	auth, err := parseAuthority(r.Host)
+	return err == nil && isLocalAuthority(auth) && isLocalClient(r.RemoteAddr) &&
+		!hasForwardingHeader(r.Header) && !appLinkOverSession(r)
+}
+
 func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 	s.configWriteMu.Lock()
 	defer s.configWriteMu.Unlock()
@@ -431,12 +441,20 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 
 	s.deps.CfgMu.RLock()
 	cfgCopy := *s.deps.Cfg
+	currentlyOn := s.deps.Cfg.API.LANAuth
 	s.deps.CfgMu.RUnlock()
+	proved, _ := lanSecretFrom(r.Context())
+	// Authenticate let this request in before the write lock: if the lock
+	// came on in between, a LAN request that proved nothing would replace
+	// the password the first browser just chose. The box itself, an app
+	// session and a remote token caller have their own proof.
+	if currentlyOn && !proved && isLocalClient(r.RemoteAddr) && !isLoopbackClient(r.RemoteAddr) && !appLinkOverSession(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="ftw-lan"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "valid LAN password required"})
+		return
+	}
 	enabled := *req.Enabled
 	if enabled {
-		s.deps.CfgMu.RLock()
-		currentlyOn := s.deps.Cfg.API.LANAuth
-		s.deps.CfgMu.RUnlock()
 		// While the lock is off, whoever reaches this route is already an
 		// owner: they may change any setting and pair a phone as an owner
 		// (appLinkOwnerMintAllowed). Setting the first password gives them
@@ -460,7 +478,7 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "password required to enable LAN auth"})
 				return
 			}
-		case len(req.Password) > maxLANPasswordLen:
+		case utf8.RuneCountInString(req.Password) > maxLANPasswordLen:
 			writeJSON(w, http.StatusBadRequest, map[string]string{
 				"error": fmt.Sprintf("password must be at most %d characters", maxLANPasswordLen),
 			})
@@ -499,11 +517,21 @@ func (s *Server) handleAuthPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "could not revoke sessions"})
 		return
 	}
-	// Whoever just chose the password has proved it, so this browser stays
-	// signed in and goes on without typing it again. A failed sign-in only
-	// means the page asks for the password; the lock is already on.
+	switch {
+	case !enabled:
+		slog.Info("audit: house password turned off", "from", remoteHost(r))
+	case req.Password != "" && currentlyOn:
+		slog.Info("audit: house password changed", "from", remoteHost(r))
+	case req.Password != "":
+		slog.Info("audit: house password turned on", "from", remoteHost(r))
+	}
+	// A browser that chose the first password, or changed it while signed
+	// in, stays signed in and goes on without typing it again. The box
+	// itself may replace a password it never proved, as it may change any
+	// setting, but that earns no sign-in. A failed sign-in only means the
+	// page asks for the password; the lock is already on.
 	signedIn := false
-	if enabled && req.Password != "" && !appLinkOverSession(r) {
+	if enabled && req.Password != "" && (!currentlyOn || proved) && localBrowser(r) {
 		status, _ := startLANSession(w, s.deps.State, cfgCopy.LANPasswordHash)
 		signedIn = status == 0
 	}

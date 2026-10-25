@@ -175,7 +175,7 @@ func bootstrapAssistant(save func(*config.Config) error, restart func() error) h
 			Confirmed bool   `json:"confirmed"`
 			Password  string `json:"password"`
 		}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&q); err != nil || !q.Confirmed {
 			writeBootstrapJSON(w, http.StatusBadRequest, map[string]string{"error": "confirm starting an empty measurement installation"})

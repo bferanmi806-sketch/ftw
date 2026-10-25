@@ -208,17 +208,27 @@ readable without it; a viewer caller is minted for those reads.
   <house-password>` or `Authorization: Bearer <FTW_API_TOKEN>`. The browser
   sign-in sets an `HttpOnly` session cookie (`ftw_lan`, 30 days). Five
   wrong passwords lock every sign-in for 30 seconds; retrying the API
-  token never counts. Changing or turning off the password needs it.
+  token never counts. From another device, changing or turning off the
+  password needs it.
 - **The box itself** (`127.0.0.1` / `::1`) needs no password for settings,
-  so `ftw` commands keep working. Letting an assistant in needs it from
-  every address, the box included: what proves the owner is the password,
-  not where the browser runs.
+  so `ftw` commands keep working and `ftw password reset` can turn it off.
+  A browser on the box signs in like any other before it lets an
+  assistant in. Drivers cannot reach the API at all; anything else that
+  runs on the box can already change every setting.
 
 **Forgot it**, or someone else set it first: turn it off on the box, then
 choose a new one on the box's page.
 
 ```bash
 ftw password reset
+```
+
+The `ftw` command moves with `install.sh --refresh`, not with `ftw update`.
+If it answers `unknown command password`, run the same step with Core's own
+binary for the release `ftw status` names:
+
+```bash
+/opt/ftw/releases/v0.X.Y/ftw password reset
 ```
 
 On Docker, run the box's own binary in its container (add

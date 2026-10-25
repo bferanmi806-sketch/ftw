@@ -674,11 +674,12 @@ above and its approval key, and an agent can never reach them.
   `E_CAP_EXCEEDED {cap: "expiresAtMs", max}`.
 - **Every route that widens access needs a browser signed in with the
   house password,** on another device or on the box itself. The password,
-  not the address, proves the owner. Loopback is an owner for settings
-  without it, but not for widening; a driver cannot reach the API (below)
-  and the session passthrough is refused. `box.widen` in `GET /api/agents`
-  says whether this request would pass, so the page stops before a code is
-  spent.
+  not the address, proves the owner. Loopback stays an owner for settings
+  without it, so it could replace the password and then sign in: it is not
+  a wall against programs on the box. A driver cannot reach the API
+  (below), and the session passthrough is refused. `box.widen` in
+  `GET /api/agents` says whether this request would pass, so the page stops
+  before a code is spent.
 - **Drivers never reach the box's API.** A driver's HTTP, TCP or WebSocket
   connection to a port the API listens on is refused, whether it goes to a
   loopback address or to an address of the box. The check runs on the

@@ -577,6 +577,107 @@ func TestTheFirstHousePasswordFromAnyAddress(t *testing.T) {
 	}
 }
 
+// Two first enables race: Authenticate let both in while the lock was off,
+// and the write lock serialises them. The second proved nothing once the
+// lock is on, so it may not replace the first browser's password.
+func TestASecondFirstEnableCannotReplaceTheFirst(t *testing.T) {
+	resetLANGuesses(t)
+	srv := newLANAuthServer(t)
+	first := postLANAuthJSON(srv, http.MethodPost, "http://ftw.local:8080/api/auth/password", "192.168.1.10:43210",
+		`{"password":"`+testHousePassword+`","enabled":true}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first = %d (body=%s)", first.Code, first.Body.String())
+	}
+	// The second request as the handler sees it after Authenticate ran with
+	// the lock still off: a LAN owner with no proof on its context.
+	for _, body := range []string{`{"password":"visitor-pass","enabled":true}`, `{"enabled":false}`} {
+		late := httptest.NewRequest(http.MethodPost, "http://ftw.local:8080/api/auth/password", strings.NewReader(body))
+		late.RemoteAddr = "192.168.1.77:5000"
+		late.Header.Set("Content-Type", "application/json")
+		late = late.WithContext(apiauth.WithCaller(late.Context(), localCaller(late)))
+		rr := httptest.NewRecorder()
+		srv.handleAuthPassword(rr, late)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("%s after the lock came on = %d, want 401 (body=%s)", body, rr.Code, rr.Body.String())
+		}
+	}
+	if !VerifyStoredLANSecret(srv.deps.State, testHousePassword) || !srv.deps.Cfg.API.LANAuth {
+		t.Fatal("the late request changed the lock")
+	}
+}
+
+// The box itself may replace a password it never proved, as it may change
+// any setting, but that does not sign it in. Signed in, it stays signed in.
+func TestTheBoxItselfChangingThePasswordEarnsNoSignIn(t *testing.T) {
+	resetLANGuesses(t)
+	srv := newLANAuthServer(t)
+	enableStoredLANAuth(t, srv)
+	rr := postLANAuthJSON(srv, http.MethodPost, "http://127.0.0.1:8080/api/auth/password", "127.0.0.1:43210",
+		`{"password":"replaced-on-the-box","enabled":true}`)
+	if rr.Code != http.StatusOK || strings.Contains(rr.Body.String(), `"signed_in":true`) {
+		t.Fatalf("unproved change on the box = %d %s, want 200 without a sign-in", rr.Code, rr.Body.String())
+	}
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == lanSessionCookieName && c.Value != "" {
+			t.Fatal("an unproved change set a session cookie")
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/api/auth/password",
+		strings.NewReader(`{"password":"changed-while-signed-in","enabled":true}`))
+	req.RemoteAddr = "127.0.0.1:43210"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer replaced-on-the-box")
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"signed_in":true`) {
+		t.Fatalf("proved change on the box = %d %s, want a sign-in", rr.Code, rr.Body.String())
+	}
+}
+
+// The browser on the box itself signs in with the cookie, and that cookie
+// lets it widen an assistant's access.
+func TestACookieOnTheBoxItselfCanWiden(t *testing.T) {
+	resetLANGuesses(t)
+	srv := newLANAuthServer(t)
+	srv.deps.Agents = newStubAgents("")
+	rr := postLANAuthJSON(srv, http.MethodPost, "http://127.0.0.1:8080/api/auth/password", "127.0.0.1:43210",
+		`{"password":"`+testHousePassword+`","enabled":true}`)
+	token := lanSessionFromRecorder(t, rr)
+	list := func(cookie string) bool {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/agents", nil)
+		req.RemoteAddr = "127.0.0.1:43210"
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: lanSessionCookieName, Value: cookie})
+		}
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, req)
+		var got struct {
+			Box AgentFacts `json:"box"`
+		}
+		_ = json.Unmarshal(rr.Body.Bytes(), &got)
+		return got.Box.Widen
+	}
+	if !list(token) {
+		t.Fatal("the box's own browser, signed in, cannot widen")
+	}
+	if list("") {
+		t.Fatal("the box itself widens without signing in")
+	}
+}
+
+// An app session reaches the box looking like loopback. Its own key proves
+// it; a house password in its headers is never read.
+func TestAnAppSessionNeverPresentsTheHousePassword(t *testing.T) {
+	resetLANGuesses(t)
+	req := sessionRequest(http.MethodGet, "/api/agents", "")
+	req.Header.Set("Authorization", "Bearer "+testHousePassword)
+	ok, after := resolveLANSecret(req, lanAuthPolicy(testHousePassword))
+	if _, checked := lanSecretFrom(after.Context()); ok || checked {
+		t.Fatalf("a session's header was read as the house password: ok %v checked %v", ok, checked)
+	}
+}
+
 // How long the password is, is the owner's choice: the page warns about a
 // short one, and the box takes it.
 func TestAShortHousePasswordIsTheOwnersChoice(t *testing.T) {

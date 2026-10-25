@@ -255,7 +255,8 @@ describe("what stops a grant before a code is spent", () => {
     assert.equal(P.readiness(ok, "", { lan_auth: false, configured: false }).kind, "choose");
     assert.equal(P.readiness(ok, "", { lan_auth: false, configured: true }).kind, "choose");
     assert.equal(P.readiness(ok, "", { lan_auth: true, configured: false }).kind, "choose");
-    assert.equal(P.readiness(ok, "", null).kind, "choose");
+    // A box that could not say whether it has one is not offered "choose".
+    assert.equal(P.readiness(ok, "", null).kind, "unknown");
     // A password, but this browser has not signed in, wherever it runs.
     assert.equal(P.readiness({ box: { ...ok.box, widen: false } }, "", on).kind, "signin");
     assert.equal(P.readiness({ box: { ...ok.box, offers: false } }, "", on).kind, "keys");
