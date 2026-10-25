@@ -59,14 +59,27 @@ test('expected limits stay calm and explain themselves', () => {
   assert.equal(car.title, 'Car is full');
   const limit = controlStatus(row({kind: 'ev', status: 'limited', reason: 'device_limit', severity: 'warning', device_limit_a: 8, requested_a: 16}));
   assert.equal(limit.text, 'The charger’s own limit is 8 A, below the 16 A FTW asked for.');
-  const balanced = controlStatus(row({kind: 'ev', mode: 'plan', status: 'limited', reason: 'load_balancer_limit', sent_w: 11000, actual_w: 8300}));
-  assert.equal(balanced.title, 'Limited by the charger’s load balancer');
-  assert.equal(balanced.text, 'Asked for 11.0 kW charge, delivering 8.3 kW. The charger’s load balancer is limiting the car.');
-  assert.match(balanced.next, /main fuse setting matches the load balancer/);
-  assert.doesNotMatch(balanced.next, /has not said why/);
+  // Field trace, 23 Oct 2026: 15 A ordered, Easee's load balancing allowed 13 A.
+  const lb = {kind: 'ev', mode: 'plan', status: 'limited', reason: 'load_balancer_limit', severity: 'info',
+    sent_w: 10350, actual_w: 8850, requested_a: 15, offered_a: 15, device_limit_a: 16, limit_a: 13, limited_by: 'load_balancer'};
+  const balanced = controlStatus(row({...lb, make: 'Easee'}));
+  assert.equal(balanced.title, 'Limited by the charger’s load balancing');
+  assert.equal(balanced.text, 'Easee limits the charger to 13 A (its load balancing). FTW asked for 15 A; the car takes 8.8 kW.');
+  assert.equal(balanced.next, 'If this happens often, compare the charger’s load balancing settings with FTW’s main fuse setting.');
   assert.equal(balanced.tone, 'neutral');
-  const held = controlStatus(row({kind: 'ev', status: 'limited', reason: 'load_balancer_limit', sent_w: 11000, actual_w: 0}));
-  assert.equal(held.text, 'Asked for 11.0 kW charge, but the charger’s load balancer gives the car no current.');
+  assert.equal(controlStatus(row(lb)).text, 'The charger’s load balancing limits it to 13 A. FTW asked for 15 A; the car takes 8.8 kW.');
+  assert.deepEqual(controlNumbers(row(lb)).filter(([label]) => /current|offer|limit|Allocated/.test(label)), [
+    ['Requested current', '15 A'], ['Charger offer', '15 A'], ['Charger limit', '16 A'], ['Allocated by load balancing', '13 A']]);
+  // A lower offer with no cause shown says what the charger offers, no more.
+  const unexplained = {...lb, reason: 'offered_current_lower', severity: 'warning', limited_by: undefined};
+  assert.equal(controlStatus(row(unexplained)).text, 'The charger offers 13 A, below the 15 A FTW asked for.');
+  assert.deepEqual(controlNumbers(row(unexplained)).at(-1), ['Offered to the car', '13 A']);
+  const onePhase = controlStatus(row({kind: 'ev', mode: 'plan', status: 'limited', reason: 'one_phase', severity: 'info',
+    sent_w: 3680, actual_w: 3650, charging_phase: 'L1', charging_phase_max_w: 3680}));
+  assert.equal(onePhase.title, 'Charging on one phase');
+  assert.equal(onePhase.text, 'The car charges on L1 only, at most 3.7 kW. FTW plans with what it takes.');
+  assert.equal(onePhase.next, '');
+  assert.equal(onePhase.tone, 'neutral');
 });
 
 test('the receipt walks from sent to confirmed without inventing proof', () => {
@@ -155,6 +168,10 @@ test('limited positive EV offer does not explain prolonged zero delivery', () =>
  assert.equal(missing.title,'Not following');
  assert.match(missing.text,/6.9 kW charge.*no power/);
  const capped=controlStatus(row({kind:'ev',status:'limited',reason:'fuse_limit',sent_w:6900,actual_w:6800}));
- assert.equal(capped.title,'Limited by site power limits');
- assert.match(capped.text,/fuse and import limits/);
+ assert.equal(capped.title,'Limited by the main fuse');
+ assert.match(capped.text,/protect the main fuse/);
+ const hour=controlStatus(row({kind:'ev',status:'limited',reason:'import_limit',sent_w:4140,actual_w:4100}));
+ assert.equal(hour.title,'Limited by the hourly import limit');
+ assert.match(hour.text,/this hour’s grid import/);
+ assert.doesNotMatch(hour.text,/fuse/);
 });

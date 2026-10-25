@@ -81,7 +81,7 @@ func (a *appSite) Snapshot() appproto.Snapshot {
 	live := a.tel.LiveMeasurementNow(siteMeterDriver, opts)
 	snap := appproto.Snapshot{Mode: mode, ControlRev: rev, FuseA: fuseA,
 		GridW: live.GridW, PVW: live.PVW, BatteryW: live.BatteryW, EVW: live.EVW,
-		LoadW: live.HouseholdW, LoadWKnown: live.Valid}
+		LoadW: live.LoadW, LoadWKnown: live.LoadKnown}
 
 	uptimeMs := time.Since(a.started).Milliseconds()
 	seen := map[string]bool{}
@@ -285,12 +285,14 @@ func (a *appModes) ObservedMode() (control.Mode, bool) {
 	return a.ctrl.Mode, true
 }
 
-// appHistory serves the app's history tiles from the energy ledger.
+// appHistory serves the app's history tiles: mean power per bucket, signed
+// as the site convention says (positive watts flow into the site).
 //
-// The ledger stores energy per flow per bucket; the wire wants mean power per
-// signed series. The mapping below is the site convention and nothing else:
-// positive watts flow into the site, so import minus export is the grid, and
-// PV is generation negated. W = Wh × 3 600 000 / bucket, no other arithmetic.
+// Grid, PV and battery are the measured power rows /api/history draws,
+// averaged over each bucket. Their energy counters may move in 0.1 kWh steps
+// (Sungrow), so a ledger bucket held 0 or 1.2 kW while the sun shone at
+// 0.4 kW. Load is the ledger's consumer use, which the source accounting
+// already balances from power: W = Wh × 3 600 000 / bucket.
 type appHistory struct {
 	st *state.Store
 }
@@ -303,30 +305,64 @@ func (a *appHistory) Window(
 		sign float64
 	}
 	termsByName := map[string][]term{
-		"grid_w":    {{state.FlowGridImport, 1}, {state.FlowGridExport, -1}},
-		"pv_w":      {{state.FlowPVGeneration, -1}},
-		"battery_w": {{state.FlowBatteryCharge, 1}, {state.FlowBatteryDischarge, -1}},
-		"load_w":    {{state.FlowConsumerUse, 1}},
+		"load_w": {{state.FlowConsumerUse, 1}},
+	}
+	type measured struct {
+		missing state.HistoryMissing
+		w       func(state.PowerBucket) float64
+	}
+	powerByName := map[string]measured{
+		"grid_w":    {state.MissingGrid, func(b state.PowerBucket) float64 { return b.GridW }},
+		"pv_w":      {state.MissingPV, func(b state.PowerBucket) float64 { return b.PVW }},
+		"battery_w": {state.MissingBattery, func(b state.PowerBucket) float64 { return b.BatW }},
 	}
 
-	points, _, err := a.st.LoadEnergyHistoryContext(ctx, state.EnergyHistoryQuery{
-		SinceMS:  fromMs,
-		UntilMS:  toMs,
-		BucketMS: stepMs,
-		// One tile is at most 168 buckets; the ledger's own cap is 2000.
-		Limit: 2000,
-	})
-	if err != nil {
-		return nil, err
+	wantLedger := false
+	for _, name := range names {
+		wantLedger = wantLedger || termsByName[name] != nil
+	}
+	var points []state.EnergyLedgerPoint
+	var err error
+	if wantLedger {
+		points, _, err = a.st.LoadEnergyHistoryContext(ctx, state.EnergyHistoryQuery{
+			SinceMS:  fromMs,
+			UntilMS:  toMs,
+			BucketMS: stepMs,
+			// One tile is at most 168 buckets; the ledger's own cap is 2000.
+			Limit: 2000,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// A bucket exists on the wire only if some term reported it. A bucket
 	// where nothing was metered stays absent and becomes MISSING, which is
 	// the honest answer — zero would claim the house used no power at all.
 	byName := make(map[string]map[int64]float64, len(names))
+	wantPower := false
 	for _, name := range names {
 		if termsByName[name] != nil {
 			byName[name] = map[int64]float64{}
+		}
+		if _, ok := powerByName[name]; ok {
+			byName[name] = map[int64]float64{}
+			wantPower = true
+		}
+	}
+	if wantPower {
+		buckets, err := a.st.LoadPowerBuckets(ctx, fromMs, toMs, stepMs)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range buckets {
+			for _, name := range names {
+				// A flow some row did not measure has no mean here: the
+				// rows that did would read as the whole bucket.
+				if m, ok := powerByName[name]; ok && b.Missing&m.missing == 0 {
+					byName[name][b.StartMS] = m.w(b)
+				}
+			}
 		}
 	}
 	for _, p := range points {
@@ -552,14 +588,17 @@ func (a *appPlans) Latest() *mpc.Plan {
 // redelivery of the same one. Derived from the plan's own timestamp because
 // mpc has no revision of its own and inventing one there would be a field two
 // packages had to keep in step.
+//
+// The plan is read under revMu. Each session calls Rev, and a session that
+// read the old plan outside the lock could count it again after another had
+// counted the new one, moving the rev twice for one replan.
 func (a *appPlans) Rev() uint64 {
+	a.revMu.Lock()
+	defer a.revMu.Unlock()
 	plan := a.Latest()
 	if plan == nil {
 		return 0
 	}
-
-	a.revMu.Lock()
-	defer a.revMu.Unlock()
 	if plan.GeneratedAtMs != a.lastGen {
 		a.lastGen = plan.GeneratedAtMs
 		a.rev++
@@ -766,11 +805,11 @@ func startAppLink(
 	// the same whichever session reads it.
 	views := agentViews{site: &cloudSite{site: site, api: gateway, cars: carsRT}, cars: carsRT}
 
-	// handlerFor builds one handler for one session: a phone's stream, or a
-	// watch's exchange. They share the ports above, which are read-only
-	// apart from the mode and the command log, and the mode goes through
-	// control's own validation.
-	handlerFor := func() appuplink.HandlerBuilder {
+	// handlerFor builds one handler for one session: a phone's stream, or
+	// with exchange set a watch's exchange. They share the ports above, which
+	// are read-only apart from the mode and the command log, and the mode
+	// goes through control's own validation.
+	handlerFor := func(exchange bool) appuplink.HandlerBuilder {
 		return func(
 			sender appproto.Sender,
 			caller apiauth.Caller,
@@ -793,6 +832,7 @@ func startAppLink(
 				Caller:       caller,
 				Grants:       grants,
 				Commands:     cmds,
+				Exchange:     exchange,
 				Access:       agents.access,
 				Agents:       agents.state,
 				Audit:        agents.audit,
@@ -818,16 +858,17 @@ func startAppLink(
 	}
 
 	uplink, err := appuplink.New(appuplink.Options{
-		Enroll:   enroll,
-		Handler:  handlerFor(),
-		Arrivals: arrivalsFor(ctx, tel),
+		Enroll:          enroll,
+		Handler:         handlerFor(false),
+		ExchangeHandler: handlerFor(true),
+		Arrivals:        arrivalsFor(ctx, tel),
 	})
 	if err != nil {
 		return enroll, nil, enabled, err
 	}
 	agents.access.Drop = func(key []byte) { uplink.DropSessionsByAppKey(key) }
 	agents.boxPage = func(by string) (*appproto.Handler, error) {
-		return handlerFor()(discardSender{}, boxPageCaller(by), boxPageGrant{})
+		return handlerFor(false)(discardSender{}, boxPageCaller(by), boxPageGrant{})
 	}
 	go sweepAgents(ctx, agents)
 
@@ -940,10 +981,10 @@ func (a *appLinkAPI) MintPairingCode(role string) ([]byte, time.Time, error) {
 	return code, expires, appLinkError(err)
 }
 
-// MintWatchCode issues a watch code bound to the owner phone that asked.
-func (a *appLinkAPI) MintWatchCode(parentID string) ([]byte, time.Time, error) {
-	code, expires, err := a.enroll.MintWatchCode(parentID, appenroll.WatchTTL)
-	return code, expires, appLinkError(err)
+// AddWatch adds a watch by its key under the owner phone that asked.
+func (a *appLinkAPI) AddWatch(parentID string, key []byte) (string, error) {
+	grant, err := a.enroll.AddWatch(parentID, key)
+	return grant.DeviceID, appLinkError(err)
 }
 
 func (a *appLinkAPI) MintSpokenCode(role string) (string, time.Time, error) {
@@ -1068,6 +1109,8 @@ func appLinkError(err error) error {
 		return api.ErrWatchAppRole
 	case errors.Is(err, appenroll.ErrWatchNeedsOwner):
 		return api.ErrWatchNeedsOwner
+	case errors.Is(err, appenroll.ErrWatchKey):
+		return api.ErrWatchAppKey
 	default:
 		return err
 	}

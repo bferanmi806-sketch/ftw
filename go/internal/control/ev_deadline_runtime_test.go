@@ -75,8 +75,8 @@ func TestJoinedNoBatteryNoPlanGoalContinuity(t *testing.T) {
 			return nil
 		})
 	controller.SetSiteFuse(loadpoint.SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
-	controller.SetPerPhaseMeterAmps(func() (float64, float64, float64, bool) { return phaseA, phaseA, phaseA, true })
-	controller.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(tel, st, mgr.States(), mgr.Configs(), 17250) })
+	controller.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(tel, st, mgr.States(), controller.FuseConfigs(), 17250) })
+	controller.SetFusePhaseRoomA(func() (float64, bool) { return EVFusePhaseRoomA(st) })
 	controller.TickWithDispatch(ctx, now, true)
 	if len(commands) == 0 || commands[len(commands)-1] <= 0 {
 		t.Fatalf("goal stopped at integration boundary: %v", commands)
@@ -172,9 +172,8 @@ func TestJoinedMixedPhaseNoCreditBeforeMeasuredReduction(t *testing.T) {
 			return nil
 		})
 	controller.SetSiteFuse(loadpoint.SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
-	var sampledWorst float64
-	controller.SetPerPhaseMeterAmps(func() (float64, float64, float64, bool) { return sampledWorst, actualB / 690, actualB / 690, true })
-	controller.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(tel, st, mgr.States(), mgr.Configs(), 17250) })
+	controller.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(tel, st, mgr.States(), controller.FuseConfigs(), 17250) })
+	controller.SetFusePhaseRoomA(func() (float64, bool) { return EVFusePhaseRoomA(st) })
 	emit := func(driver string, kind telemetry.DerType, at time.Time, w float64, amps bool) {
 		d := map[string]any{"control_power_observed_at": at.Format(time.RFC3339Nano), "control_power_available": true}
 		if amps {
@@ -192,7 +191,6 @@ func TestJoinedMixedPhaseNoCreditBeforeMeasuredReduction(t *testing.T) {
 		at := wall.Add(-9*time.Second + time.Duration(step)*1500*time.Millisecond)
 		emit(cfgA.DriverName, telemetry.DerEV, at, actualA, false)
 		emit(cfgB.DriverName, telemetry.DerEV, at, actualB, false)
-		sampledWorst = actualA/230 + actualB/690
 		emit("meter", telemetry.DerMeter, at.Add(500*time.Millisecond), actualA+actualB, true)
 		emit(cfgA.DriverName, telemetry.DerEV, at.Add(time.Second), actualA, false)
 		emit(cfgB.DriverName, telemetry.DerEV, at.Add(time.Second), actualB, false)
@@ -203,4 +201,66 @@ func TestJoinedMixedPhaseNoCreditBeforeMeasuredReduction(t *testing.T) {
 		t.Fatalf("earlier goal never gained safe measured headroom: A=%v B=%v", actualA, actualB)
 	}
 	t.Logf("%d real sends across6 ticks: final1p %.0fW +3p %.0fW, worst phase%.2fA", sends, actualA, actualB, actualA/230+actualB/690)
+}
+
+// Without a plan, a car whose own charger takes less than a stepless
+// charger's minimum (a 3.7 kW plug-in hybrid on an 11 or 22 kW charger) is
+// ordered that minimum, as the plan orders it: never 0 W because the car's
+// own maximum is lower.
+func TestJoinedNoPlanGoalSmallCarGetsChargerMinimum(t *testing.T) {
+	ctx := context.Background()
+	for _, maxW := range []float64{11040, 22080} {
+		now := time.Now()
+		cfg := loadpoint.Config{ID: "garage", DriverName: "charger", VehicleCapacityWh: 15000, PluginSoC: .3, MinChargeW: 4140, MaxChargeW: maxW}
+		mgr := loadpoint.NewManager()
+		mgr.Load([]loadpoint.Config{cfg})
+		mgr.Observe(cfg.ID, true, 0, 0, true)
+		if !mgr.SetCarBinding(cfg.ID, loadpoint.CarBinding{ID: "phev", MaxW: 3680}) ||
+			!mgr.SetCurrentSoC(cfg.ID, .3) || !mgr.SetTarget(cfg.ID, .8, now.Add(3*time.Hour)) {
+			t.Fatal("goal fixture rejected")
+		}
+		svc := &mpc.Service{LoadpointStates: mgr.States}
+		tel := telemetry.NewStore()
+		phaseA := 1000.0 / (3 * 230)
+		meterData, _ := json.Marshal(map[string]float64{"l1_a": phaseA, "l2_a": phaseA, "l3_a": phaseA})
+		tel.Update("meter", telemetry.DerMeter, 1000, nil, meterData)
+		tel.RecordDriverSuccess("meter")
+		tel.Update(cfg.DriverName, telemetry.DerEV, 0, nil, json.RawMessage(`{"connected":true,"request_active":true}`))
+		tel.RecordDriverSuccess(cfg.DriverName)
+		st := NewState(0, 0, "meter")
+		st.Mode = ModePlannerArbitrage
+		st.UseEnergyDispatch = true
+		st.SiteFuseAmps = 25
+		st.SiteFuseVoltage = 230
+		st.SiteFusePhases = 3
+		var commands []float64
+		controller := loadpoint.NewController(mgr,
+			func(at time.Time) (loadpoint.Directive, bool) {
+				d, ok := svc.SlotDirectiveAt(at)
+				return d.LoadpointDirective(), ok
+			},
+			func(string) (loadpoint.EVSample, bool) {
+				return loadpoint.EVSample{Connected: true, RequestActive: true, PowerW: 0, PowerAt: now}, true
+			},
+			func(_ context.Context, _ string, p []byte) error {
+				var cmd struct {
+					Action string  `json:"action"`
+					PowerW float64 `json:"power_w"`
+				}
+				if err := json.Unmarshal(p, &cmd); err != nil {
+					return err
+				}
+				if cmd.Action == "ev_set_current" {
+					commands = append(commands, cmd.PowerW)
+				}
+				return nil
+			})
+		controller.SetSiteFuse(loadpoint.SiteFuse{MaxAmps: 25, Voltage: 230, PhaseCnt: 3})
+		controller.SetFuseEVMax(func() (float64, bool) { return EVFuseBudget(tel, st, mgr.States(), controller.FuseConfigs(), 17250) })
+		controller.SetFusePhaseRoomA(func() (float64, bool) { return EVFusePhaseRoomA(st) })
+		controller.TickWithDispatch(ctx, now, true)
+		if len(commands) == 0 || commands[len(commands)-1] != 4140 {
+			t.Fatalf("%.0f W charger: orders %v, want the charger's minimum 4140 W", maxW, commands)
+		}
+	}
 }

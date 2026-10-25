@@ -621,7 +621,7 @@ func (s *Store) backupToCompressed(dstPath string, report func(BackupProgress), 
 	return s.backupToCompressedContext(context.Background(), dstPath, report, capture)
 }
 
-func (s *Store) backupToCompressedContext(parent context.Context, dstPath string, report func(BackupProgress), capture func(string) error) error {
+func (s *Store) backupToCompressedContext(parent context.Context, dstPath string, report func(BackupProgress), capture func(string) error) (err error) {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store: backup on nil store")
 	}
@@ -633,6 +633,11 @@ func (s *Store) backupToCompressedContext(parent context.Context, dstPath string
 
 	ctx, cancel := s.backupWorkContextParent(parent)
 	defer cancel()
+	defer func() {
+		if cause := context.Cause(ctx); err != nil && errors.Is(cause, errLiveBackupLimit) {
+			err = fmt.Errorf("%w: %w", cause, err)
+		}
+	}()
 	ctx = context.WithValue(ctx, backupReportKey{}, report)
 	sourceBytes := s.BackupSourceBytes()
 	if err := EnsureDiskSpace(filepath.Dir(dstPath), backupCopyScratch(sourceBytes)); err != nil {
@@ -641,6 +646,8 @@ func (s *Store) backupToCompressedContext(parent context.Context, dstPath string
 
 	rawPath, cleanupRaw := backupScratchFile(dstPath, sourceBytes)
 	defer cleanupRaw()
+	release := HoldBackupScratch(filepath.Dir(rawPath))
+	defer release()
 	reportBackupProgress(report, BackupProgress{Phase: BackupPhaseCopying})
 	if err := s.copyStateForBackup(ctx, rawPath); err != nil {
 		return fmt.Errorf("backup state: %w", err)
@@ -1491,6 +1498,28 @@ func (s *Store) LoadHistoryContext(ctx context.Context, sinceMs, untilMs int64, 
 	return s.loadArchiveHistory(ctx, sinceMs, untilMs, maxPoints)
 }
 
+// historyTierUnion is every stored power row in a range, one per ts_ms:
+// the hot tier over warm over cold, then the dashboard aggregates. COALESCE
+// to 0 so NULL columns (from partial aggregations) scan cleanly; a row's
+// missing flags say which of them were not measured.
+const historyTierUnion = `
+		WITH all_rows AS (
+			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 0 AS tier,1 AS n,1 AS resolution_ms,ts_ms AS first_ms,0 AS missing FROM history_hot
+			WHERE ts_ms BETWEEN ? AND ?
+			UNION ALL
+			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 1,1,900000,ts_ms,0 FROM history_warm
+			WHERE ts_ms BETWEEN ? AND ?
+			UNION ALL
+			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 2,1,86400000,ts_ms,0 FROM history_cold
+			WHERE ts_ms BETWEEN ? AND ?
+		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-1,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard d LEFT JOIN history_quality q ON q.kind='dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
+		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-2,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard_partial d LEFT JOIN history_quality q ON q.kind='partial_dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
+ ),
+		deduped AS (
+			SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY ts_ms ORDER BY tier) AS rn FROM all_rows) WHERE rn=1
+		)
+	`
+
 func (s *Store) loadArchiveHistory(ctx context.Context, sinceMs, untilMs int64, maxPoints int) ([]HistoryPoint, error) {
 	if maxPoints > maxSeriesBuckets {
 		return nil, ErrHistoryQueryLimit
@@ -1523,29 +1552,9 @@ func (s *Store) loadArchiveHistory(ctx context.Context, sinceMs, untilMs int64, 
 		bucketMs = max(sourceWidth, ((bucketMs+sourceWidth-1)/sourceWidth)*sourceWidth)
 		queryFrom = bucketStart(sinceMs, ArchiveResolutionMS)
 	}
-	// Union across all three tiers. Dedupe on ts_ms preferring hot over warm over cold.
-	// COALESCE to 0 so NULL columns (from partial aggregations) scan cleanly.
-	const tierUnion = `
-		WITH all_rows AS (
-			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 0 AS tier,1 AS n,1 AS resolution_ms,ts_ms AS first_ms,0 AS missing FROM history_hot
-			WHERE ts_ms BETWEEN ? AND ?
-			UNION ALL
-			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 1,1,900000,ts_ms,0 FROM history_warm
-			WHERE ts_ms BETWEEN ? AND ?
-			UNION ALL
-			SELECT ts_ms, grid_w, pv_w, bat_w, load_w, bat_soc, 2,1,86400000,ts_ms,0 FROM history_cold
-			WHERE ts_ms BETWEEN ? AND ?
-		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-1,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard d LEFT JOIN history_quality q ON q.kind='dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
-		UNION ALL SELECT last_ms,grid_w,pv_w,bat_w,load_w,bat_soc,-2,n,d.resolution_ms,first_ms,COALESCE(q.missing,0) FROM history_dashboard_partial d LEFT JOIN history_quality q ON q.kind='partial_dashboard' AND q.start_ms=d.start_ms AND q.resolution_ms=d.resolution_ms WHERE last_ms BETWEEN ? AND ?
- ),
-		deduped AS (
-			SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY ts_ms ORDER BY tier) AS rn FROM all_rows) WHERE rn=1
-		)
-	`
-	rangeUnion := tierUnion
+	rangeUnion := historyTierUnion
 	if sourceMode {
-		rangeUnion = strings.ReplaceAll(tierUnion, "ts_ms BETWEEN ? AND ?", "ts_ms >= ? AND ts_ms < ?")
-		rangeUnion = strings.ReplaceAll(rangeUnion, "last_ms BETWEEN ? AND ?", "last_ms >= ? AND last_ms < ?")
+		rangeUnion = halfOpenHistoryRange(historyTierUnion)
 	}
 	var (
 		rows     *sql.Rows

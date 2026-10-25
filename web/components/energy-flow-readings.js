@@ -51,9 +51,9 @@ function planetColor(role, watts, thresholdW) {
   }
   if (role === "pv") return isIdle(watts, thresholdW) ? "var(--fg-muted)" : "var(--amber)";
   if (role === "battery") {
-    return isIdle(watts, thresholdW) ? "var(--cyan)" : watts >= 0 ? "var(--green-e)" : "var(--red-e)";
+    return !isIdle(watts, thresholdW) && watts < 0 ? "var(--energy-gives)" : "var(--cyan)";
   }
-  if (role === "ev") return isIdle(watts, thresholdW) ? "var(--white-s)" : "var(--green-e)";
+  if (role === "ev") return isIdle(watts, thresholdW) ? "var(--white-s)" : "var(--violet)";
   return "var(--fg)";
 }
 
@@ -88,8 +88,8 @@ export function flowReadingsFromStatus(status, opts) {
     { text: `↑ ${formatEnergyToday(today, "export_wh", false)}`, color: "var(--green-e)", bold: true },
   ];
   const batDailyParts = [
-    { text: `↑ ${formatEnergyToday(today, "bat_charged_wh", false)}`, color: "var(--green-e)", bold: true },
-    { text: `↓ ${formatEnergyToday(today, "bat_discharged_wh", false)}`, color: "var(--red-e)", bold: true },
+    { text: `↑ ${formatEnergyToday(today, "bat_charged_wh", false)}`, color: "var(--cyan)", bold: true },
+    { text: `↓ ${formatEnergyToday(today, "bat_discharged_wh", false)}`, color: "var(--energy-gives)", bold: true },
   ];
 
   const gridW = num(status && status.grid_w);
@@ -207,13 +207,15 @@ export function flowReadingsFromStatus(status, opts) {
     if (!live[role]) planets.push(...offline[role]);
   }
 
-  const hasEstimate = status?.load_estimate != null;
+  // Core says "estimated" when it left an unread device out of Home use.
+  const hasEstimate = status?.load_quality === "estimated";
   // Core qualifies this balance, including missing flows and stale meters.
   // A past energy interval is separate from Power now: it must neither hide
   // nor overwrite current household power. Never derive another balance from
   // independently smoothed display readings here.
   const rawLoad = num(status?.load_w);
-  const powerBalanceW = rawLoad !== null && rawLoad >= 0 ? rawLoad : null;
+  // Shown as Core sends it. Negative means production Core cannot see.
+  const powerBalanceW = rawLoad;
   const loadW = powerBalanceW;
   // Today's share is kWh already in the box, not the live meter. A
   // quiet meter blanks % SELF-POWERED NOW (unknown instantaneous load)

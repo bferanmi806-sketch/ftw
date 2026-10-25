@@ -319,31 +319,11 @@
     return Math.round(w) + " W";
   }
 
-  // Fuse bar color — smooth green→yellow→orange→red gradient across
-  // 0 %→100 %. Anchors land at the named color at each zone
-  // boundary: 0 %=green, 50 %=yellow, 75 %=orange, 90 %+=red. Between
-  // them the hue interpolates linearly so a bar at 45 % already reads
-  // yellow-leaning (h ≈ 100, close to yellow's 95), not solid green —
-  // matches the "45 % is more towards yellow than green" spec. Oklch
-  // holds lightness + chroma constant so the transitions don't muddy.
+  // Fuse bar color. The bar is grid power, so it takes the grid colour, as
+  // on the phone; from 90 % it takes the alarm, because operators just need
+  // to see "DANGER" there.
   function fuseFillColor(pct) {
-    var c = Math.max(0, Math.min(100, pct));
-    var h;
-    if (c < 50) {
-      // 0 → 50 : 150 (green) → 95 (yellow)
-      h = 150 - (c / 50) * (150 - 95);
-    } else if (c < 75) {
-      // 50 → 75 : 95 (yellow) → 50 (orange)
-      h = 95 - ((c - 50) / 25) * (95 - 50);
-    } else if (c < 90) {
-      // 75 → 90 : 50 (orange) → 22 (red)
-      h = 50 - ((c - 75) / 15) * (50 - 22);
-    } else {
-      // 90 → 100: solid red. Saturate rather than continue shifting
-      // hue — operators just need to see "DANGER", not a hue delta.
-      h = 22;
-    }
-    return "oklch(0.78 0.18 " + h.toFixed(1) + ")";
+    return pct >= 90 ? "var(--alarm)" : "var(--red-e)";
   }
 
   // Snap an axis range to "nice" round numbers. Returns { min, max, step }
@@ -722,7 +702,8 @@
     loadW.textContent = formatW(data.load_w);
     var loadDir = document.getElementById("load-dir");
     if (loadDir) {
-      loadDir.textContent = data.load_w == null || !isFinite(data.load_w) ? "no data" : "using now";
+      loadDir.textContent = data.load_w == null || !isFinite(data.load_w) ? "no data"
+        : data.load_quality === "estimated" ? "estimated" : "using now";
     }
 
     // EV tile (tile-mode parity with the energy-flow's EV planet).
@@ -2967,7 +2948,9 @@
         ? "Charging on plan until " + evFmtClock(lp.plan_next_end_ms) + "." + kwPlanned
         : "Charging.";
       if (lp.commanded_reason === "fuse_limit") {
-        text += " Rate is limited by site power limits right now.";
+        text += " Rate is limited by the main fuse right now.";
+      } else if (lp.commanded_reason === "import_limit") {
+        text += " Rate is limited by the hourly import limit right now.";
       }
     } else if (lp.goal_complete === true) {
       text = "The car confirmed this charging goal is complete.";
@@ -2992,7 +2975,10 @@
       // The specific pauses beat the generic branches — this is the
       // line that stops an operator debugging cable and charger while
       // the box is protecting the main fuse (#1009).
-      text = "Paused by site power limits — the house is using the headroom; charging resumes on its own." + kwPlanned;
+      text = "Paused by the main fuse — the house is using the headroom; charging resumes on its own." + kwPlanned;
+      tone = "var(--text)";
+    } else if (lp.commanded_known && !lp.commanded_w && lp.commanded_reason === "import_limit") {
+      text = "Paused by the hourly import limit — this hour’s import budget is used; charging resumes on its own." + kwPlanned;
       tone = "var(--text)";
     } else if (lp.commanded_known && !lp.commanded_w && lp.commanded_reason === "site_meter_stale") {
       text = "Paused for safety: site-meter data is stale — charging resumes when telemetry recovers.";
@@ -3337,6 +3323,7 @@
     battery_hold: "a battery hold took priority",
     core_mode: "the site mode does not allow it",
     fuse_safety_block: "fuse protection stopped it",
+    import_limit_block: "the hourly import limit stopped it",
     restart_lease_invalid: "the saved lease was no longer safe after a restart",
   };
 
@@ -3435,7 +3422,7 @@
     startBtn.style.cursor = "pointer";
     startBtn.style.fontWeight = "600";
     startBtn.style.background = "var(--accent-e)";
-    startBtn.style.color = "#0a0a0a";
+    startBtn.style.color = "var(--on-accent)";
     function renderStartLabel() { startBtn.textContent = "Boost for " + dur.options[dur.selectedIndex].textContent; }
     renderStartLabel();
     dur.addEventListener("change", renderStartLabel);
@@ -3549,7 +3536,7 @@
   }
 
   // buildManualChargeSection renders the Tesla-style manual override: an
-  // amp slider (range = the charger's min/max charge current) plus Start /
+  // amp slider (range = the charger's minimum up to evChargeNowTopW) plus Start /
   // Stop. Start pins a persistent manual hold at the slider's amps,
   // which overrides surplus_only and the plan (the fuse clamp still
   // applies); Stop clears the hold and drops back to whatever mode the
@@ -3561,6 +3548,20 @@
       lp.manual && (lp.manual.requested_w === 0 || lp.manual.state === "paused" || lp.manual.state === "pausing")));
   }
 
+  // evChargeNowTopW is the most a hold can order. Core treats the hold as a
+  // ceiling and floors it to the step table within max_charge_w, so a
+  // one-phase charger rated 7,360 W with a table that stops at 3,680 W
+  // charges at 16 A, not 32.
+  function evChargeNowTopW(lp) {
+    var maxW = (lp && lp.max_charge_w) || 0;
+    var steps = lp && Array.isArray(lp.allowed_steps_w) ? lp.allowed_steps_w : [];
+    var topW = 0;
+    steps.forEach(function (w) {
+      if (w > topW && (maxW <= 0 || w <= maxW)) topW = w;
+    });
+    return topW || maxW;
+  }
+
   function buildManualChargeSection(lp) {
     var phases = (lp && lp.phases) || 3;
     var voltage = (lp && lp.voltage_v) || 230;
@@ -3569,8 +3570,14 @@
     function aToW(a) { return Math.round(a * perA); }
 
     var minA = Math.max(1, Math.round(wToA((lp && lp.min_charge_w) || 0)) || 6);
-    var maxA = Math.round(wToA((lp && lp.max_charge_w) || 0)) || 16;
+    var topW = evChargeNowTopW(lp);
+    var maxA = Math.round(wToA(topW)) || 16;
     if (maxA <= minA) { maxA = minA + 1; }
+    // orderW is the hold a slider position sends. The top sends the top step
+    // itself: a step off whole amps rounds down, and Core floors the rounded
+    // watts to the step below (10,400 W at 3 × 230 V reads 15 A, and
+    // 15 A = 10,350 W orders 9,700 W).
+    function orderW(a) { return a >= maxA && topW > 0 ? topW : aToW(a); }
 
     var active = !!(lp && lp.manual_active);
     var curA = active ? Math.round(wToA((lp && lp.manual_charge_w) || 0)) : maxA;
@@ -3624,7 +3631,7 @@
     readout.style.color = "var(--fg)";
     function renderReadout() {
       var a = parseInt(slider.value, 10) || minA;
-      readout.textContent = a + " A · " + (aToW(a) / 1000).toFixed(1) + " kW";
+      readout.textContent = a + " A · " + (orderW(a) / 1000).toFixed(1) + " kW";
     }
     renderReadout();
     var currentEditingUntil = 0;
@@ -3644,7 +3651,7 @@
     status.style.minHeight = "1em";
     status.setAttribute("role", "status");
     status.setAttribute("aria-live", "polite");
-    var idleText = "Starts at up to " + maxA + " A · " + (aToW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
+    var idleText = "Starts at up to " + maxA + " A · " + (orderW(maxA) / 1000).toFixed(1) + " kW. Ignores the goal and solar rule until you return to the plan or unplug.";
     status.textContent = active ? "Changes apply when you release the slider." : idleText;
     box.appendChild(status);
 
@@ -3665,7 +3672,7 @@
     startBtn.style.cursor = "pointer";
     startBtn.style.fontWeight = "600";
     startBtn.style.background = "var(--accent-e)";
-    startBtn.style.color = "#0a0a0a";
+    startBtn.style.color = "var(--on-accent)";
 
     var stopBtn = document.createElement("button");
     stopBtn.type = "button";
@@ -3756,7 +3763,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          power_w: pause ? 0 : aToW(a),
+          power_w: pause ? 0 : orderW(a),
           hold_s: 0,
           phase_mode: phases === 1 ? "1p" : "3p",
         }),
@@ -4349,7 +4356,7 @@
       dayChips.forEach(function (chip) {
         chip.setAttribute("aria-pressed", chip.on ? "true" : "false");
         chip.style.background = chip.on ? "var(--accent-e)" : "transparent";
-        chip.style.color = chip.on ? "#0a0a0a" : "var(--text-dim)";
+        chip.style.color = chip.on ? "var(--on-accent)" : "var(--text-dim)";
         chip.style.borderColor = chip.on ? "var(--accent-e)" : "var(--line)";
       });
     }
