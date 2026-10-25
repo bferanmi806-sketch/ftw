@@ -1898,7 +1898,7 @@ func main() {
 			if ctx.Err() != nil {
 				return
 			}
-			_ = mpcSvc.Replan(ctx)
+			_ = mpcSvc.ReplanWithReason(ctx, "startup")
 			slog.Info("mpc: startup replan completed")
 		}()
 	}
@@ -3259,7 +3259,7 @@ func main() {
 			ctrlMu.Unlock()
 			if mpcSvc != nil && fuseSatNow && !prevFuseSaturated && time.Since(lastFuseReplan) > fuseReplanCooldown {
 				lastFuseReplan = time.Now()
-				go mpcSvc.Replan(ctx)
+				go mpcSvc.ReplanWithReason(ctx, "fuse_saturated")
 				slog.Info("fuse-saturated → MPC replan triggered")
 			}
 			prevFuseSaturated = fuseSatNow
