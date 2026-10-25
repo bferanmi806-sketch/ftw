@@ -2,6 +2,7 @@ package ocpp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
