@@ -1,7 +1,10 @@
 package ocpp
 
 import (
+	"context"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,6 +36,39 @@ func startServer(t *testing.T, tel *telemetry.Store, approved ...string) (int, *
 	t.Helper()
 	srv := startOCPP(t, Config{Enabled: true, Bind: "127.0.0.1", HeartbeatIntervalS: 60, ApprovedIDs: approved}, tel, false)
 	return srv.cfg.Port, srv
+}
+
+// A port another process holds fails Start, and each charger the site names
+// carries the reason in its health. The library gives up on the port inside
+// a goroutine and logs nowhere we read, so without this the chargers stay
+// away and nothing says why.
+func TestStartFailsWhenAPortIsTaken(t *testing.T) {
+	for _, v201 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("v201=%v", v201), func(t *testing.T) {
+			held, err := net.Listen("tcp", ":0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer held.Close()
+			taken := held.Addr().(*net.TCPAddr).Port
+
+			cfg := &Config{Enabled: true, Bind: "127.0.0.1", Port: taken, ApprovedIDs: []string{"garage"}}
+			if v201 {
+				cfg.Port = freePort(t)
+				cfg.PortV201 = taken
+			}
+			tel := telemetry.NewStore()
+			if _, err := Start(context.Background(), cfg, tel); err == nil {
+				t.Fatalf("Start succeeded with port %d taken", taken)
+			} else if !strings.Contains(err.Error(), fmt.Sprint(taken)) {
+				t.Errorf("error %q does not name port %d", err, taken)
+			}
+			h := tel.DriverHealth("garage")
+			if h == nil || !strings.Contains(h.LastError, fmt.Sprint(taken)) {
+				t.Fatalf("the charger's health does not say why it cannot connect: %+v", h)
+			}
+		})
+	}
 }
 
 func TestStopIsConcurrentAndIdempotent(t *testing.T) {

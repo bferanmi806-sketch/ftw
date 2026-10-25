@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -70,9 +71,12 @@ type Server struct {
 // immediately once the listener is up; the WebSocket loop runs in its own
 // goroutine until ctx is cancelled or Stop() is called.
 //
+// An error means no charger can connect, so it is also recorded as the last
+// error of each charger the site names, where its device status is read.
+//
 // The returned Server is the handle for shutdown — main.go is expected to
 // call Stop() during graceful drain.
-func Start(ctx context.Context, cfg *Config, tel *telemetry.Store) (*Server, error) {
+func Start(ctx context.Context, cfg *Config, tel *telemetry.Store) (_ *Server, err error) {
 	if cfg == nil {
 		return nil, errors.New("ocpp: nil config")
 	}
@@ -80,6 +84,16 @@ func Start(ctx context.Context, cfg *Config, tel *telemetry.Store) (*Server, err
 		return nil, errors.New("ocpp: nil telemetry store")
 	}
 	cfg.Defaults()
+	defer func() {
+		if err != nil {
+			for _, id := range cfg.ApprovedIDs {
+				tel.RecordDriverError(id, err.Error())
+			}
+		}
+	}()
+	if err := checkPorts(cfg); err != nil {
+		return nil, err
+	}
 
 	auth := newAuthorizer(cfg)
 	sockets := newSocketSessions()
@@ -182,6 +196,31 @@ func Start(ctx context.Context, cfg *Config, tel *telemetry.Store) (*Server, err
 		s.Stop()
 	}()
 	return s, nil
+}
+
+// checkPorts opens and closes each enabled port, on every interface as
+// ws.Server.Start does. That Start runs in a goroutine and, when its own
+// listen fails, returns with the error sent to a logger nobody reads, so a
+// taken port has to fail here or the chargers stay away with no reason given.
+func checkPorts(cfg *Config) error {
+	ports := []int{cfg.Port}
+	if cfg.PortV201 > 0 {
+		ports = append(ports, cfg.PortV201)
+	}
+	var open []net.Listener
+	defer func() {
+		for _, l := range open {
+			l.Close()
+		}
+	}()
+	for _, port := range ports {
+		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+		if err != nil {
+			return fmt.Errorf("ocpp: %w", err)
+		}
+		open = append(open, l)
+	}
+	return nil
 }
 
 // newListener builds one version's WebSocket server — TLS when configured —
