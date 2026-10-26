@@ -4,6 +4,7 @@ import { plannedEVWatts, createChargingTimeline } from "./ev-plan.js";
 // the middle, SoC + PV line on bottom. Refreshes every 30s.
 
 import { derivePlanBrief, unavailablePlannerCopy } from "./plan-brief.js";
+import "./power-words.js";
 import { forecastMargins, evShortfallWh } from "./plan-forecast.js";
 import { fillPlanSoC } from "./plan-soc.js";
 import { setActiveCurrency, toDisplay, unitFor } from "./components/price-units.js";
@@ -69,9 +70,8 @@ import {
     return w;
   }
 
-  // The power axis shows sizes, never a raw minus; POWER_SIDES says what
-  // sits above zero and what below.
-  const POWER_SIDES = '↑ import / charge   ↓ export / discharge / solar';
+  // The power axis shows sizes, never a raw minus; the words beside the
+  // centre line say what sits on each side.
   function powerAxisLabel(w) {
     return (Math.abs(w) / 1000).toFixed(1) + 'kW';
   }
@@ -719,13 +719,10 @@ import {
     ctx.fillText(powerAxisLabel(pMagMax), pad.l - 6, powerY(pMagMax) + 4);
     ctx.fillText(powerAxisLabel(-pMagMax), pad.l - 6, powerY(-pMagMax) + 4);
     ctx.textAlign = 'left';
-    // "Power" heading + tiny legend for the two sides of zero, since the
-    // axis labels are sizes. Placed just below the heading at lower
-    // opacity to read as a subtitle.
     ctx.fillText('Power', pad.l + 4, powerY0 + 12);
-    ctx.fillStyle = C.muted;
+    // The axis labels are sizes; these words say what sits on each side.
     ctx.font = '9px system-ui, sans-serif';
-    ctx.fillText(POWER_SIDES, pad.l + 40, powerY0 + 12);
+    globalThis.ftwPowerWords.drawSides(ctx, pad.l + 6, powerYCenter, globalThis.ftwPowerWords.SIDES.plan, C.dim, C.panel);
     ctx.font = '11px system-ui, sans-serif';
 
     // Skip every battery-related draw layer (action band, bars, SoC

@@ -604,13 +604,8 @@
     ctx.fillText(powerAxisLabel(maxAbsPower), pad.l - 4, powerY0 + 10);
     ctx.fillText('0', pad.l - 4, powerMidY + 3);
     ctx.fillText(powerAxisLabel(-maxAbsPower), pad.l - 4, powerY0 + powerH - 2);
-    // The power labels are sizes; these words say which side is which.
-    ctx.textAlign = 'left';
-    ctx.fillStyle = C.muted;
-    ctx.fillText(POWER_ABOVE, pad.l + 4, powerMidY - 4);
-    ctx.fillText(POWER_BELOW, pad.l + 4, powerMidY + 12);
-    ctx.fillStyle = C.dim;
-    ctx.textAlign = 'right';
+    // The power labels are sizes; these words say what sits on each side.
+    globalThis.ftwPowerWords.drawSides(ctx, pad.l + 6, powerMidY, globalThis.ftwPowerWords.SIDES.diagnose, C.dim, C.panel);
     ctx.fillText('100%', pad.l - 4, socY0 + 10);
     ctx.fillText('0', pad.l - 4, socY0 + socH - 2);
 
@@ -624,8 +619,6 @@
 
   // ---- Helpers ----
   // The chart's power axis shows sizes, never a raw minus.
-  var POWER_ABOVE = '↑ import · charge';
-  var POWER_BELOW = '↓ export · discharge · solar';
   function powerAxisLabel(w) {
     return (Math.abs(w) / 1000).toFixed(1) + 'kW';
   }

@@ -310,29 +310,11 @@
   const lastUpdate = $("last-update");
   const versionEl = $("version");
   // ---- Formatting ----
-  // The UI never shows a raw minus. formatW gives the size of a power; the
-  // caller says which way it flows, in a word or with flowMark.
-  function formatW(w) {
-    if (w == null || !isFinite(w)) return "—";
-    const abs = Math.abs(w);
-    if (abs >= 1000) {
-      return (abs / 1000).toFixed(1) + " kW";
-    }
-    return Math.round(abs) + " W";
-  }
-  // Which side of zero a power sits on, as the charts draw it: ↑ into the
-  // home (import, charge), ↓ out of it (export, discharge). Nothing for a
-  // reading within 10 W of zero.
-  function flowMark(w) {
-    if (w == null || !isFinite(w)) return "";
-    return w > 10 ? " ↑" : w < -10 ? " ↓" : "";
-  }
-  function formatFlowW(w) {
-    return formatW(w) + flowMark(w);
-  }
-  // What the charts draw on each side of zero, where their labels are sizes.
-  var BELOW_ZERO_LIVE = "↓ export · discharge · solar";
-  var BATTERY_SIDES = "↑ charge   ↓ discharge";
+  // The UI never shows a raw minus. power-words.js, loaded before this file,
+  // gives a size and the word for its direction; it is read when used.
+  function powerWords() { return globalThis.ftwPowerWords; }
+  function formatW(w) { return powerWords().formatW(w); }
+  function formatPower(w, kind) { return powerWords().formatPower(w, kind); }
 
   // Fuse bar color. The bar is grid power, so it takes the grid colour, as
   // on the phone; from 90 % it takes the alarm, because operators just need
@@ -396,11 +378,23 @@
     if (kind === "bat") return v > 0 ? "is-charging" : "is-discharging";
     return "is-neutral";
   }
+  // The live strip's value: grid and battery go both ways, so a word says
+  // which, on its own line; solar, home and car do not.
+  function liveStatParts(key, w) {
+    var kind = key === "grid" ? "grid" : key === "bat" ? "battery" : null;
+    return { size: formatW(w), word: kind ? powerWords().directionWord(w, kind) : "" };
+  }
   function updateLiveStat(key, w, cls) {
     var el = document.getElementById("live-stat-" + key);
     if (!el) return;
-    // Grid and battery go both ways; the mark says which.
-    el.textContent = key === "grid" || key === "bat" ? formatFlowW(w) : formatW(w);
+    var parts = liveStatParts(key, w);
+    el.textContent = parts.size;
+    if (parts.word) {
+      var dir = document.createElement("span");
+      dir.className = "live-stat-dir";
+      dir.textContent = " " + parts.word;
+      el.appendChild(dir);
+    }
     el.className = "live-stat-value " + (cls || "is-neutral");
   }
   function updateLiveSocStat(soc) {
@@ -412,9 +406,30 @@
   }
   function batteryTargetLine(targetW) {
     if (targetW == null || !isFinite(targetW)) return "";
-    // Just the target — the "· charging/discharging" suffix overflowed the
-    // node circle; the mark says charge (↑) or discharge (↓).
-    return "target " + formatFlowW(targetW);
+    // Just the target and one short word; "charging/discharging" overflowed
+    // the node circle.
+    return "target " + formatPower(targetW, "battery");
+  }
+
+  // A live tooltip row's value and target. The grid and batteries go both
+  // ways, so their rows carry a word; the other rows are sizes.
+  function tooltipPowerText(lab, i) {
+    var kind = lab.name === "Grid" ? "grid" : "target" in lab ? "battery" : null;
+    var actual = kind ? formatPower(lab.data[i], kind) : formatW(lab.data[i]);
+    var target = lab.target && i < lab.target.length && Math.abs(lab.target[i]) > 1
+      ? powerWords().formatTarget(lab.target[i], lab.data[i], kind || "")
+      : "";
+    return { actual: actual, target: target };
+  }
+
+  // A driver card's battery row: the reading, its target and how far apart
+  // they are.
+  function batteryRowParts(actualW, targetW) {
+    return {
+      actual: formatPower(actualW, "battery"),
+      target: powerWords().formatTarget(targetW, actualW, "battery"),
+      tracking: powerWords().trackingText(actualW, targetW),
+    };
   }
 
   function hasControllableBatteryDrivers(data) {
@@ -525,17 +540,13 @@
     if (lastFlowStatus) paintEnergyFlow(lastFlowStatus);
   };
 
-  function energyFlowOpts(data) {
-    var byDriver = {};
-    (data.dispatch || []).forEach(function (d) {
-      if (d && d.driver) byDriver[d.driver] = Number(d.target_w) || 0;
-    });
+  function energyFlowOpts() {
+    // The battery bubble prints a size, so the line under it is the
+    // readings' own word: charging, discharging, idle or observe only. The
+    // target it used to show there did not fit beside that word; it stays
+    // on the battery card in the Values view and on the driver card.
     return {
       idleW: (typeof window.FTW_FLOW_IDLE_W === "number" && window.FTW_FLOW_IDLE_W) || 42,
-      batterySub: function (name, d) {
-        if (d.observe_only) return "observe only";
-        return batteryTargetLine(byDriver[name]);
-      },
     };
   }
 
@@ -667,7 +678,7 @@
     var targetDisp = document.getElementById("grid-target-display");
     if (targetDisp) {
       var t = data.grid_target_w || 0;
-      targetDisp.textContent = t === 0 ? "target 0" : "target " + formatFlowW(t);
+      targetDisp.textContent = t === 0 ? "target 0" : "target " + formatPower(t, "grid");
     }
     var slotBadge = document.getElementById("grid-slot-badge");
     if (slotBadge) {
@@ -852,7 +863,7 @@
     // dragged then mouse-released doesn't revert before Save is clicked.
     if (gridTargetSlider && !gridTargetDirty) {
       gridTargetSlider.value = data.grid_target_w;
-      gridTargetValue.textContent = formatFlowW(data.grid_target_w);
+      gridTargetValue.textContent = formatPower(data.grid_target_w, "grid");
     }
     // Peak import ceiling. Backed by the new peak_import_ceiling_w
     // (hard rule across modes); 0 = disabled. Falls back to the legacy
@@ -987,7 +998,7 @@
           if (bvw) {
             var sw = rawW;
             if (Math.abs(sw) < 1) sw = 0;
-            bvw.textContent = Math.round(sw) + " W";
+            bvw.textContent = formatPower(sw, "grid");
             bvw.classList.toggle("export", rawW < -1);
           }
         }
@@ -1120,6 +1131,7 @@
     var chartFontTooltip  = smallScreen ? "14px monospace" : "10px monospace";
     var chartFontTooltipS = smallScreen ? "13px monospace" : "9px monospace";
     var chartNowStrokeW   = smallScreen ? 2 : 1;
+    var chartFontSides    = smallScreen ? "11px monospace" : "10px monospace";
     if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
       canvas.width = w * dpr;
       canvas.height = h * dpr;
@@ -1469,12 +1481,11 @@
       if (chartView === "energy" && yVal < 0) continue;
       ctx.fillText(chartView === "energy" ? yVal.toFixed(1) + " kWh" : formatW(yVal), 2, ly + 4);
     }
-    // Below zero the labels are sizes; this says what sits there.
+    // The labels are sizes; these words say what sits on each side of zero.
     if (chartView !== "energy" && yMin < 0 && yMax > 0) {
       var zeroLabelY = pad.top + plotH * (1 - (0 - yMin) / yRange);
-      ctx.fillStyle = C.muted;
-      ctx.font = chartFontTooltipS;
-      ctx.fillText(BELOW_ZERO_LIVE, pad.left + 4, zeroLabelY + 12);
+      ctx.font = chartFontSides;
+      powerWords().drawSides(ctx, pad.left + 6, zeroLabelY, powerWords().SIDES.live, C.dim, C.surface);
       ctx.font = chartFontAxis;
     }
 
@@ -1639,7 +1650,19 @@
     var ts = chartHistory.timestamps[i] || 0;
     var timeStr = ts > 0 ? new Date(ts).toLocaleTimeString() : "";
     var lineHeight = 16;
+    // Wide enough for the longest row: name, value and target.
     var boxW = 200;
+    if (chartView !== "energy") {
+      labels.forEach(function (lab) {
+        if (i >= lab.data.length) return;
+        var t = tooltipPowerText(lab, i);
+        ctx.font = fontTooltip;
+        var need = 30 + ctx.measureText(lab.name).width + ctx.measureText(t.actual).width;
+        ctx.font = fontTooltipS;
+        if (t.target) need += 8 + ctx.measureText(t.target).width;
+        boxW = Math.max(boxW, Math.ceil(need));
+      });
+    }
     var boxH = (labels.length + 1) * lineHeight + 10;
 
     // Position tooltip (avoid going off-screen)
@@ -1669,18 +1692,16 @@
         ctx.fillStyle = C.text;
         ctx.fillText(lab.data[i].toFixed(2) + " kWh", boxX + boxW - 6, y);
       } else {
-        // Grid and batteries go both ways; the mark says which.
-        var both = lab.name === "Grid" || "target" in lab;
-        var actual = both ? formatFlowW(lab.data[i]) : formatW(lab.data[i]);
+        var text = tooltipPowerText(lab, i);
         ctx.fillStyle = C.text;
-        ctx.fillText(actual, boxX + boxW - 6, y);
-        // Inline target as dim "(→ 674 W ↓)" so user sees commanded vs actual
-        // in one glance. Skip when target is 0 to reduce visual noise.
-        if (lab.target && i < lab.target.length && Math.abs(lab.target[i]) > 1) {
-          var actualW = ctx.measureText(actual).width;
+        ctx.fillText(text.actual, boxX + boxW - 6, y);
+        // Inline target as dim "→ 674 W discharge" so user sees commanded vs
+        // actual in one glance.
+        if (text.target) {
+          var actualW = ctx.measureText(text.actual).width;
           ctx.fillStyle = C.dim;
           ctx.font = fontTooltipS;
-          ctx.fillText("→ " + formatFlowW(lab.target[i]), boxX + boxW - 10 - actualW, y);
+          ctx.fillText(text.target, boxX + boxW - 10 - actualW, y);
           ctx.font = fontTooltip;
         }
       }
@@ -1744,7 +1765,9 @@
       ctx.fillText(lab.name, boxX + 18, y);
       ctx.fillStyle = C.text;
       ctx.textAlign = "right";
-      var val = lab.literal ? lab.val : lab.showSign ? formatFlowW(lab.val) : formatW(lab.val);
+      var val = lab.literal ? lab.val
+        : lab.showSign ? formatPower(lab.val, lab.name === "Grid" ? "grid" : "battery")
+        : formatW(lab.val);
       ctx.fillText(val, boxX + boxW - 6, y);
       ctx.textAlign = "left";
     });
@@ -1814,10 +1837,6 @@
     return actions;
   }
 
-  function formatOptionalW(w) {
-    return w == null ? "—" : formatW(w);
-  }
-
   // ---------------------------------------------------------------------
   // V2X manual-command surface. Dashboard driver cards are rendered here
   // rather than in a framework so the static UI keeps working without a
@@ -1875,13 +1894,13 @@
         v2xBtn.disabled = true;
         if (status) {
           status.className = "v2x-command-status";
-          status.textContent = "Sending " + formatFlowW(powerW) + "…";
+          status.textContent = "Sending " + formatPower(powerW, "v2x") + "…";
         }
         v2xCommand(v2xName, powerW)
           .then(function () {
             if (status) {
               status.className = "v2x-command-status ok";
-              status.textContent = powerW === 0 ? "Stopped" : "Sent " + formatFlowW(powerW);
+              status.textContent = powerW === 0 ? "Stopped" : "Sent " + formatPower(powerW, "v2x");
             }
             setTimeout(fetchStatus, 600);
           })
@@ -1995,7 +2014,7 @@
         var v2xClass = v2xWVal < -100 ? "stat-ok" : (v2xWVal > 100 ? "stat-warn" : (connected ? "stat-warn" : "stat-dim"));
         var vehicleSoc = d.v2x_vehicle_soc != null ? formatSoc(d.v2x_vehicle_soc) : "—";
         var dcSummary = (d.v2x_dc_w != null || d.v2x_dc_v != null || d.v2x_dc_a != null)
-          ? formatOptionalW(d.v2x_dc_w) + " · " +
+          ? (d.v2x_dc_w == null ? "—" : formatPower(d.v2x_dc_w, "v2x")) + " · " +
             (d.v2x_dc_v != null ? d.v2x_dc_v.toFixed(0) + " V" : "—") + " · " +
             (d.v2x_dc_a != null ? d.v2x_dc_a.toFixed(1) + " A" : "—")
           : "—";
@@ -2013,7 +2032,7 @@
         body =
           '<div class="driver-stats">' +
           '  <span class="stat-label">State</span><span class="stat-value ' + v2xClass + '">' + escHtml(statusLabel) + '</span>' +
-          '  <span class="stat-label">Power</span><span class="stat-value">' + formatW(v2xWVal) + '</span>' +
+          '  <span class="stat-label">Power</span><span class="stat-value">' + formatPower(v2xWVal, "v2x") + '</span>' +
           '  <span class="stat-label">Vehicle SoC</span><span class="stat-value">' + vehicleSoc + '</span>' +
           '  <span class="stat-label">DC</span><span class="stat-value">' + escHtml(dcSummary) + '</span>' +
           '  <span class="stat-label">Session</span><span class="stat-value">' + escHtml(session) + '</span>' +
@@ -2063,21 +2082,22 @@
         // Battery target + tracking deviation. Skip if no dispatch (planner
         // hasn't run) OR this driver has no battery (target meaningless).
         var batteryRow =
-          '  <span class="stat-label">Battery</span><span class="stat-value">' + formatFlowW(batWVal) + "</span>";
+          '  <span class="stat-label">Battery</span><span class="stat-value">' + formatPower(batWVal, "battery") + "</span>";
         var disp = (dispatchByDriver || {})[name];
         if (disp && d.bat_w != null && !d.observe_only) {
           var dev = batWVal - disp.target_w;
           var devClass = Math.abs(dev) > 200 ? "stat-warn" : "stat-dim";
+          var row = batteryRowParts(batWVal, disp.target_w);
           batteryRow =
-            '  <span class="stat-label">Battery</span><span class="stat-value">' + formatFlowW(batWVal) +
-            '    <span class="stat-target">→ ' + formatFlowW(disp.target_w) + '</span>' +
-            '    <span class="' + devClass + '">Δ ' + formatW(dev) + '</span>' +
+            '  <span class="stat-label">Battery</span><span class="stat-value">' + row.actual +
+            '    <span class="stat-target">' + row.target + '</span>' +
+            '    <span class="' + devClass + '">' + row.tracking + '</span>' +
             "</span>";
         }
 
         body =
           '<div class="driver-stats">' +
-          '  <span class="stat-label">Meter</span><span class="stat-value">' + formatFlowW(meterW) + "</span>" +
+          '  <span class="stat-label">Meter</span><span class="stat-value">' + formatPower(meterW, "grid") + "</span>" +
           '  <span class="stat-label">PV</span><span class="stat-value">' + formatW(-pvWVal) + "</span>" +
           batteryRow +
           (d.observe_only
@@ -2139,7 +2159,7 @@
       item.innerHTML =
         '<span class="dispatch-driver">' + escHtml(d.driver) + "</span>" +
         "<span>" +
-        '<span class="dispatch-target">' + formatFlowW(d.target_w) + "</span>" +
+        '<span class="dispatch-target">' + formatPower(d.target_w, "battery") + "</span>" +
         (d.clamped ? '<span class="dispatch-clamped">CLAMPED</span>' : "") +
         "</span>";
       dispatchList.appendChild(item);
@@ -2702,7 +2722,7 @@
   // poll skips overwrite while dirty. Mirrors the peak slider pattern.
   if (gridTargetSlider) {
     gridTargetSlider.addEventListener("input", function () {
-      gridTargetValue.textContent = formatFlowW(Number(gridTargetSlider.value));
+      gridTargetValue.textContent = formatPower(Number(gridTargetSlider.value), "grid");
       gridTargetDirty = true;
       if (gridTargetSend) gridTargetSend.disabled = false;
     });
@@ -5292,10 +5312,11 @@
     ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    // battery: max charge / max discharge at the edges, as sizes; the line
-    // under the chart says which side of zero is which.
+    // battery: max charge / max discharge at the edges, as sizes; the words
+    // beside the zero line say which side is which.
     ctx.fillText((batMax / 1000).toFixed(1) + "kW", pad.left - 4, pad.top + 6);
     ctx.fillText((batMax / 1000).toFixed(1) + "kW", pad.left - 4, batMid + (batH / 2) - 6);
+    powerWords().drawSides(ctx, pad.left + 4, batMid, powerWords().SIDES.battery, C.dim, C.surface);
     // SoC: 100% / 0% on the right
     ctx.textAlign = "left";
     ctx.fillText("100%", pad.left + plotW + 4, socTop + 6);
@@ -5304,8 +5325,6 @@
     ctx.fillStyle = C.muted;
     ctx.textAlign = "left";
     ctx.fillText("24h ago", pad.left, cssH - 4);
-    ctx.textAlign = "center";
-    ctx.fillText(BATTERY_SIDES, pad.left + plotW / 2, cssH - 4);
     ctx.textAlign = "right";
     ctx.fillText("now", pad.left + plotW, cssH - 4);
   }

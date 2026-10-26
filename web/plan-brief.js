@@ -1,5 +1,9 @@
 import { plannedEVWatts } from "./ev-plan.js";
 import { fillPlanSoC } from "./plan-soc.js";
+import "./power-words.js";
+
+// The same size-and-word rule as the rest of the page.
+const powerWords = globalThis.ftwPowerWords;
 
 function formatClock(tsMs) {
   const date = new Date(tsMs);
@@ -47,16 +51,6 @@ function actionLabel(action) {
     return `Use battery at ${(Math.abs(action.battery_w) / 1000).toFixed(1)} kW`;
   }
   return "Keep the battery steady";
-}
-
-// A size, never a raw minus; the arrow says the side of zero, as on the
-// chart: ↑ into the home (charge), ↓ out of it (discharge, export).
-function briefPower(watts) {
-  const value = Number(watts) || 0;
-  const size = Math.abs(value) >= 1000
-    ? `${(Math.abs(value) / 1000).toFixed(1)} kW`
-    : `${Math.round(Math.abs(value))} W`;
-  return size + (value > 10 ? " ↑" : value < -10 ? " ↓" : "");
 }
 
 function fractionOrNull(value) {
@@ -324,7 +318,7 @@ export function derivePlanBrief({
   let constraint = cautionOff ? cautionCopy : "No active safety adjustment";
   if (clamps.length) {
     const adjusted = clamps
-      .map((dispatch) => `${dispatch.driver || "device"} to ${briefPower(dispatch.target_w)}`)
+      .map((dispatch) => `${dispatch.driver || "device"} to ${powerWords.formatPower(Number(dispatch.target_w) || 0, "battery")}`)
       .join(", ");
     constraint = `Safety adjusted ${adjusted} to stay within battery or site limits`;
   } else if (stale) {

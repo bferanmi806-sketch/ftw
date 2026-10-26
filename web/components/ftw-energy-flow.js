@@ -1662,17 +1662,19 @@ function renderDailyParts(parts) {
 }
 
 function fmtKw(kw) {
-  // Input is kilowatts. Sub-kW values render as plain integer watts
-  // (no decimals) so a "30 W" import or "−12 W" battery trickle stays
-  // visible as the real number. The visual "idle / balanced"
-  // affordances (beam dimming, sub-label text) live on a separate
-  // ±FLOW_IDLE_W threshold; this formatter only handles display.
+  // Input is kilowatts, signed as Core sends them; the bubble prints the
+  // size only, because the UI never shows a raw minus. The word under it
+  // ("charging", "discharging", "exporting") says the direction. Sub-kW
+  // values render as plain integer watts (no decimals) so a "30 W" import
+  // or a "12 W" battery trickle stays visible as the real number. The
+  // visual "idle / balanced" affordances (beam dimming, sub-label text)
+  // live on a separate ±FLOW_IDLE_W threshold; this formatter only handles
+  // display.
   //
   // Sub-half-watt magnitudes round to 0 W — that's noise, not signal.
-  // `+ 0` normalises Math.round's −0 result to plain 0 so a tiny
-  // negative reading doesn't print as "-0 W".
-  if (Math.abs(kw) < 1) return `${Math.round(kw * 1000) + 0} W`;
-  return `${kw.toFixed(2)} kW`;
+  const size = Math.abs(kw);
+  if (size < 1) return `${Math.round(size * 1000)} W`;
+  return `${size.toFixed(2)} kW`;
 }
 
 // Collapse multi-planet corners into a single synthesized "combined"
