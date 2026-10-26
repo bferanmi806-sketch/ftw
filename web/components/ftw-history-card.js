@@ -52,11 +52,14 @@ const DEFAULT_ACCENT = {
 // out into four identical 30-day queries and leave tiles painting at
 // different times.
 const DAILY_CACHE_TTL_MS = 15000;
-const dailyFetchCache = new Map(); // days -> { at, data?, promise? }
+const dailyFetchCache = new Map(); // range key -> { at, data?, promise? }
 
-function fetchDailyEnergy(days) {
+function fetchDailyEnergy(range) {
+  const month = range.startsWith("month:") ? range.slice(6) : "";
+  const days = month ? 0 : 7;
+  const key = month || String(days);
   const now = Date.now();
-  const cached = dailyFetchCache.get(days);
+  const cached = dailyFetchCache.get(key);
   if (cached && cached.data && now - cached.at < DAILY_CACHE_TTL_MS) {
     return Promise.resolve(cached.data);
   }
@@ -64,21 +67,23 @@ function fetchDailyEnergy(days) {
     return cached.promise;
   }
 
-  const promise = apiFetch("/api/energy/daily?days=" + days)
+  const promise = apiFetch(month
+    ? "/api/energy/daily?month=" + encodeURIComponent(month)
+    : "/api/energy/daily?days=" + days)
     .then((r) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     })
     .then((resp) => {
-      dailyFetchCache.set(days, { at: Date.now(), data: resp });
+      dailyFetchCache.set(key, { at: Date.now(), data: resp });
       return resp;
     })
     .catch((err) => {
-      const cur = dailyFetchCache.get(days);
-      if (cur && cur.promise === promise) dailyFetchCache.delete(days);
+      const cur = dailyFetchCache.get(key);
+      if (cur && cur.promise === promise) dailyFetchCache.delete(key);
       throw err;
     });
-  dailyFetchCache.set(days, { at: now, promise });
+  dailyFetchCache.set(key, { at: now, promise });
   return promise;
 }
 
@@ -334,19 +339,10 @@ class FtwHistoryCard extends FtwElement {
     }
   }
 
-  _daysFor(range) {
-    if (range === "month") {
-      const now = new Date();
-      return now.getDate();
-    }
-    return 7;
-  }
-
   _refresh() {
     if (!this._chart || !this._totalEl) return;
     const metric = this.getAttribute("metric") || "import";
     const field  = FIELD_BY_METRIC[metric] || "import_wh";
-    const days   = this._daysFor(this._range);
 
     // Bump the sequence so stale responses arriving after a Week/Month
     // toggle don't overwrite the newer chart. The shared request cache
@@ -355,7 +351,8 @@ class FtwHistoryCard extends FtwElement {
     const seq = ++this._reqSeq;
 
     this._chart.setAttribute("loading", "true");
-    fetchDailyEnergy(days)
+    const range = this._range === "month" ? "month:" + currentMonth() : this._range;
+    fetchDailyEnergy(range)
       .then((resp) => {
         if (seq !== this._reqSeq) return;
         const buckets = (resp && resp.days) || [];
@@ -425,6 +422,10 @@ function fmtDayShort(iso) {
   if (parts.length !== 3) return iso || "";
   const d = new Date(+parts[0], +parts[1] - 1, +parts[2]);
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" });
+}
+function currentMonth() {
+  const now = new Date();
+  return now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
 }
 function escapeHtml(s) {
   return String(s).replace(/[<>&"']/g, (c) =>

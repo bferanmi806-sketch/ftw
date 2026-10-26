@@ -5051,11 +5051,10 @@
     syncStatusPolling();
   });
 
-  // ---- History wrapper: one Week/Month toggle drives all three tiles ----
+  // ---- History wrapper: one period selector drives all history tiles ----
   // The wrapper card in index.html hosts #history-toggle and the three
-  // <ftw-history-card hide-toggle range="week"> children. Clicking a
-  // button flips data-active (moves the sliding pill) and pushes
-  // `range=week|month` onto every child — the component observes that
+  // <ftw-history-card hide-toggle> children. Period selection pushes
+  // `week` or `month:YYYY-MM` onto every child — the component observes that
   // attribute and re-fetches, so the three charts stay in lock-step.
   var historyToggle = $("history-toggle");
   var historyViewToggle = $("history-view-toggle");
@@ -5065,11 +5064,21 @@
   var historyCakeWaitingForUpgrade = false;
   var historyCakeReqSeq = 0;
 
-  // historyState mirrors both toggles so the Bars/Cakes view and
-  // the Week/Month range stay coordinated. Only the cake re-fetches
+  // historyState keeps the Bars/Cakes view and selected period coordinated.
+  // Only the cake re-fetches
   // /api/energy/daily on a range change; the bar tiles each
   // re-fetch themselves when their range= attribute is updated.
-  var historyState = { range: "week", view: "bars" };
+  function monthKey(date) {
+    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+  }
+  function shiftMonth(date, offset) {
+    return monthKey(new Date(date.getFullYear(), date.getMonth() + offset, 1));
+  }
+  var selectedHistoryMonth = monthKey(new Date());
+  var historyState = { range: "month:" + selectedHistoryMonth, view: "bars" };
+  document.querySelectorAll(".history-tiles ftw-history-card").forEach(function (tile) {
+    tile.setAttribute("range", historyState.range);
+  });
 
   function fetchHistoryCake() {
     var seq = ++historyCakeReqSeq;
@@ -5085,13 +5094,15 @@
       return;
     }
     if (historyCakeWrap) historyCakeWrap.classList.add("loading");
-    var days = historyState.range === "month" ? 30 : 7;
+    var query = historyState.range.startsWith("month:")
+      ? "month=" + encodeURIComponent(historyState.range.slice(6))
+      : "days=7";
     var clearLoading = function () {
       if (seq !== historyCakeReqSeq) return;
       if (historyCakeWrap) historyCakeWrap.classList.remove("loading");
     };
     // Local API read.
-    apiFetch("/api/energy/daily?days=" + days)
+    apiFetch("/api/energy/daily?" + query)
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (seq !== historyCakeReqSeq) return;
@@ -5114,21 +5125,55 @@
     historyToggle.addEventListener("click", function (e) {
       var btn = e.target.closest("button[data-range]");
       if (!btn) return;
-      var next = btn.getAttribute("data-range");
-      if (!next || next === historyToggle.getAttribute("data-active")) return;
-      historyToggle.setAttribute("data-active", next);
+      var action = btn.getAttribute("data-range");
+      if (action === "this-month") selectedHistoryMonth = monthKey(new Date());
+      if (action === "last-month") selectedHistoryMonth = shiftMonth(new Date(), -1);
+      var next = action === "week" ? "week" : "month:" + selectedHistoryMonth;
+      if (!action || next === historyState.range) return;
       historyState.range = next;
+      if (historyMonthPicker && action !== "week") historyMonthPicker.value = selectedHistoryMonth;
+      var active = action === "week" ? "week"
+        : action === "last-month" ? "last-month"
+        : selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "picked-month";
+      historyToggle.setAttribute("data-active", active);
       var buttons = historyToggle.querySelectorAll("button[data-range]");
       for (var i = 0; i < buttons.length; i++) {
-        var on = buttons[i].getAttribute("data-range") === next;
+        var on = buttons[i].getAttribute("data-range") === action;
         buttons[i].classList.toggle("active", on);
-        buttons[i].setAttribute("aria-selected", on ? "true" : "false");
+        buttons[i].setAttribute("aria-pressed", on ? "true" : "false");
       }
       var tiles = document.querySelectorAll(".history-tiles ftw-history-card");
       for (var j = 0; j < tiles.length; j++) {
         tiles[j].setAttribute("range", next);
       }
       // Cake: refresh only when it's the active view.
+      if (historyState.view === "cakes") fetchHistoryCake();
+    });
+  }
+
+  var historyMonthPicker = $("history-month-picker");
+  if (historyMonthPicker) {
+    historyMonthPicker.value = selectedHistoryMonth;
+    historyMonthPicker.max = selectedHistoryMonth;
+    historyToggle.setAttribute("data-active", "this-month");
+    historyToggle.querySelectorAll("button[data-range]").forEach(function (button) {
+      var on = button.getAttribute("data-range") === "this-month";
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    historyMonthPicker.addEventListener("change", function () {
+      if (!/^\d{4}-\d{2}$/.test(historyMonthPicker.value)) return;
+      selectedHistoryMonth = historyMonthPicker.value;
+      historyState.range = "month:" + selectedHistoryMonth;
+      historyToggle.setAttribute("data-active", selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "picked-month");
+      historyToggle.querySelectorAll("button[data-range]").forEach(function (button) {
+        var on = button.getAttribute("data-range") === (selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "");
+        button.classList.toggle("active", on);
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+      document.querySelectorAll(".history-tiles ftw-history-card").forEach(function (tile) {
+        tile.setAttribute("range", historyState.range);
+      });
       if (historyState.view === "cakes") fetchHistoryCake();
     });
   }
