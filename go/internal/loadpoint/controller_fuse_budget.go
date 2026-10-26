@@ -48,7 +48,7 @@ func (c *Controller) freezeFuseBudget(now time.Time, samples map[string]EVSample
 		request := fuseRequest{cfg: c.fuseConfig(cfg, c.tickChoices[cfg.ID].phaseMode), deadline: st.TargetTime}
 		if sample.Connected && !sample.ConnectionUnknown && c.driverCanDispatch(cfg.DriverName) {
 			if hold, held := c.GetManualHold(cfg.ID, now); held {
-				request.wantW = clampManualPower(cfg, hold, c.siteFuse())
+				request.wantW, _ = clampManualPower(cfg, hold, c.siteFuse())
 			} else {
 				request.wantW, _, _ = c.computeCommandForBudget(now, request.cfg, sample.PowerW, false)
 			}
@@ -58,7 +58,7 @@ func (c *Controller) freezeFuseBudget(now time.Time, samples map[string]EVSample
 				armed := c.batSoCArmed[cfg.ID]
 				c.batSoCArmedMu.Unlock()
 				if cfg.SurplusOnly || armed || c.wakeKickActive(cfg.ID, now) || (st.FinishAtVehicleLimit && !st.GoalComplete) {
-					request.wantW = cfg.MaxChargeW
+					request.wantW = request.cfg.MaxChargeW
 				}
 				if d.LoadpointFallback[cfg.ID] && sample.PowerUnavailable {
 					request.wantW = 0
@@ -219,13 +219,16 @@ func (c *Controller) phaseRoomCapW(id, mode string, wantW, split, roomA float64)
 }
 
 // FuseConfigs returns the loadpoints with the phase mode each command names
-// this tick. control.EVFuseBudget measures room on those phases, so an auto
-// or 1p offer never gets three phases of room. Outside a tick, and for a
-// loadpoint that gets no command, the configured mode stands.
+// this tick, and the least each can order on those phases. control.
+// EVFuseBudget measures room on those phases, so an auto or 1p offer never
+// gets three phases of room, and waits for room for that least order, not
+// the configured minimum. Outside a tick, and for a loadpoint that gets no
+// command, the configured mode stands.
 func (c *Controller) FuseConfigs() []Config {
 	configs := c.manager.Configs()
 	for i := range configs {
 		if mode := c.tickChoices[configs[i].ID].phaseMode; mode != "" {
+			configs[i] = c.fuseConfig(configs[i], mode)
 			configs[i].PhaseMode = mode
 		}
 	}
@@ -243,8 +246,7 @@ func fusePhase(mode string) string {
 // fuseConfig snaps a fuse cap to the smallest legal step on the phases the
 // command names. A 3p label on a 1p-sized offer is below 6 A and never charges.
 func (c *Controller) fuseConfig(cfg Config, phaseMode string) Config {
-	cfg.MinChargeW = phaseMinChargeW(cfg, phaseMode, c.siteFuse())
-	return cfg
+	return phaseLimits(cfg, phaseMode, c.siteFuse())
 }
 
 func (c *Controller) currentDirective(now time.Time) (Directive, bool) {

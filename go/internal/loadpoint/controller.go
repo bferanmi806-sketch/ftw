@@ -1305,12 +1305,14 @@ func (c *Controller) chooseTick(now time.Time, cfg Config, sample EVSample, disp
 // runs as planned charging does: three phases on a charger that can, one on
 // a charger that cannot. A hold below the 3Φ minimum goes out as auto, so a
 // sticky Start on a 1380 W surplus slot does not die at 3Φ's 6 A. A
-// client's 3p on a charger that cannot run three phases is not a pin: the
-// app sends the phases the API reported, and a 3p order there is 0 W. The
-// loadpoint's own mode decides.
+// client's 3p is not a pin: the app sends the phases the API reported, and
+// a 3p order on a charger that cannot run three phases, or below 6 A on
+// each, cannot run. The loadpoint's own mode decides those. A stop keeps
+// the client's 3p.
 func holdPhaseMode(hold ManualHold, cfg Config, site SiteFuse) string {
 	mode := hold.PhaseMode
-	if mode == "" || (mode == "3p" && !threePhaseCapable(cfg, site)) {
+	belowThreePhases := hold.PowerW > 0 && hold.PowerW < phaseMinChargeW(cfg, "3p", site)
+	if mode == "" || (mode == "3p" && (!threePhaseCapable(cfg, site) || belowThreePhases)) {
 		mode = cfg.PhaseMode
 	}
 	switch {
@@ -1476,9 +1478,9 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 		// zero/empty fields fall through to the normal defaults so a
 		// minimal hold (just `power_w`) still carries the per-phase
 		// fuse clamp inputs the driver needs to stay safe.
-		holdW := clampManualPower(lpCfg, hold, c.siteFuse())
-		if holdW != hold.PowerW {
-			cmdReason = "charger_limit"
+		holdW, limit := clampManualPower(lpCfg, hold, c.siteFuse())
+		if limit != "" {
+			cmdReason = limit
 		}
 		// An explicit manual hold ("Start" / amp slider) takes priority
 		// over surplus_only: when the operator deliberately pins a charge
