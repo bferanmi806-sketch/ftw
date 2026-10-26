@@ -605,7 +605,8 @@
     ctx.fillText('0', pad.l - 4, powerMidY + 3);
     ctx.fillText(powerAxisLabel(-maxAbsPower), pad.l - 4, powerY0 + powerH - 2);
     // The power labels are sizes; these words say what sits on each side.
-    globalThis.ftwPowerWords.drawSides(ctx, pad.l + 6, powerMidY, globalThis.ftwPowerWords.SIDES.diagnose, C.dim, C.panel);
+    const words = globalThis.ftwPowerWords;
+    if (words) words.drawSides(ctx, pad.l + 6, powerMidY, words.SIDES.diagnose, C.dim, C.panel);
     ctx.fillText('100%', pad.l - 4, socY0 + 10);
     ctx.fillText('0', pad.l - 4, socY0 + socH - 2);
 

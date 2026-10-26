@@ -720,10 +720,6 @@ import {
     ctx.fillText(powerAxisLabel(-pMagMax), pad.l - 6, powerY(-pMagMax) + 4);
     ctx.textAlign = 'left';
     ctx.fillText('Power', pad.l + 4, powerY0 + 12);
-    // The axis labels are sizes; these words say what sits on each side.
-    ctx.font = '9px system-ui, sans-serif';
-    globalThis.ftwPowerWords.drawSides(ctx, pad.l + 6, powerYCenter, globalThis.ftwPowerWords.SIDES.plan, C.dim, C.panel);
-    ctx.font = '11px system-ui, sans-serif';
 
     // Skip every battery-related draw layer (action band, bars, SoC
     // line + axis labels) when the site has no battery reporter.
@@ -799,6 +795,12 @@ import {
       ctx.textAlign = 'left';
       ctx.fillText('SoC', pad.l + 4, socY0 + 12);
     }
+
+    // The axis labels are sizes; these words say what sits on each side.
+    // Drawn after the bars and the SoC line, so nothing paints over them.
+    ctx.font = '9px system-ui, sans-serif';
+    globalThis.ftwPowerWords.drawSides(ctx, pad.l + 6, powerYCenter, globalThis.ftwPowerWords.SIDES.plan, C.dim, C.panel);
+    ctx.font = '11px system-ui, sans-serif';
 
     // ---- Summary ----
     // Structured as labeled pieces with `title=` tooltips so every number
@@ -1034,8 +1036,7 @@ import {
         lines.push(`<div class="tip-row"><span title="Planned battery power, and whether it charges or discharges">Battery</span><b>${(Math.abs(a.battery_w) / 1000).toFixed(1)} kW (${dir})</b></div>`);
       }
       if (a.grid_w != null) {
-        const gdir = a.grid_w > 0 ? 'import' : 'export';
-        lines.push(`<div class="tip-row"><span title="Net grid flow the plan expects. Import = buy from grid, export = sell back">Grid</span><b>${(Math.abs(a.grid_w) / 1000).toFixed(1)} kW ${gdir}</b></div>`);
+        lines.push(`<div class="tip-row"><span title="Net grid flow the plan expects. Import = buy from grid, export = sell back">Grid</span><b>${globalThis.ftwPowerWords.formatPower(a.grid_w, 'grid')}</b></div>`);
       }
       const endSoc = socPercent(a.soc);
       if (endSoc != null) lines.push(`<div class="tip-row"><span title="Battery state of charge at the end of this slot">SoC (end)</span><b>${endSoc.toFixed(0)}%</b></div>`);

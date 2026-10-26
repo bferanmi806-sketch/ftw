@@ -311,8 +311,26 @@
   const versionEl = $("version");
   // ---- Formatting ----
   // The UI never shows a raw minus. power-words.js, loaded before this file,
-  // gives a size and the word for its direction; it is read when used.
-  function powerWords() { return globalThis.ftwPowerWords; }
+  // gives a size and the word for its direction; it is read when used. If
+  // that file failed to load, the page still draws, with sizes and no words.
+  function powerWords() { return globalThis.ftwPowerWords || SIZES_ONLY; }
+  var SIZES_ONLY = (function () {
+    function size(w) {
+      if (w == null || !isFinite(w)) return "—";
+      var abs = Math.abs(w);
+      return abs >= 1000 ? (abs / 1000).toFixed(1) + " kW" : Math.round(abs) + " W";
+    }
+    var none = { above: "", below: "" };
+    return {
+      formatW: size, formatSignedW: size, formatPower: size,
+      formatTarget: function (w) { return "→ " + size(w); },
+      directionWord: function () { return ""; },
+      trackingGap: function (a, t) { return (Number(a) || 0) - (Number(t) || 0); },
+      trackingText: function () { return ""; },
+      SIDES: { live: none, battery: none, plan: none, diagnose: none },
+      drawSides: function () {},
+    };
+  })();
   function formatW(w) { return powerWords().formatW(w); }
   function formatPower(w, kind) { return powerWords().formatPower(w, kind); }
 
@@ -351,14 +369,6 @@
     if (kwh >= 10) return kwh.toFixed(1) + " kWh";
     return kwh.toFixed(2) + " kWh";
   }
-  function formatSignedWh(wh) {
-    if (wh == null) return "Unknown";
-    var v = Number(wh) || 0;
-    var abs = Math.abs(v);
-    var sign = v > 0.5 ? "+" : v < -0.5 ? "-" : "±";
-    if (abs >= 1000) return sign + (abs / 1000).toFixed(2) + " kWh";
-    return sign + Math.round(abs) + " Wh";
-  }
   function formatWhMagnitude(wh) {
     if (wh == null) return "Unknown";
     var abs = Math.abs(Number(wh) || 0);
@@ -379,8 +389,10 @@
     return "is-neutral";
   }
   // The live strip's value: grid and battery go both ways, so a word says
-  // which, on its own line; solar, home and car do not.
+  // which, on its own line; solar and car do not. Home use keeps Core's
+  // sign (see formatSignedW).
   function liveStatParts(key, w) {
+    if (key === "load") return { size: powerWords().formatSignedW(w), word: "" };
     var kind = key === "grid" ? "grid" : key === "bat" ? "battery" : null;
     return { size: formatW(w), word: kind ? powerWords().directionWord(w, kind) : "" };
   }
@@ -412,14 +424,27 @@
   }
 
   // A live tooltip row's value and target. The grid and batteries go both
-  // ways, so their rows carry a word; the other rows are sizes.
+  // ways, so their rows carry a word; Home use keeps Core's sign; the other
+  // rows are sizes.
   function tooltipPowerText(lab, i) {
     var kind = lab.name === "Grid" ? "grid" : "target" in lab ? "battery" : null;
-    var actual = kind ? formatPower(lab.data[i], kind) : formatW(lab.data[i]);
+    var actual = kind ? formatPower(lab.data[i], kind)
+      : lab.name === "Load" ? powerWords().formatSignedW(lab.data[i])
+      : formatW(lab.data[i]);
     var target = lab.target && i < lab.target.length && Math.abs(lab.target[i]) > 1
       ? powerWords().formatTarget(lab.target[i], lab.data[i], kind || "")
       : "";
     return { actual: actual, target: target };
+  }
+
+  // A forecast tooltip row: the plan's battery and grid say their
+  // direction, predicted Home use keeps its sign like the live value, and
+  // the other rows are sizes or text as given.
+  function forecastRowText(lab) {
+    if (lab.literal) return lab.val;
+    if (lab.showSign) return formatPower(lab.val, lab.name === "Grid" ? "grid" : "battery");
+    if (lab.name === "Load pred") return powerWords().formatSignedW(lab.val);
+    return formatW(lab.val);
   }
 
   // A driver card's battery row: the reading, its target and how far apart
@@ -570,7 +595,7 @@
       queueFlowReplay();
       return;
     }
-    var opts = energyFlowOpts(data); opts.live = lastFlowLive;
+    var opts = energyFlowOpts(); opts.live = lastFlowLive;
     lastFlowReadings = window.ftwFlowReadingsFromStatus(data, opts);
     (lastFlowReadings.planets || []).forEach(function (p) {
       if (p.role !== "ev" || p.placeholder || !p.name) return;
@@ -690,7 +715,8 @@
         // directions so the operator sees the slot's true exposure.
         var impWh = slot.import_wh;
         var expWh = slot.export_wh;
-        slotBadge.textContent = "15m ↑" + formatWhMagnitude(impWh) + " ↓" + formatWhMagnitude(expWh);
+        // The same arrows as the flow's daily line: ↓ import, ↑ export.
+        slotBadge.textContent = "15m ↓" + formatWhMagnitude(impWh) + " ↑" + formatWhMagnitude(expWh);
         slotBadge.className = "grid-slot-badge" +
           (impWh > expWh + 5 ? " slot-import" : expWh > impWh + 5 ? " slot-export" : "");
       } else {
@@ -726,7 +752,7 @@
     }
 
     // Load
-    loadW.textContent = formatW(data.load_w);
+    loadW.textContent = powerWords().formatSignedW(data.load_w);
     var loadDir = document.getElementById("load-dir");
     if (loadDir) {
       loadDir.textContent = data.load_w == null || !isFinite(data.load_w) ? "no data"
@@ -1765,10 +1791,7 @@
       ctx.fillText(lab.name, boxX + 18, y);
       ctx.fillStyle = C.text;
       ctx.textAlign = "right";
-      var val = lab.literal ? lab.val
-        : lab.showSign ? formatPower(lab.val, lab.name === "Grid" ? "grid" : "battery")
-        : formatW(lab.val);
-      ctx.fillText(val, boxX + boxW - 6, y);
+      ctx.fillText(forecastRowText(lab), boxX + boxW - 6, y);
       ctx.textAlign = "left";
     });
 
@@ -2085,7 +2108,9 @@
           '  <span class="stat-label">Battery</span><span class="stat-value">' + formatPower(batWVal, "battery") + "</span>";
         var disp = (dispatchByDriver || {})[name];
         if (disp && d.bat_w != null && !d.observe_only) {
-          var dev = batWVal - disp.target_w;
+          // The same gap the words below describe, so a warning colour
+          // never sits on "on target".
+          var dev = powerWords().trackingGap(batWVal, disp.target_w);
           var devClass = Math.abs(dev) > 200 ? "stat-warn" : "stat-dim";
           var row = batteryRowParts(batWVal, disp.target_w);
           batteryRow =
