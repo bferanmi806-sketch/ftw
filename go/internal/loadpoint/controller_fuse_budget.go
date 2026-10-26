@@ -2,6 +2,7 @@ package loadpoint
 
 import (
 	"math"
+	"slices"
 	"sort"
 	"time"
 )
@@ -247,6 +248,22 @@ func fusePhase(mode string) string {
 // command names. A 3p label on a 1p-sized offer is below 6 A and never charges.
 func (c *Controller) fuseConfig(cfg Config, phaseMode string) Config {
 	return phaseLimits(cfg, phaseMode, c.siteFuse())
+}
+
+// tickConfig is cfg as this tick's order runs it. A three-phase order
+// whose maximum or table stops below 6 A on each phase takes the phase
+// limits, so surplus, a wake-kick, the car's completion and the current cap
+// all name the lowest three-phase level (srcfl/ftw#1861). Any other
+// loadpoint keeps its own limits.
+func (c *Controller) tickConfig(cfg Config, phaseMode string) Config {
+	if fusePhase(phaseMode) != "3p" || c.siteFuse().Phases() != 3 {
+		return cfg
+	}
+	limits := c.fuseConfig(cfg, "3p")
+	if limits.MaxChargeW > cfg.MaxChargeW || !slices.Equal(limits.AllowedStepsW, cfg.AllowedStepsW) {
+		return limits
+	}
+	return cfg
 }
 
 func (c *Controller) currentDirective(now time.Time) (Directive, bool) {

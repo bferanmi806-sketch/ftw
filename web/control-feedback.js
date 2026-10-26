@@ -66,7 +66,7 @@ const REASON_TITLES = {
   core_limit: 'Limited by FTW', fuse_limit: 'Limited by the main fuse', fuse_cooldown: 'Waiting after a site power limit',
   import_limit: 'Limited by the hourly import limit',
   charger_limit: 'Limited by FTW’s charger setting', device_limit: 'Charger limit', offered_current_lower: 'Charger offers less current',
-  one_phase: 'Charging on one phase', below_phase_minimum: 'Below the phase minimum',
+  one_phase: 'Charging on one phase', below_phase_minimum: 'Below 6 A a phase',
   device_fault: 'Device fault', telemetry_stale: 'No fresh readings', readings_lost: 'Lost control',
   command_failed: 'Commands failing', command_unconfirmed: 'Command not confirmed', default_failed: 'Cannot hand back control',
   response_unknown: 'No power reading', observe_only: 'Monitoring only', disabled: 'Disabled', device_control: 'Own control',

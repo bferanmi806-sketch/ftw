@@ -1494,6 +1494,7 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 		// A hold changed after the budget froze names its own phases; the
 		// phase check below makes it wait for the next tick's budget.
 		phaseMode = holdPhaseMode(hold, lpCfg, c.siteFuse())
+		lpCfg = c.tickConfig(lpCfg, phaseMode)
 		if phaseMode != "" {
 			cmd["phase_mode"] = phaseMode
 		}
@@ -1529,6 +1530,7 @@ func (c *Controller) tickOne(ctx context.Context, now time.Time, lpCfg Config, s
 			cmd["site_phases"] = site.Phases()
 		}
 	} else {
+		lpCfg = c.tickConfig(lpCfg, phaseMode)
 		// Snap to steps legal on the phases this command names.
 		cmdW, planReady, _ := c.computeCommandForBudget(now, c.fuseConfig(lpCfg, phaseMode), sample.PowerW, false)
 		cmdReason = "plan"
@@ -2653,6 +2655,15 @@ func (c *Controller) computeCommandForBudget(now time.Time, lpCfg Config, curren
 	}
 	maxW := lpCfg.MaxChargeW
 	if ceiling, ok := d.LoadpointMaxPowerW[lpCfg.ID]; ok {
+		// A level below the least order on these phases runs at that
+		// order, on only as long as the slot's energy lasts.
+		lowest := lpCfg.MinChargeW
+		if onePhaseCar {
+			lowest /= 3
+		}
+		if ceiling > 0 && ceiling < lowest {
+			ceiling = lowest
+		}
 		// A duty plan commands its legal on-power for its on-time, the slot's
 		// energy at that power, and on until the energy is spent. A car that
 		// draws more than its step, as on a mains above 230 V, spends the

@@ -135,3 +135,56 @@ func TestHoldBelowPhaseMinimumSaysSo(t *testing.T) {
 		t.Errorf("3p pin, 2,760 W hold: sent %.0f W %q (%s), want 0 W (below_phase_minimum)", cmd.power, cmd.phaseMode, reason)
 	}
 }
+
+// Surplus, a wake-kick and the car's own completion order the loadpoint's
+// maximum or a surplus level; on three phases below 6 A each those run at
+// the lowest three-phase level too. The order's current cap names 6 A.
+func TestBelowThreePhaseMinimumEveryOrderRuns(t *testing.T) {
+	for _, steps := range [][]float64{{0, 3800}, nil} {
+		cfg := issue1861Loadpoint("3p", steps)
+		cfg.SurplusOnly = true
+		now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+		sender := &fakeSender{}
+		c := newTestController(t, []Config{cfg}, nil, map[string]EVSample{cfg.DriverName: {Connected: true, RequestActive: true}}, sender)
+		c.SetSiteFuse(issue1861Site)
+		c.SetSiteSurplusForEV(func() (float64, bool) { return 10000, true })
+		c.SetPeakRemainingSurplusW(func() (float64, bool) { return 10000, true })
+		c.SetFuseEVMax(meteredEVCap(c, func() float64 { return 3 }))
+		for i := range 12 {
+			c.Tick(context.Background(), now.Add(time.Duration(i)*5*time.Second))
+		}
+		cmd, _ := lastSetCurrent(sender.calls)
+		st, _ := c.manager.State(cfg.ID)
+		if cmd.power != 4140 || cmd.phaseMode != "3p" || st.CommandedReason != "pv_surplus" {
+			t.Errorf("steps %v, 10 kW surplus: sent %.0f W %q (%s), want 4140 W \"3p\" (pv_surplus)", steps, cmd.power, cmd.phaseMode, st.CommandedReason)
+		}
+		if cmd.capAmpsPerPhase == nil {
+			t.Errorf("steps %v: no cap_amps_per_phase", steps)
+		} else if *cmd.capAmpsPerPhase < 6 {
+			t.Errorf("steps %v: cap_amps_per_phase %.2f A under the 6 A order", steps, *cmd.capAmpsPerPhase)
+		}
+	}
+}
+
+// A plan level below the least order its phases run goes out at that
+// order, on only as long as the slot's energy lasts: 2,070 Wh at 4,140 W
+// is 30 min, not the 34.5 min the 3,600 W level would take.
+func TestPlanLevelBelowPhaseMinimumKeepsTheSlotsEnergy(t *testing.T) {
+	cfg := Config{ID: "garage", DriverName: "easee", MinChargeW: 4140, MaxChargeW: 11040, PhaseMode: "3p"}
+	start := time.Date(2026, 10, 24, 1, 0, 0, 0, time.UTC)
+	dir := &Directive{SlotStart: start, SlotEnd: start.Add(time.Hour),
+		LoadpointEnergyWh: map[string]float64{cfg.ID: 2070}, LoadpointMaxPowerW: map[string]float64{cfg.ID: 3600}}
+	samples := map[string]EVSample{cfg.DriverName: {Connected: true}}
+	sender := &fakeSender{}
+	c := newTestController(t, []Config{cfg}, dir, samples, sender)
+	c.SetSiteFuse(issue1861Site)
+	c.Tick(context.Background(), start)
+	if cmd, _ := lastSetCurrent(sender.calls); cmd.power != 4140 {
+		t.Fatalf("a 3,600 W level sent %.0f W, want 4140 W", cmd.power)
+	}
+	samples[cfg.DriverName] = EVSample{Connected: true, PowerW: 4140, SessionWh: 2070}
+	c.Tick(context.Background(), start.Add(32*time.Minute))
+	if cmd, _ := lastSetCurrent(sender.calls); cmd.power != 0 {
+		t.Errorf("slot energy spent at 32 min, still sent %.0f W", cmd.power)
+	}
+}

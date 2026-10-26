@@ -287,6 +287,9 @@ func fieldCases() []fieldCase {
 	for _, car := range []int{3, 1} {
 		add(issue1861(useNoPlan, timingEasee, "3p", "own", car))
 	}
+	for _, steps := range []string{"own", "3p", "none"} {
+		add(issue1861(useSurplus, timingEasee, "3p", steps, 3))
+	}
 	return out
 }
 
