@@ -253,10 +253,9 @@ class FtwHistoryCard extends FtwElement {
     let rangeChanged = false;
     if (name === "range") {
       const next = this.getAttribute("range");
-      if (next && next !== this._range) {
-        this._range = next;
-        rangeChanged = true;
-      }
+      if (!next || next === this._range) return;
+      this._range = next;
+      rangeChanged = true;
     }
     this.update();
     if (name === "metric" || name === "poll-ms") {
