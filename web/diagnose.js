@@ -601,9 +601,16 @@
     ctx.textAlign = 'right';
     ctx.fillText(maxPrice.toFixed(0) + 'ö', pad.l - 4, priceY0 + 10);
     ctx.fillText('0', pad.l - 4, priceY0 + priceH - 2);
-    ctx.fillText('+' + (maxAbsPower / 1000).toFixed(1) + 'kW', pad.l - 4, powerY0 + 10);
+    ctx.fillText(powerAxisLabel(maxAbsPower), pad.l - 4, powerY0 + 10);
     ctx.fillText('0', pad.l - 4, powerMidY + 3);
-    ctx.fillText('−' + (maxAbsPower / 1000).toFixed(1) + 'kW', pad.l - 4, powerY0 + powerH - 2);
+    ctx.fillText(powerAxisLabel(-maxAbsPower), pad.l - 4, powerY0 + powerH - 2);
+    // The power labels are sizes; these words say which side is which.
+    ctx.textAlign = 'left';
+    ctx.fillStyle = C.muted;
+    ctx.fillText(POWER_ABOVE, pad.l + 4, powerMidY - 4);
+    ctx.fillText(POWER_BELOW, pad.l + 4, powerMidY + 12);
+    ctx.fillStyle = C.dim;
+    ctx.textAlign = 'right';
     ctx.fillText('100%', pad.l - 4, socY0 + 10);
     ctx.fillText('0', pad.l - 4, socY0 + socH - 2);
 
@@ -616,6 +623,12 @@
   }
 
   // ---- Helpers ----
+  // The chart's power axis shows sizes, never a raw minus.
+  var POWER_ABOVE = '↑ import · charge';
+  var POWER_BELOW = '↓ export · discharge · solar';
+  function powerAxisLabel(w) {
+    return (Math.abs(w) / 1000).toFixed(1) + 'kW';
+  }
   function fmtHHMM(ts) {
     const d = new Date(ts);
     return d.getHours().toString().padStart(2, '0') + ':' +

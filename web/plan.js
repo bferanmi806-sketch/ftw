@@ -69,6 +69,13 @@ import {
     return w;
   }
 
+  // The power axis shows sizes, never a raw minus; POWER_SIDES says what
+  // sits above zero and what below.
+  const POWER_SIDES = '↑ import / charge   ↓ export / discharge / solar';
+  function powerAxisLabel(w) {
+    return (Math.abs(w) / 1000).toFixed(1) + 'kW';
+  }
+
   // Horizon controls the x-axis bounds; mirrors the price chart's
   // 3-position pill so operators have a consistent affordance across
   // both charts. Persisted in localStorage so a user who prefers
@@ -709,16 +716,16 @@ import {
     ctx.stroke();
     ctx.fillStyle = C.dim;
     ctx.textAlign = 'right';
-    ctx.fillText('+' + (pMagMax / 1000).toFixed(1) + 'kW', pad.l - 6, powerY(pMagMax) + 4);
-    ctx.fillText('−' + (pMagMax / 1000).toFixed(1) + 'kW', pad.l - 6, powerY(-pMagMax) + 4);
+    ctx.fillText(powerAxisLabel(pMagMax), pad.l - 6, powerY(pMagMax) + 4);
+    ctx.fillText(powerAxisLabel(-pMagMax), pad.l - 6, powerY(-pMagMax) + 4);
     ctx.textAlign = 'left';
-    // "Power" heading + tiny sign-convention legend so readers don't have
-    // to remember that positive means "into the site". Placed just below
-    // the heading at lower opacity to read as a subtitle.
+    // "Power" heading + tiny legend for the two sides of zero, since the
+    // axis labels are sizes. Placed just below the heading at lower
+    // opacity to read as a subtitle.
     ctx.fillText('Power', pad.l + 4, powerY0 + 12);
     ctx.fillStyle = C.muted;
     ctx.font = '9px system-ui, sans-serif';
-    ctx.fillText('+ import / charge   − export / discharge', pad.l + 40, powerY0 + 12);
+    ctx.fillText(POWER_SIDES, pad.l + 40, powerY0 + 12);
     ctx.font = '11px system-ui, sans-serif';
 
     // Skip every battery-related draw layer (action band, bars, SoC
@@ -1027,7 +1034,7 @@ import {
       }
       if (a.battery_w != null) {
         const dir = a.battery_w > 100 ? 'charge' : a.battery_w < -100 ? 'discharge' : 'idle';
-        lines.push(`<div class="tip-row"><span title="Planned battery power. + = charging, − = discharging">Battery</span><b>${(a.battery_w / 1000).toFixed(1)} kW (${dir})</b></div>`);
+        lines.push(`<div class="tip-row"><span title="Planned battery power, and whether it charges or discharges">Battery</span><b>${(Math.abs(a.battery_w) / 1000).toFixed(1)} kW (${dir})</b></div>`);
       }
       if (a.grid_w != null) {
         const gdir = a.grid_w > 0 ? 'import' : 'export';

@@ -310,14 +310,29 @@
   const lastUpdate = $("last-update");
   const versionEl = $("version");
   // ---- Formatting ----
+  // The UI never shows a raw minus. formatW gives the size of a power; the
+  // caller says which way it flows, in a word or with flowMark.
   function formatW(w) {
     if (w == null || !isFinite(w)) return "—";
     const abs = Math.abs(w);
     if (abs >= 1000) {
-      return (w / 1000).toFixed(1) + " kW";
+      return (abs / 1000).toFixed(1) + " kW";
     }
-    return Math.round(w) + " W";
+    return Math.round(abs) + " W";
   }
+  // Which side of zero a power sits on, as the charts draw it: ↑ into the
+  // home (import, charge), ↓ out of it (export, discharge). Nothing for a
+  // reading within 10 W of zero.
+  function flowMark(w) {
+    if (w == null || !isFinite(w)) return "";
+    return w > 10 ? " ↑" : w < -10 ? " ↓" : "";
+  }
+  function formatFlowW(w) {
+    return formatW(w) + flowMark(w);
+  }
+  // What the charts draw on each side of zero, where their labels are sizes.
+  var BELOW_ZERO_LIVE = "↓ export · discharge · solar";
+  var BATTERY_SIDES = "↑ charge   ↓ discharge";
 
   // Fuse bar color. The bar is grid power, so it takes the grid colour, as
   // on the phone; from 90 % it takes the alarm, because operators just need
@@ -384,7 +399,8 @@
   function updateLiveStat(key, w, cls) {
     var el = document.getElementById("live-stat-" + key);
     if (!el) return;
-    el.textContent = formatW(w);
+    // Grid and battery go both ways; the mark says which.
+    el.textContent = key === "grid" || key === "bat" ? formatFlowW(w) : formatW(w);
     el.className = "live-stat-value " + (cls || "is-neutral");
   }
   function updateLiveSocStat(soc) {
@@ -397,8 +413,8 @@
   function batteryTargetLine(targetW) {
     if (targetW == null || !isFinite(targetW)) return "";
     // Just the target — the "· charging/discharging" suffix overflowed the
-    // node circle; the live W value + SoC% already convey direction.
-    return "target " + formatW(targetW);
+    // node circle; the mark says charge (↑) or discharge (↓).
+    return "target " + formatFlowW(targetW);
   }
 
   function hasControllableBatteryDrivers(data) {
@@ -651,7 +667,7 @@
     var targetDisp = document.getElementById("grid-target-display");
     if (targetDisp) {
       var t = data.grid_target_w || 0;
-      targetDisp.textContent = t === 0 ? "target 0" : "target " + formatW(t);
+      targetDisp.textContent = t === 0 ? "target 0" : "target " + formatFlowW(t);
     }
     var slotBadge = document.getElementById("grid-slot-badge");
     if (slotBadge) {
@@ -836,7 +852,7 @@
     // dragged then mouse-released doesn't revert before Save is clicked.
     if (gridTargetSlider && !gridTargetDirty) {
       gridTargetSlider.value = data.grid_target_w;
-      gridTargetValue.textContent = formatW(data.grid_target_w);
+      gridTargetValue.textContent = formatFlowW(data.grid_target_w);
     }
     // Peak import ceiling. Backed by the new peak_import_ceiling_w
     // (hard rule across modes); 0 = disabled. Falls back to the legacy
@@ -1449,7 +1465,17 @@
     for (var i2 = 0; i2 <= steps; i2++) {
       var yVal = yMin + (yRange * i2 / steps);
       var ly = pad.top + plotH - (plotH * i2 / steps);
+      // Today's totals never go below zero; that strip is only headroom.
+      if (chartView === "energy" && yVal < 0) continue;
       ctx.fillText(chartView === "energy" ? yVal.toFixed(1) + " kWh" : formatW(yVal), 2, ly + 4);
+    }
+    // Below zero the labels are sizes; this says what sits there.
+    if (chartView !== "energy" && yMin < 0 && yMax > 0) {
+      var zeroLabelY = pad.top + plotH * (1 - (0 - yMin) / yRange);
+      ctx.fillStyle = C.muted;
+      ctx.font = chartFontTooltipS;
+      ctx.fillText(BELOW_ZERO_LIVE, pad.left + 4, zeroLabelY + 12);
+      ctx.font = chartFontAxis;
     }
 
     // Time labels
@@ -1643,16 +1669,18 @@
         ctx.fillStyle = C.text;
         ctx.fillText(lab.data[i].toFixed(2) + " kWh", boxX + boxW - 6, y);
       } else {
-        var actual = formatW(lab.data[i]);
+        // Grid and batteries go both ways; the mark says which.
+        var both = lab.name === "Grid" || "target" in lab;
+        var actual = both ? formatFlowW(lab.data[i]) : formatW(lab.data[i]);
         ctx.fillStyle = C.text;
         ctx.fillText(actual, boxX + boxW - 6, y);
-        // Inline target as dim "(→ -674 W)" so user sees commanded vs actual
+        // Inline target as dim "(→ 674 W ↓)" so user sees commanded vs actual
         // in one glance. Skip when target is 0 to reduce visual noise.
         if (lab.target && i < lab.target.length && Math.abs(lab.target[i]) > 1) {
           var actualW = ctx.measureText(actual).width;
           ctx.fillStyle = C.dim;
           ctx.font = fontTooltipS;
-          ctx.fillText("→ " + formatW(lab.target[i]), boxX + boxW - 10 - actualW, y);
+          ctx.fillText("→ " + formatFlowW(lab.target[i]), boxX + boxW - 10 - actualW, y);
           ctx.font = fontTooltip;
         }
       }
@@ -1716,7 +1744,7 @@
       ctx.fillText(lab.name, boxX + 18, y);
       ctx.fillStyle = C.text;
       ctx.textAlign = "right";
-      var val = lab.literal ? lab.val : formatW(lab.val);
+      var val = lab.literal ? lab.val : lab.showSign ? formatFlowW(lab.val) : formatW(lab.val);
       ctx.fillText(val, boxX + boxW - 6, y);
       ctx.textAlign = "left";
     });
@@ -1847,13 +1875,13 @@
         v2xBtn.disabled = true;
         if (status) {
           status.className = "v2x-command-status";
-          status.textContent = "Sending " + formatW(powerW) + "…";
+          status.textContent = "Sending " + formatFlowW(powerW) + "…";
         }
         v2xCommand(v2xName, powerW)
           .then(function () {
             if (status) {
               status.className = "v2x-command-status ok";
-              status.textContent = powerW === 0 ? "Stopped" : "Sent " + formatW(powerW);
+              status.textContent = powerW === 0 ? "Stopped" : "Sent " + formatFlowW(powerW);
             }
             setTimeout(fetchStatus, 600);
           })
@@ -2035,21 +2063,21 @@
         // Battery target + tracking deviation. Skip if no dispatch (planner
         // hasn't run) OR this driver has no battery (target meaningless).
         var batteryRow =
-          '  <span class="stat-label">Battery</span><span class="stat-value">' + formatW(batWVal) + "</span>";
+          '  <span class="stat-label">Battery</span><span class="stat-value">' + formatFlowW(batWVal) + "</span>";
         var disp = (dispatchByDriver || {})[name];
         if (disp && d.bat_w != null && !d.observe_only) {
           var dev = batWVal - disp.target_w;
           var devClass = Math.abs(dev) > 200 ? "stat-warn" : "stat-dim";
           batteryRow =
-            '  <span class="stat-label">Battery</span><span class="stat-value">' + formatW(batWVal) +
-            '    <span class="stat-target">→ ' + formatW(disp.target_w) + '</span>' +
+            '  <span class="stat-label">Battery</span><span class="stat-value">' + formatFlowW(batWVal) +
+            '    <span class="stat-target">→ ' + formatFlowW(disp.target_w) + '</span>' +
             '    <span class="' + devClass + '">Δ ' + formatW(dev) + '</span>' +
             "</span>";
         }
 
         body =
           '<div class="driver-stats">' +
-          '  <span class="stat-label">Meter</span><span class="stat-value">' + formatW(meterW) + "</span>" +
+          '  <span class="stat-label">Meter</span><span class="stat-value">' + formatFlowW(meterW) + "</span>" +
           '  <span class="stat-label">PV</span><span class="stat-value">' + formatW(-pvWVal) + "</span>" +
           batteryRow +
           (d.observe_only
@@ -2111,7 +2139,7 @@
       item.innerHTML =
         '<span class="dispatch-driver">' + escHtml(d.driver) + "</span>" +
         "<span>" +
-        '<span class="dispatch-target">' + formatW(d.target_w) + "</span>" +
+        '<span class="dispatch-target">' + formatFlowW(d.target_w) + "</span>" +
         (d.clamped ? '<span class="dispatch-clamped">CLAMPED</span>' : "") +
         "</span>";
       dispatchList.appendChild(item);
@@ -2674,7 +2702,7 @@
   // poll skips overwrite while dirty. Mirrors the peak slider pattern.
   if (gridTargetSlider) {
     gridTargetSlider.addEventListener("input", function () {
-      gridTargetValue.textContent = formatW(Number(gridTargetSlider.value));
+      gridTargetValue.textContent = formatFlowW(Number(gridTargetSlider.value));
       gridTargetDirty = true;
       if (gridTargetSend) gridTargetSend.disabled = false;
     });
@@ -5264,9 +5292,10 @@
     ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, Monaco, monospace";
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    // battery: max charge / max discharge labels at the edges
+    // battery: max charge / max discharge at the edges, as sizes; the line
+    // under the chart says which side of zero is which.
     ctx.fillText((batMax / 1000).toFixed(1) + "kW", pad.left - 4, pad.top + 6);
-    ctx.fillText("-" + (batMax / 1000).toFixed(1) + "kW", pad.left - 4, batMid + (batH / 2) - 6);
+    ctx.fillText((batMax / 1000).toFixed(1) + "kW", pad.left - 4, batMid + (batH / 2) - 6);
     // SoC: 100% / 0% on the right
     ctx.textAlign = "left";
     ctx.fillText("100%", pad.left + plotW + 4, socTop + 6);
@@ -5275,6 +5304,8 @@
     ctx.fillStyle = C.muted;
     ctx.textAlign = "left";
     ctx.fillText("24h ago", pad.left, cssH - 4);
+    ctx.textAlign = "center";
+    ctx.fillText(BATTERY_SIDES, pad.left + plotW / 2, cssH - 4);
     ctx.textAlign = "right";
     ctx.fillText("now", pad.left + plotW, cssH - 4);
   }

@@ -49,11 +49,14 @@ function actionLabel(action) {
   return "Keep the battery steady";
 }
 
+// A size, never a raw minus; the arrow says the side of zero, as on the
+// chart: ↑ into the home (charge), ↓ out of it (discharge, export).
 function briefPower(watts) {
   const value = Number(watts) || 0;
-  return Math.abs(value) >= 1000
-    ? `${(value / 1000).toFixed(1)} kW`
-    : `${Math.round(value)} W`;
+  const size = Math.abs(value) >= 1000
+    ? `${(Math.abs(value) / 1000).toFixed(1)} kW`
+    : `${Math.round(Math.abs(value))} W`;
+  return size + (value > 10 ? " ↑" : value < -10 ? " ↓" : "");
 }
 
 function fractionOrNull(value) {
