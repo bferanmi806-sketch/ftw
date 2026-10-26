@@ -199,6 +199,22 @@ test("with Home Assistant updating the app, the version says so", async () => {
   assert.equal(rig.body.children.length, 0);
 });
 
+test("until the box says how it was installed, the dialog names no host", async () => {
+  const rig = fixture({ get: url => url.startsWith("/api/components")
+    ? new Promise(() => {})
+    : { ok: false, status: 503, json: async () => ({ error: "self-update disabled" }) } });
+  rig.badge._phase = "idle";
+  rig.badge._info = null;
+  rig.badge._refresh(false);
+  await settled();
+  rig.badge.open();
+  await settled();
+  const html = rig.root().innerHTML;
+  assert.match(html, /Reading the running version…/);
+  assert.match(html, /<p>FTW does not update itself here\.<\/p>/);
+  assert.doesNotMatch(html, /Docker|Home Assistant/);
+});
+
 test("an install that updates outside FTW says so", async () => {
   const rig = hostManaged({ core: { version: "v0.157.0-beta.1" } });
   rig.badge._refresh(false);

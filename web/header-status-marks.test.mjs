@@ -90,7 +90,9 @@ describe("header status marks", () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(badge._hostManaged, true);
     assert.notEqual(badge.hidden, true);
-    assert.match(badge._shadow.innerHTML, /class="mark ok"/);
+    // The box cannot know what the host has pending, so the light says
+    // only that it is connected.
+    assert.match(badge._shadow.innerHTML, /class="mark ok" role="img" title="Connected" aria-label="Connected"/);
 
     delayed.get("/api/components")({
       ok: true,

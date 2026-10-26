@@ -565,7 +565,9 @@
           marks.push(`<button part="badge" class="mark warning" title="${escapeHTML(warningTitle)}" aria-label="${escapeHTML(warningTitle)}">${ICON_WARNING}</button>`);
         }
         if (!showBadge) {
-          marks.push(`<span part="badge" class="mark ok" role="img" title="Connected, nothing pending" aria-label="Connected, nothing pending">${ICON_DOT}</span>`);
+          // Where the host updates FTW, the box cannot know what is pending.
+          const okTitle = this._hostManaged ? "Connected" : "Connected, nothing pending";
+          marks.push(`<span part="badge" class="mark ok" role="img" title="${okTitle}" aria-label="${okTitle}">${ICON_DOT}</span>`);
         }
       }
 
@@ -685,16 +687,21 @@
     // Home Assistant or a container updates this install, so the dialog says
     // what runs and who updates it, and offers nothing FTW cannot do here.
     _hostManagedHTML() {
-      const components = this._components || {};
-      const version = (components.core || {}).version;
-      const bundle = components.bundle || {};
+      const components = this._components;
+      const version = ((components || {}).core || {}).version;
+      const bundle = (components || {}).bundle || {};
       const running = version
         ? `<p><strong>${escapeHTML(version)}</strong>${this._connected ? " is running." : " was last reported by the box."}</p>`
         : '<p class="dim" role="status">Reading the running version…</p>';
-      const host = bundle.kind === "home_assistant_addon"
-        ? `<p>Home Assistant installs updates and rollbacks for this app.</p>
-           ${bundle.version ? `<p class="dim">Home Assistant app ${escapeHTML(bundle.version)}</p>` : ""}`
-        : "<p>FTW does not update itself here. Update it the way it was installed, for example with Docker.</p>";
+      // Until the box says how it was installed, say only what is true of
+      // every install that lands here.
+      let host = "<p>FTW does not update itself here.</p>";
+      if (bundle.kind === "home_assistant_addon") {
+        host = `<p>Home Assistant installs updates and rollbacks for this app.</p>
+           ${bundle.version ? `<p class="dim">Home Assistant app ${escapeHTML(bundle.version)}</p>` : ""}`;
+      } else if (components) {
+        host = "<p>FTW does not update itself here. Update it the way it was installed, for example with Docker.</p>";
+      }
       return `
         <div class="backdrop" data-action="close"></div>
         <div class="modal" role="dialog" aria-modal="true" aria-labelledby="ftw-upd-title">
