@@ -89,7 +89,7 @@ function fetchDailyEnergy(range) {
 
 class FtwHistoryCard extends FtwElement {
   static styles = `
-    :host { display: block; }
+    :host { display: block; min-width: 0; }
     /* All card chrome lives on .card-inner, NOT :host. The global
        reset "*, *::before, *::after { padding:0; margin:0 }" from
        style.css beats the shadow :host rule in Chromium for the
@@ -99,6 +99,7 @@ class FtwHistoryCard extends FtwElement {
        Use this wrapper pattern for any web component that needs
        visible padding/margin on its outermost surface. */
     .card-inner {
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -115,6 +116,8 @@ class FtwHistoryCard extends FtwElement {
     :host([hide-toggle]) .card-inner {
       background: var(--ink-sunken);
     }
+    .chart-scroll { overflow-x: auto; min-width: 0; }
+    .chart-scroll ftw-bar-chart { display: block; }
     .head {
       display: flex;
       align-items: center;
@@ -311,7 +314,7 @@ class FtwHistoryCard extends FtwElement {
           <div class="label">${escapeHtml(label)}</div>${toggleHtml}
         </div>
         <div class="total" data-role="total">— kWh</div>
-        <ftw-bar-chart data-role="chart" loading="true"></ftw-bar-chart>
+        <div class="chart-scroll" tabindex="0" role="region" aria-label="Daily energy chart"><ftw-bar-chart data-role="chart" loading="true"></ftw-bar-chart></div>
       </div>
     `;
   }
@@ -392,6 +395,7 @@ class FtwHistoryCard extends FtwElement {
           } else {
             this._totalEl.textContent = "Unknown";
           }
+          this._chart.style.minWidth = data.length > 7 ? (data.length * 46) + "px" : "";
           this._chart.data = data;
         };
         // `?delay=N` — hold in the skeleton state for N ms after the

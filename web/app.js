@@ -5068,17 +5068,72 @@
   // Only the cake re-fetches
   // /api/energy/daily on a range change; the bar tiles each
   // re-fetch themselves when their range= attribute is updated.
+  var historyMonthTools = null;
+  var historyTimeZone = "";
+  var selectedHistoryMonth = null;
+  var historySelectionTouched = false;
+  var historyMonthPicker = $("history-month-picker");
+  // Keep the initial request timezone-independent while the box's timezone
+  // metadata loads. The markup and history cards both start on Week.
+  var historyState = { range: "week", view: "bars" };
+
   function monthKey(date) {
-    return date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0");
+    return historyMonthTools && historyTimeZone
+      ? historyMonthTools.monthKeyAt(date, historyTimeZone)
+      : null;
   }
-  function shiftMonth(date, offset) {
-    return monthKey(new Date(date.getFullYear(), date.getMonth() + offset, 1));
+  function shiftMonth(month, offset) {
+    return historyMonthTools ? historyMonthTools.shiftMonthKey(month, offset) : null;
   }
-  var selectedHistoryMonth = monthKey(new Date());
-  var historyState = { range: "month:" + selectedHistoryMonth, view: "bars" };
-  document.querySelectorAll(".history-tiles ftw-history-card").forEach(function (tile) {
-    tile.setAttribute("range", historyState.range);
-  });
+  function setHistoryPeriodActive(active) {
+    if (!historyToggle) return;
+    historyToggle.setAttribute("data-active", active);
+    historyToggle.querySelectorAll("button[data-range]").forEach(function (button) {
+      var action = button.getAttribute("data-range");
+      var on = action === active;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      button.disabled = action !== "week" && !historyTimeZone;
+    });
+  }
+  function setHistoryRange(range, active) {
+    historyState.range = range;
+    setHistoryPeriodActive(active);
+    document.querySelectorAll(".history-tiles ftw-history-card").forEach(function (tile) {
+      tile.setAttribute("range", range);
+    });
+    if (historyState.view === "cakes") fetchHistoryCake();
+  }
+
+  if (historyMonthPicker) historyMonthPicker.disabled = true;
+  setHistoryPeriodActive("week");
+  if (historyToggle) {
+    import("/history-month.js")
+      .then(function (tools) {
+        historyMonthTools = tools;
+        return boundedApiRead("/api/setup/schema", function (response) {
+          if (!response.ok) throw new Error("Could not read the box timezone");
+          return response.json();
+        });
+      })
+      .then(function (schema) {
+        historyTimeZone = historyMonthTools.runtimeTimezoneFromSchema(schema);
+        var currentMonth = monthKey(new Date());
+        if (!currentMonth) throw new Error("Could not determine the current box month");
+        selectedHistoryMonth = currentMonth;
+        if (historyMonthPicker) {
+          historyMonthPicker.max = currentMonth;
+          historyMonthPicker.value = currentMonth;
+          historyMonthPicker.disabled = false;
+        }
+        setHistoryPeriodActive(historyToggle.getAttribute("data-active") || "week");
+        if (!historySelectionTouched) setHistoryRange("month:" + currentMonth, "this-month");
+      })
+      .catch(function () {
+        // Stay on the timezone-independent week range if setup metadata is
+        // unavailable; a browser-local month could select the wrong period.
+      });
+  }
 
   function fetchHistoryCake() {
     var seq = ++historyCakeReqSeq;
@@ -5126,55 +5181,43 @@
       var btn = e.target.closest("button[data-range]");
       if (!btn) return;
       var action = btn.getAttribute("data-range");
-      if (action === "this-month") selectedHistoryMonth = monthKey(new Date());
-      if (action === "last-month") selectedHistoryMonth = shiftMonth(new Date(), -1);
-      var next = action === "week" ? "week" : "month:" + selectedHistoryMonth;
-      if (!action || next === historyState.range) return;
-      historyState.range = next;
-      if (historyMonthPicker && action !== "week") historyMonthPicker.value = selectedHistoryMonth;
-      var active = action === "week" ? "week"
-        : action === "last-month" ? "last-month"
-        : selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "picked-month";
-      historyToggle.setAttribute("data-active", active);
-      var buttons = historyToggle.querySelectorAll("button[data-range]");
-      for (var i = 0; i < buttons.length; i++) {
-        var on = buttons[i].getAttribute("data-range") === action;
-        buttons[i].classList.toggle("active", on);
-        buttons[i].setAttribute("aria-pressed", on ? "true" : "false");
+      if (action !== "week" && action !== "this-month" && action !== "last-month") return;
+      historySelectionTouched = true;
+      if (action === "week") {
+        if (historyState.range !== "week") setHistoryRange("week", "week");
+        else setHistoryPeriodActive("week");
+        return;
       }
-      var tiles = document.querySelectorAll(".history-tiles ftw-history-card");
-      for (var j = 0; j < tiles.length; j++) {
-        tiles[j].setAttribute("range", next);
+
+      // Read the current month at interaction time, in the box timezone. This
+      // also handles a page left open across a calendar-month boundary.
+      var currentMonth = monthKey(new Date());
+      if (!currentMonth) return;
+      selectedHistoryMonth = action === "last-month" ? shiftMonth(currentMonth, -1) : currentMonth;
+      if (!selectedHistoryMonth) return;
+      if (historyMonthPicker) {
+        historyMonthPicker.max = currentMonth;
+        historyMonthPicker.value = selectedHistoryMonth;
       }
-      // Cake: refresh only when it's the active view.
-      if (historyState.view === "cakes") fetchHistoryCake();
+      var active = action === "last-month" ? "last-month" : "this-month";
+      var next = "month:" + selectedHistoryMonth;
+      if (next !== historyState.range) setHistoryRange(next, active);
+      else setHistoryPeriodActive(active);
     });
   }
 
-  var historyMonthPicker = $("history-month-picker");
   if (historyMonthPicker) {
-    historyMonthPicker.value = selectedHistoryMonth;
-    historyMonthPicker.max = selectedHistoryMonth;
-    historyToggle.setAttribute("data-active", "this-month");
-    historyToggle.querySelectorAll("button[data-range]").forEach(function (button) {
-      var on = button.getAttribute("data-range") === "this-month";
-      button.classList.toggle("active", on);
-      button.setAttribute("aria-pressed", on ? "true" : "false");
-    });
     historyMonthPicker.addEventListener("change", function () {
-      if (!/^\d{4}-\d{2}$/.test(historyMonthPicker.value)) return;
+      if (!historyMonthTools || !historyTimeZone || !historyMonthTools.isCalendarMonthKey(historyMonthPicker.value)) return;
+      var currentMonth = monthKey(new Date());
+      if (!currentMonth || historyMonthPicker.value > currentMonth) return;
+      historySelectionTouched = true;
       selectedHistoryMonth = historyMonthPicker.value;
-      historyState.range = "month:" + selectedHistoryMonth;
-      historyToggle.setAttribute("data-active", selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "picked-month");
-      historyToggle.querySelectorAll("button[data-range]").forEach(function (button) {
-        var on = button.getAttribute("data-range") === (selectedHistoryMonth === monthKey(new Date()) ? "this-month" : "");
-        button.classList.toggle("active", on);
-        button.setAttribute("aria-pressed", on ? "true" : "false");
-      });
-      document.querySelectorAll(".history-tiles ftw-history-card").forEach(function (tile) {
-        tile.setAttribute("range", historyState.range);
-      });
-      if (historyState.view === "cakes") fetchHistoryCake();
+      historyMonthPicker.max = currentMonth;
+      var active = selectedHistoryMonth === currentMonth ? "this-month" : "picked-month";
+      var next = "month:" + selectedHistoryMonth;
+      if (next !== historyState.range) setHistoryRange(next, active);
+      else setHistoryPeriodActive(active);
     });
   }
 

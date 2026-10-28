@@ -1000,7 +1000,7 @@ body.ftw-app .history-toggle[data-active="cakes"]::before {
 }
 body.ftw-app #history-toggle[data-active="this-month"]::before { transform: translateX(100%); }
 body.ftw-app #history-toggle[data-active="last-month"]::before { transform: translateX(200%); }
-body.ftw-app #history-toggle[data-active="picked-month"]::before { transform: translateX(100%); }
+body.ftw-app #history-toggle[data-active="picked-month"]::before { opacity: 0; }
 body.ftw-app .history-toggle button {
   position: relative;
   z-index: 1;
