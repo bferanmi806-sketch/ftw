@@ -16,6 +16,7 @@ function makeHistoryCard(apiFetch) {
   class FtwElement {
     constructor() {
       this.attributes = new Map();
+      this.shadowRoot = { querySelector() { return null; } };
       this.style = { setProperty() {} };
     }
     getAttribute(name) { return this.attributes.get(name) ?? null; }
@@ -176,7 +177,7 @@ test("month charts scroll at a readable width and return to the compact week wid
   };
   const historyCard = makeHistoryCard(apiFetch);
   const markup = historyCard.render();
-  assert.match(markup, /<div class="chart-scroll" tabindex="0" role="region" aria-label="Daily energy chart">/);
+  assert.match(markup, /<div class="chart-scroll" tabindex="0" role="region" aria-label="Daily energy chart" aria-describedby="scroll-hint">/);
   assert.match(card, /\.chart-scroll \{ overflow-x: auto; min-width: 0; \}/);
   assert.match(card, /\.chart-scroll ftw-bar-chart \{ display: block; \}/);
 
@@ -189,4 +190,25 @@ test("month charts scroll at a readable width and return to the compact week wid
   assert.equal(calls.at(-1), "/api/energy/daily?days=7");
   assert.equal(historyCard._chart.data.length, 7);
   assert.equal(historyCard._chart.style.minWidth, "", "a shorter range clears the monthly width");
+});
+
+
+test("chart scroll hint appears only for overflow and points to available days", () => {
+  const el = makeHistoryCard(async () => {});
+  const region = { clientWidth: 300, scrollWidth: 1400, scrollLeft: 0 };
+  const hint = {};
+  el.shadowRoot = { querySelector(selector) { return selector === ".chart-scroll" ? region : hint; } };
+  el._syncScrollHint();
+  assert.equal(hint.hidden, false);
+  assert.equal(hint.textContent, "Scroll for more days →");
+  region.scrollLeft = 500;
+  el._syncScrollHint();
+  assert.equal(hint.textContent, "← Scroll for more days →");
+  region.scrollLeft = 1100;
+  el._syncScrollHint();
+  assert.equal(hint.textContent, "← Scroll for earlier days");
+  region.scrollWidth = 300;
+  region.scrollLeft = 0;
+  el._syncScrollHint();
+  assert.equal(hint.hidden, true);
 });

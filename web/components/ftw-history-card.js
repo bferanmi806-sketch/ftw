@@ -118,6 +118,9 @@ class FtwHistoryCard extends FtwElement {
     }
     .chart-scroll { overflow-x: auto; min-width: 0; }
     .chart-scroll ftw-bar-chart { display: block; }
+    .scroll-hint { margin: 0; text-align: right; color: var(--fg-muted); font: 11px var(--mono); }
+    .scroll-hint[hidden] { display: none; }
+    .chart-scroll:focus-visible { outline: 1px solid var(--accent-e); outline-offset: 2px; border-radius: 4px; }
     .head {
       display: flex;
       align-items: center;
@@ -241,6 +244,7 @@ class FtwHistoryCard extends FtwElement {
     this._syncPolling();
   }
   disconnectedCallback() {
+    if (this._scrollResize) this._scrollResize.disconnect();
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
     if (this._onVisibility) {
       document.removeEventListener("visibilitychange", this._onVisibility);
@@ -314,12 +318,31 @@ class FtwHistoryCard extends FtwElement {
           <div class="label">${escapeHtml(label)}</div>${toggleHtml}
         </div>
         <div class="total" data-role="total">— kWh</div>
-        <div class="chart-scroll" tabindex="0" role="region" aria-label="Daily energy chart"><ftw-bar-chart data-role="chart" loading="true"></ftw-bar-chart></div>
+        <div class="chart-scroll" tabindex="0" role="region" aria-label="Daily energy chart" aria-describedby="scroll-hint"><ftw-bar-chart data-role="chart" loading="true"></ftw-bar-chart></div>
+        <p id="scroll-hint" class="scroll-hint" hidden></p>
       </div>
     `;
   }
 
+  _syncScrollHint() {
+    const scroll = this.shadowRoot.querySelector(".chart-scroll");
+    const hint = this.shadowRoot.querySelector(".scroll-hint");
+    if (!scroll || !hint) return;
+    const remaining = scroll.scrollWidth - scroll.clientWidth - scroll.scrollLeft;
+    hint.hidden = scroll.scrollWidth <= scroll.clientWidth + 1;
+    hint.textContent = scroll.scrollLeft > 1
+      ? (remaining > 1 ? "← Scroll for more days →" : "← Scroll for earlier days")
+      : "Scroll for more days →";
+  }
+
   afterRender() {
+    if (this._scrollResize) this._scrollResize.disconnect();
+    const scroll = this.shadowRoot.querySelector(".chart-scroll");
+    if (scroll) {
+      scroll.addEventListener("scroll", () => this._syncScrollHint(), { passive: true });
+      this._scrollResize = new ResizeObserver(() => this._syncScrollHint());
+      this._scrollResize.observe(scroll);
+    }
     this._chart   = this.shadowRoot.querySelector('[data-role="chart"]');
     this._totalEl = this.shadowRoot.querySelector('[data-role="total"]');
     this._toggleEl = this.shadowRoot.querySelector('.toggle');
@@ -397,6 +420,7 @@ class FtwHistoryCard extends FtwElement {
           }
           this._chart.style.minWidth = data.length > 7 ? (data.length * 46) + "px" : "";
           this._chart.data = data;
+          this._syncScrollHint();
         };
         // `?delay=N` — hold in the skeleton state for N ms after the
         // fetch resolves, for inspecting the loading→loaded transition.
